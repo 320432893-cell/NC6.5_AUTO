@@ -22,6 +22,16 @@ WSL 仓库：`/home/queclink/project/nc_auto_v2`
 Windows 运行目录：`H:\python脚本\.venv\nc_auto_v2`
 当前 Excel：`C:\Users\Queclink\Desktop\5.27凭证.xlsx`
 
+## JAB 接手必读
+
+- JAB 只能在 Windows Python 下跑；WSL/Linux Python 只能做 git、阅读和重构，不能直接连 NC UI。
+- 默认 DLL：`C:\Users\Queclink\AppData\Local\UClient\share\java1.7.0_51-x64\bin\WindowsAccessBridge-64.dll`。
+- 老版 JAB 用 `Windows_run()`，必须由同一线程跑 JAB 初始化和消息泵；不要随手改 `tools/jab_probe.py` / `core/jab_operator.py` 的启动方式。
+- 不要长期硬编码 JAB path 或 hwnd；窗口重开后 path 可能变化，正式逻辑按窗口标题、role、name、table 结构动态搜索。
+- 不要信控件 `bounds` 做点击依据；很多控件会返回负坐标或 `-1,-1,-1,-1`。优先用 JAB action、selection、table API。
+- 空白蓝框小窗通常是 `SunAwtWindow` 无标题辅助窗，`core/jab_operator.py` 已有隐藏逻辑，不要当业务窗口处理。
+- 调试控件时用 `tools/query_jab.bat`、`tools/run_jab_probe.bat`、`tools/jab_probe.py`，不要回到截图识别/坐标试错。
+
 ## 已实现
 
 - `plan`：只读 Excel 和 NC 待生成表，按 `金额 + 对手方` 唯一匹配，不点击。
@@ -72,6 +82,7 @@ Windows 运行目录：`H:\python脚本\.venv\nc_auto_v2`
 
 - 不要回到坐标方案；JAB 已能读表、选行、点按钮、切查询、回填凭证号。
 - 不要拆成多轮 `选几行 -> 生成 -> 前台生成`；只选 1 行时 NC 界面可能变形。
+- `generate` 的第一步必须先在待生成主表一次性选中 Excel 全部匹配行，再点一次前台生成；不要每条 Excel 单独生成。
 - 凭证号顺序严格时，制单窗口内应一行一保存；多行批量保存可能出现 Excel 行 25 回填 370、行 26 回填 369 这种倒序。
 - 制单窗口还在但表为空是正常完成状态；关闭窗口、F5 刷新待生成表再验证。
 - 不要只信“保存成功”；以制单表目标行消失、行数减少、空表、待生成表刷新后消失为准。
@@ -88,6 +99,7 @@ Windows 运行目录：`H:\python脚本\.venv\nc_auto_v2`
 ## 最近提交
 
 ```text
+2f72704 Condense JAB handoff TODO
 55b2354 Document handoff notes and pitfalls
 b74f18d Add Excel key splitting command
 a9f72df Add NC JAB voucher automation workflow
