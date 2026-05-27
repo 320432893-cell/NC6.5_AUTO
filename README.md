@@ -1,224 +1,303 @@
-# NC6.5 自动生成凭证脚本
+# NC JAB 凭证自动化
 
-用于在 NC6.5 中按 Excel 金额查找记录、生成凭证、保存并把凭证号写回 Excel。
+这个项目用于在 NC6.5 中按 Excel 顺序批量生成凭证，并把已生成凭证号回填到 Excel。
 
-## 环境准备
+当前主线是 Java Access Bridge（JAB）。旧的 `pyautogui` 坐标点击、截图识别、固定坐标方案已经废弃，只作为历史代码保留，不再作为新功能方向。
 
-建议在 Windows 的 Python 环境中运行，不建议在 WSL/Linux 中运行，因为 `pyautogui`、`keyboard`、窗口激活等功能需要直接控制 Windows 桌面和 NC 窗口。
+## 开发和运行边界
 
-安装依赖：
+开发已经可以完全转到 WSL：
+
+- WSL 源码仓库：`/home/queclink/project/nc_auto_v2`
+- H 盘 Windows/JAB 运行镜像：`/mnt/h/python脚本/.venv/nc_auto_v2`
+- JAB 运行 Python：`/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe`
+
+注意：JAB 不能由 WSL/Linux Python 直接控制 NC。JAB 要连接 Windows 桌面上的 Java/NC UI，依赖 Windows Access Bridge DLL、窗口句柄和 Windows 消息泵。所以：
+
+- 源码、git、文档、重构在 WSL。
+- 实际读 NC 表格、选行、点击按钮时，必须调用 Windows Python。
+- 可以从 WSL shell 调用 Windows Python，但解释器必须是 `.venv-local/Scripts/python.exe`。
+
+## 关键文件
+
+- `tools/jab_batch.py`：批量命令入口。
+- `core/jab_batch_processor.py`：凭证生成/回填业务流程。
+- `core/jab_operator.py`：JAB 底层封装，负责读表、选行、按钮动作、F3/F5、关闭窗口、隐藏空白 AWT 小窗。
+- `core/data_handler.py`：Excel 读取、拼接 key 解析、结果写回、拆分 key。
+- `config.json`：Excel 路径、JAB DLL、列位和查询切换配置。
+- `TODO_JAB_HANDOFF.md`：后续开发 TODO。
+- `CHANGELOG.md`：已实现功能、验证记录和历史变更。
+
+辅助探测工具：
+
+- `tools/jab_probe.py`
+- `tools/query_jab.bat`
+- `tools/run_jab_probe.bat`
+- `tools/test_voucher_selection.py`
+
+## WSL 开发流程
+
+在 WSL 仓库开发：
 
 ```bash
-python -m pip install pyautogui pyperclip openpyxl keyboard Pillow pygetwindow
+cd /home/queclink/project/nc_auto_v2
+git status --short
 ```
 
-如果电脑上有多个 Python，先确认正在使用的解释器：
+实际操作 NC 前，同步到 H 盘运行镜像：
 
 ```bash
-python --version
-python -m pip --version
+rsync -a --delete \
+  --exclude .git \
+  --exclude .venv-local \
+  /home/queclink/project/nc_auto_v2/ \
+  /mnt/h/python脚本/.venv/nc_auto_v2/
 ```
 
-## 文件结构
+进入 H 盘镜像目录，用 Windows Python 运行：
+
+```bash
+cd /mnt/h/python脚本/.venv/nc_auto_v2
+/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/jab_batch.py plan
+```
+
+## 常用命令
+
+只读规划，不点击 NC：
+
+```bash
+/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/jab_batch.py plan
+```
+
+真实生成并保存：
+
+```bash
+/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/jab_batch.py generate --yes
+```
+
+切到已生成/正式单据列表：
+
+```bash
+/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/jab_batch.py switch-generated
+```
+
+从已生成列表回填凭证号：
+
+```bash
+/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/jab_batch.py backfill
+```
+
+拆分 Excel A 列拼接 key：
+
+```bash
+/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/jab_batch.py split-keys
+```
+
+## Excel 规则
+
+当前 Excel：
 
 ```text
-nc_auto_v2/
-├── config.json           # 配置：Excel路径、坐标、等待时间、重试次数等
-├── collect_positions.py  # 坐标采集工具
-├── main.py               # 主程序入口
-├── core/
-│   ├── __init__.py
-│   ├── data_handler.py   # Excel 数据读写
-│   ├── gui_operator.py   # NC GUI 操作
-│   ├── logger.py         # 日志
-│   ├── test_helper.py    # 测试工具
-│   └── utils.py          # 工具函数
-├── images/               # 截图素材，可选
-└── logs/                 # 运行日志，自动生成
+C:\Users\Queclink\Desktop\5.27凭证.xlsx
 ```
 
-## 使用步骤
+`Sheet1` 约定：
 
-### 1. 准备 Excel
+- A 列：`金额+对手方` 拼接索引。
+- B 列：状态/凭证号。
+- C 列：可由 `split-keys` 拆出的金额。
+- D 列：可由 `split-keys` 拆出的对手方。
 
-打开你的 Excel 文件：
+示例：
 
-- `Sheet1`：你的数据，A 列放金额，B 列留空，脚本会写入凭证号。
-- `Sheet2`：从 NC 导出的财务数据，E 列是来源金额。
-
-### 2. 修改配置
-
-打开 `config.json`，修改 `excel_path` 为你的 Excel 文件路径。
-
-其他参数一般不需要改，坐标由采集工具自动写入。
-
-### 3. 采集坐标
-
-```bash
-python collect_positions.py
+```text
+141688.50深圳市科贸电子科技有限公司
 ```
 
-按提示操作，分四轮采集：
+配置项：
 
-1. 主界面：来源金额列单元格、生成按钮。
-2. 查找窗口：手动按 `Ctrl+F` 打开查找窗口，采集查找下一个、关闭。
-3. 生成菜单：关闭查找窗口，点击生成按钮，采集前台生成选项。
-4. 凭证界面：点击前台生成进入凭证界面，采集凭证号输入框、返回按钮。
+- `sheet_my = Sheet1`
+- `has_header = true`
+- `jab_batch.key_col = 1`
+- `jab_batch.result_col = 2`
+- `jab_batch.amount_out_col = 3`
+- `jab_batch.partner_out_col = 4`
 
-每个位置把鼠标移过去按空格即可。
+解析规则：
 
-### 4. 运行测试
+- A 列必须以金额开头。
+- 金额允许逗号和小数，统一到 `Decimal("0.01")`。
+- 对手方取金额后的全部文本，并去掉空白。
+- 当前索引始终是 `金额 + 对手方`，不是单据号，也不是单金额。
 
-```bash
-python main.py
+B 列规则：
+
+- `plan` / `generate` 跳过 B 列已有值的行。
+- 生成成功但未回填凭证号时，B 列写 `已生成待回填`。
+- `backfill` 会读取所有 key 行，把 `已生成待回填` 替换为凭证号。
+
+## NC 表格列位
+
+待生成主表：
+
+- 金额列：`col=4`
+- 对手方列：`col=3`
+- 选择列：`col=0`
+
+制单窗口：
+
+- 标题：`制单`
+- class：`SunAwtDialog`
+- 表格通常是 `N rows x 13 cols`
+- 匹配方式：金额匹配，并在整行文本里查找对手方。
+
+已生成/正式单据表：
+
+- 金额列：`col=4`
+- 对手方列：`col=3`
+- 凭证日期列：`col=18`
+- 凭证号列：`col=22`
+- 凭证号回填时去前导 0。
+- 凭证号有效范围：`1 <= 凭证号 <= 9999`。
+
+## 业务流程
+
+### 规划
+
+`plan` 只读 Excel 和 NC 待生成表，不点击 NC：
+
+1. 读取 Excel A 列 key。
+2. 跳过 B 列已有状态/凭证号的行。
+3. 解析金额和对手方。
+4. 读取当前 NC 待生成主表。
+5. 按 `金额 + 对手方` 精确匹配。
+6. 输出可匹配、格式错误、未找到、重复项。
+
+### 生成
+
+`generate --yes` 的正确流程：
+
+1. 从 Excel 读取全部待处理行。
+2. 在 NC 待生成主表一次性匹配所有 Excel 行。
+3. 一次性选中所有匹配到的 NC 待生成行。
+4. 只点击一次 `生成 -> 前台生成`。
+5. 进入同一个 `制单` 弹窗。
+6. 在制单表中按 Excel 顺序查找记录。
+7. 选择当前可保存批次并点击保存。
+8. 验证制单表行数减少、目标行消失，或制单表为空。
+9. 对已保存 Excel 行写 `已生成待回填`。
+10. 全部保存后关闭制单窗口。
+11. 回待生成表按 F5 刷新。
+12. 验证本轮所有记录已从待生成表消失。
+
+关键结论：
+
+- 第一阶段必须先全量选中 Excel 匹配到的待生成行。
+- 只点一次前台生成。
+- 不要每条 Excel 单独生成。
+- 不要拆成多轮待生成表 `选几行 -> 生成 -> 前台生成`。
+
+原因是只选 1 行时，NC 制单界面可能和多行场景不同；反复前台生成会让界面状态、顺序和验证逻辑变复杂。
+
+### 切换已生成
+
+`switch-generated` 从待生成界面切到已生成/正式单据列表：
+
+1. 如有 `制单` 窗口，先尝试关闭。
+2. 激活 NC 主窗口。
+3. 用 F3 打开查询窗口。
+4. 选择 `正式单据`。
+5. 点击 `确定`。
+6. 读取表格确认已进入已生成列表。
+
+已生成和待生成占同一个业务窗口。不要每生成一张就来回切；全部生成后统一切到已生成表回填。
+
+### 回填
+
+`backfill` 从已生成表回填凭证号到 Excel B 列。当前假设界面已经在已生成/正式单据列表；不确定时先跑 `switch-generated`。
+
+逻辑：
+
+1. 读取 Excel 所有 key 行。
+2. 读取已生成表。
+3. 按 `金额 + 对手方` 匹配。
+4. 历史重复时，优先取凭证日期等于当天的记录。
+5. 读取凭证号列。
+6. 去前导 0。
+7. 校验 `1-9999`。
+8. 写回 Excel B 列。
+
+## 制单保存策略
+
+当前代码在制单窗口中按制单行号递增拆成可保存批次，选中后保存，并验证当前批次消失。
+
+两种策略：
+
+- `single`：一行一保存，凭证号顺序最稳。
+- `batch`：递增批量保存，速度更快，但凭证号可能不递增。
+
+已发生真实案例：
+
+```text
+excel_rows=[25, 26]
+voucher_rows=[1, 9]
+Excel行25 -> 370
+Excel行26 -> 369
 ```
 
-首次运行会进入测试菜单：
+如果凭证号必须严格按 Excel 顺序递增，制单窗口内应一行一保存。若优先速度，可以批量保存，但必须以已生成表真实匹配结果回填，不能用保存顺序推断凭证号。
 
-- 选 1：鼠标会依次移到每个坐标位置画圈，确认位置是否正确。
-- 选 2：测试查找窗口流程。
-- 选 3：测试生成流程。
-- 选 4：跳过测试直接运行。
+## 验证规则
 
-建议首次选 1 确认坐标，再选 4 正式运行。
+不要只信“保存成功”提示。
 
-### 5. 正式运行
+保存后当前验证：
 
-确认测试通过后，切换到 NC 窗口，脚本会自动开始处理。
+1. 看制单窗口是否还存在。
+2. 读取制单表。
+3. 目标行消失且行数减少，判定当前批保存成功。
+4. 制单窗口还在但表为空，视为本轮可能完成。
+5. 制单窗口关闭，也转待生成表复核。
+6. 最终关闭制单窗口。
+7. 回待生成表按 F5 刷新。
+8. 按 `金额 + 对手方` 验证本轮记录是否仍存在。
 
-运行过程中：
+`制单` 窗口还在但表为空是正常状态，通常表示本轮选中的制单数据已保存完。正确处理是关闭窗口、刷新待生成表、再复核。
 
-- 按空格可紧急停止，按 `ESC` 也可中断，已处理的数据不会丢失。
-- 中断后再次运行会自动跳过已有凭证号的行。
-- 日志保存在 `logs/` 目录。
+## JAB 注意事项
 
-## 配置说明
+- JAB 只能在 Windows Python 下连接 NC UI。
+- 老版 JAB 使用 `Windows_run()`；不要随手改 `tools/jab_probe.py` 和 `core/jab_operator.py` 的消息泵/初始化方式。
+- 不要硬编码 JAB path 或 hwnd，窗口重开后会变。
+- 不要信 `bounds` 做坐标点击，很多控件会返回负坐标或 `-1,-1,-1,-1`。
+- 优先使用 JAB action、selection、table API。
 
-### config.json 参数
+左上角奇怪截图/蓝框遮挡：
 
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| `excel_path` | Excel 文件路径 | 需修改 |
-| `sheet_my` | 你的数据 Sheet 名 | `Sheet1` |
-| `sheet_finance` | 财务数据 Sheet 名 | `Sheet2` |
-| `my_amount_col` | 你的金额列号 | `1`，A 列 |
-| `my_voucher_col` | 凭证号写入列号 | `2`，B 列 |
-| `finance_amount_col` | 财务金额列号 | `5`，E 列 |
-| `has_header` | 是否有表头 | `true` |
-| `debug_screenshots` | 是否保存调试截图 | `false` |
-| `verify_amount` | 是否启用金额验证 | `false` |
-| `verify_input` | 是否验证输入 | `true` |
-| `ensure_window_focus` | 是否确保窗口焦点 | `true` |
-| `use_mouse_movement` | 点击前是否先移动鼠标 | `true` |
-| `health_check_interval` | 每处理多少条做一次健康检查 | `10` |
-| `retry.max_retries` | 单条记录最大重试次数 | `2` |
-| `retry.copy_retries` | 复制凭证号重试次数 | `3` |
-| `retry.click_retries` | 点击验证失败后的重试次数 | `2` |
-
-## 等待时间总览
-
-### config.json 可配置等待
-
-| 参数 | 默认值 | 代码位置 | 作用 |
-|------|--------|----------|------|
-| `timing.action_delay` | `0.2` 秒 | `core/gui_operator.py` | 每次点击坐标后等待，多个按钮点击都会用到。 |
-| `timing.window_wait` | `0.8` 秒 | `config.json` | 预留的窗口弹出等待参数，当前代码没有直接使用。 |
-| `timing.save_timeout` | `30` 秒 | `config.json` | 预留的保存超时参数，当前代码没有直接使用。 |
-| `timing.page_timeout` | `15` 秒 | `wait_for_image()` | 等待页面或截图出现的默认超时时间。 |
-| `timing.between_tasks` | `0.2` 秒 | `process_one()` | 每条记录处理成功后，进入下一条前等待。 |
-| `timing.input_interval` | `0.02` 秒 | `config.json` | 预留的输入间隔参数，当前正式流程使用剪贴板粘贴，没有直接使用。 |
-| `timing.mouse_move_duration` | `0.05` 秒 | `click_pos()` | 点击前鼠标移动到目标坐标的耗时。 |
-| `timing.voucher_load_wait` | `0.5` 秒 | `do_save()` | 检测到凭证界面后，再额外等待界面加载完成，然后按 `Ctrl+S`。 |
-
-### 正式流程固定等待
-
-这些等待写在代码里，不能通过 `config.json` 直接修改。
-
-| 等待时间 | 代码位置 | 触发场景 |
-|----------|----------|----------|
-| `0.1` 秒 | `pyautogui.PAUSE` | 每个 `pyautogui` 动作后的全局停顿。 |
-| `2` 秒 | `wait_for_image()` | 如果 `images/` 中缺少目标截图，降级为固定等待 2 秒并认为成功。 |
-| `0.3` 秒/轮 | `wait_for_image()` | 图像识别轮询间隔，直到识别成功或超时。 |
-| `0.05` 秒 | `click_pos()` | 鼠标移动到坐标后、点击前的短暂停顿。 |
-| `2` 秒超时 | `click_pos_with_verify()` | 点击后如需验证截图，单次等待验证截图出现的超时时间。 |
-| `0.1` 秒 | `find_amount()` | 金额复制到剪贴板后等待。 |
-| `0.05` 秒 | `find_amount()` | 查找框 `Ctrl+A` 后等待。 |
-| `0.2` 秒 | `find_amount()` | 查找框 `Ctrl+V` 粘贴后等待。 |
-| `0.5` 秒 | `find_amount()` | 点击“查找下一个”后等待结果定位。 |
-| `0.6` 秒超时 | `verify_found_amount()` | 检测 `not_found.png` 的超时时间，用于判断“没有找到”。 |
-| `0.5` 秒 | `do_generate()` | 点击“生成”后等待生成菜单展开。 |
-| `0.2` 秒 | `do_save()` | 按 `Ctrl+S` 保存后等待。 |
-| `0.1` 秒 | `copy_voucher_num()` | 清空剪贴板后等待。 |
-| `0.2` 秒 | `copy_voucher_num()` | 点击凭证号框后等待。 |
-| `0.1` 秒 | `copy_voucher_num()` | 凭证号框 `Ctrl+A` 后等待。 |
-| `0.3` 秒 | `copy_voucher_num()` | `Ctrl+C` 后等待剪贴板更新。 |
-| `0.5` 秒 | `copy_voucher_num()` | 凭证号无效或复制异常后的重试等待。 |
-| `10` 秒超时 | `process_one()` | 异常恢复后等待主界面 `generate_btn.png` 出现。 |
-| `1` 秒 | `process_one()` | 单条记录失败但未达到最大重试次数时，下一次重试前等待。 |
-| `5 * 0.3` 秒 | `emergency_recovery()` | 异常恢复时连续按 5 次 `ESC`，每次间隔 0.3 秒。 |
-| `5` 秒超时 | `health_check()` | 健康检查等待主界面 `generate_btn.png` 出现。 |
-| `0.2 + 0.2` 秒 | `health_check()` | 健康检查时鼠标来回移动两次，每次 0.2 秒。 |
-| `0.5` 秒 | `ensure_nc_active()` | NC 窗口重新激活后等待。 |
-| `3` 秒 | `main.py` | 正式开始前倒计时，3、2、1 每秒等待一次。 |
-
-### 测试模式固定等待
-
-| 等待时间 | 代码位置 | 触发场景 |
-|----------|----------|----------|
-| `3` 秒 | `test_all_positions()` | 坐标测试开始前等待。 |
-| `0.5` 秒 | `test_all_positions()` | 鼠标移动到每个坐标的耗时。 |
-| `8 * 0.1` 秒 | `test_all_positions()` | 围绕坐标画圈，每圈 8 个点，每点移动 0.1 秒。 |
-| `0.2` 秒 | `test_all_positions()` | 画圈后鼠标回到坐标中心。 |
-| `2` 秒 | `test_all_positions()` | 每个坐标展示完成后等待人工确认。 |
-| `3` 秒 | `test_find_window()` | 查找窗口测试开始前等待。 |
-| `0.5` 秒 | `test_find_window()` | 点击来源金额单元格后等待。 |
-| `1` 秒 | `test_find_window()` | 按 `Ctrl+F` 后等待查找窗口出现。 |
-| `0.02` 秒/字符 | `test_find_window()` | 测试输入 `123.45` 的字符间隔。 |
-| `0.5` 秒 | `test_find_window()` | 输入后等待。 |
-| `0.5` 秒 | `test_find_window()` | 点击“查找下一个”后等待。 |
-| `3` 秒 | `test_generate_flow()` | 生成流程测试开始前等待。 |
-| `0.5` 秒 | `test_generate_flow()` | 点击“生成”后等待菜单展开。 |
-
-## 等待时间怎么调
-
-- NC 响应慢、点击后界面还没切换：优先调大 `timing.action_delay`。
-- 查找、返回、凭证界面截图经常超时：调大 `timing.page_timeout`。
-- 凭证界面刚出现就保存失败：调大 `timing.voucher_load_wait`。
-- 每条记录之间想更稳一点：调大 `timing.between_tasks`。
-- 鼠标移动太快导致点击不稳：调大 `timing.mouse_move_duration`。
-- 需要修改固定等待时，直接改上表对应的代码位置。
-
-## 适配其他场景
-
-如果要操作其他字段或其他流程：
-
-1. 在 `config.json` 的 `positions` 中添加新坐标 key。
-2. 在 `collect_positions.py` 的 `POSITIONS_TO_COLLECT` 中添加对应描述。
-3. 在 `core/gui_operator.py` 中添加新的操作方法。
-4. 修改 `process_one()` 的流程。
+- 开启 JAB 后曾多次出现左上角小窗口，表现为“NC 的截图还去不掉”“蓝框里边空白”“没有标题”。
+- 这不是 NC 业务界面，也不是需要点击的弹窗。
+- 根因基本确定是 Java/AWT/JAB 辅助窗口残留。
+- 常见特征：`SunAwtWindow`、title 为空、小尺寸、空白蓝框或像截图一样遮挡视线。
+- `core/jab_operator.py` 已有 `hide_blank_awt_windows()`，启动和关闭 JAB 时都会尝试隐藏。
 
 ## 常见问题
 
-Q: 坐标不准怎么办？
+Q: 现在开发是否可以完全转到 WSL？
 
-A: 重新运行 `collect_positions.py` 采集。
+A: 可以。源码、git、文档、重构都放 WSL。只有实际控制 NC/JAB 的 Python 进程必须是 Windows Python。
 
-Q: 中途失败了怎么办？
+Q: 为什么不能用 WSL Python 直接跑 JAB？
 
-A: 直接重新运行 `main.py`，会自动跳过已处理的行。
+A: WSL Python 看不到 Windows 桌面上的 Java 窗口、窗口句柄和 Windows Access Bridge 上下文。
 
 Q: 金额重复怎么办？
 
-A: 脚本会标记重复记录，需要手动在 NC 中处理。
+A: 不按金额单索引。当前索引是 `金额 + 对手方`。复杂重复数据可以先由用户在 Excel 里预处理。
 
-Q: 系统响应慢怎么办？
+Q: Excel 打开时能运行吗？
 
-A: 先调大 `config.json` 中的 `timing.action_delay`、`timing.page_timeout`、`timing.voucher_load_wait`。
+A: 不建议。WPS/Excel 打开文件时写 B 列可能报 `PermissionError`，影响状态写入、凭证号写入和 `split-keys`。
 
-## 快速步骤
+Q: 旧坐标流程还能用吗？
 
-1. 确认 Windows Python 可用：`python --version`。
-2. 安装依赖：`python -m pip install pyautogui pyperclip openpyxl keyboard Pillow pygetwindow`。
-3. 修改 `config.json` 里的 `excel_path`。
-4. 运行 `python collect_positions.py` 采集坐标。
-5. 运行 `python main.py`，先选测试 1 验证坐标，再正式跑。
+A: 不作为主线维护。后续新功能都应走 JAB。
