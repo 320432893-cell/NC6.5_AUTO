@@ -6,6 +6,7 @@
 
 - Java Access Bridge（JAB）成为当前主线方案。
 - 旧的 `pyautogui` 坐标点击、截图识别、固定坐标方案停止作为新功能方向。
+- 旧坐标入口和旧 GUI 模块已删除，只保留 JAB 主线代码。
 - 开发迁移到 WSL 仓库：
   `/home/queclink/project/nc_auto_v2`
 - H 盘目录作为 Windows/JAB 运行镜像：
@@ -130,6 +131,7 @@ Excel行26 -> 369
 ### 相关提交
 
 ```text
+14417da Split JAB handoff into docs
 e401fcc Expand JAB business handoff TODO
 c3a5624 Document JAB handoff pitfalls
 2f72704 Condense JAB handoff TODO
@@ -138,9 +140,32 @@ b74f18d Add Excel key splitting command
 a9f72df Add NC JAB voucher automation workflow
 ```
 
+## 2026-05-27 - 删除旧坐标流程代码
+
+删除不再属于当前方案的旧文件：
+
+- `main.py`
+- `collect_positions.py`
+- `core/gui_operator.py`
+- `core/test_helper.py`
+
+清理内容：
+
+- `config.json` 删除旧 `positions`、`timing`、`retry`、旧 Sheet2 金额匹配配置。
+- `core/data_handler.py` 删除旧金额单索引、重复金额检查、旧进度文件和旧凭证写回方法，只保留 JAB Excel key 读写。
+- `core/utils.py` 删除旧窗口激活、DPI、健康检查、紧急恢复等坐标流程工具，只保留配置读取和中断检测。
+- `core/logger.py` 删除旧截图 recorder。
+
+保留内容：
+
+- JAB 主流程。
+- JAB 探测工具。
+- `pyautogui` 在 `core/jab_operator.py` 中仅用于发送 F3/F5 等键盘按键。
+- `keyboard` 在 `core/utils.py` 中仅用于空格/ESC 中断检测。
+
 ## 2026-04-07 - 旧坐标方案优化记录
 
-此节为历史记录。旧坐标方案已不再作为当前主线维护。
+此节为历史记录。旧坐标方案已删除，不再作为当前主线维护。
 
 ### 优化内容
 
@@ -149,9 +174,4 @@ a9f72df Add NC JAB voucher automation workflow
 - 凭证界面等待时间增加为可配置。
 - 凭证号校验逻辑从“处理当前行之前校验上一条”改为“处理当前行之后、写入 Excel 之前校验”。
 
-### 修改文件
-
-- `core/gui_operator.py`
-- `core/data_handler.py`
-- `config.json`
-- `README.md`
+这些变更涉及的文件后来已被 JAB 主线替换或清理，仅作为历史背景保留。
