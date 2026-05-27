@@ -40,12 +40,15 @@ class JABOperator:
         self.amount_col = jab_cfg.get("amount_col", 4)
         self.partner_col = jab_cfg.get("partner_col", 3)
         self.selection_col = jab_cfg.get("selection_col", 0)
-        self.hide_blank_awt_windows_enabled = jab_cfg.get("hide_blank_awt_windows", True)
+        self.hide_blank_awt_windows_enabled = jab_cfg.get(
+            "hide_blank_awt_windows", True
+        )
 
         self.dll = None
         self.loaded_path = None
         self.stop_pump = None
         self.pump_thread = None
+        self.table_cache = {}
 
     def ensure_started(self):
         if self.dll:
@@ -75,6 +78,7 @@ class JABOperator:
 
     def close(self):
         self.hide_blank_awt_windows()
+        self.clear_table_cache()
         if self.stop_pump:
             self.stop_pump.set()
         if self.pump_thread:
@@ -129,13 +133,15 @@ class JABOperator:
                 and 0 < height <= 250
             ):
                 user32.ShowWindow(hwnd, 0)
-                hidden.append({
-                    "hwnd": int(hwnd),
-                    "left": rect.left,
-                    "top": rect.top,
-                    "width": width,
-                    "height": height,
-                })
+                hidden.append(
+                    {
+                        "hwnd": int(hwnd),
+                        "left": rect.left,
+                        "top": rect.top,
+                        "width": width,
+                        "height": height,
+                    }
+                )
 
             return True
 
@@ -170,17 +176,20 @@ class JABOperator:
                 return True
 
             user32.PostMessageW(hwnd, wm_close, 0, 0)
-            closed.append({
-                "hwnd": int(hwnd),
-                "title": window_title.value,
-                "class": window_class.value,
-            })
+            closed.append(
+                {
+                    "hwnd": int(hwnd),
+                    "title": window_title.value,
+                    "class": window_class.value,
+                }
+            )
             return True
 
         user32.EnumWindows(enum_proc(callback), 0)
         if closed:
             log.info(f"已关闭窗口: {closed}")
             time.sleep(self.menu_wait if wait is None else wait)
+            self.clear_table_cache(title)
             return True
 
         log.info(f"未找到需关闭窗口: title={title} class={class_name}")
@@ -192,7 +201,9 @@ class JABOperator:
 
         deadline = time.time() + (timeout or self.search_timeout)
         while time.time() < deadline:
-            hwnd = self.find_window_handle(title, class_name=class_name, visible_only=False)
+            hwnd = self.find_window_handle(
+                title, class_name=class_name, visible_only=False
+            )
             if hwnd:
                 user32 = ctypes.windll.user32
                 user32.ShowWindow(hwnd, 9)
@@ -202,19 +213,40 @@ class JABOperator:
             time.sleep(0.2)
         return False
 
-    def wait_window_by_title(self, title, class_name=None, timeout=None):
+    def wait_window_by_title(
+        self,
+        title,
+        class_name=None,
+        timeout=None,
+        include_children=False,
+        visible_only=True,
+    ):
         deadline = time.time() + (timeout or self.search_timeout)
         while time.time() < deadline:
-            hwnd = self.find_window_handle(title, class_name=class_name, visible_only=True)
+            hwnd = self.find_window_handle(
+                title,
+                class_name=class_name,
+                visible_only=visible_only,
+                include_children=include_children,
+            )
             if hwnd:
                 return hwnd
             time.sleep(0.2)
         return None
 
-    def window_exists(self, title, class_name=None):
-        return bool(self.find_window_handle(title, class_name=class_name, visible_only=True))
+    def window_exists(self, title, class_name=None, include_children=False):
+        return bool(
+            self.find_window_handle(
+                title,
+                class_name=class_name,
+                visible_only=True,
+                include_children=include_children,
+            )
+        )
 
-    def find_window_handle(self, title, class_name=None, visible_only=True):
+    def find_window_handle(
+        self, title, class_name=None, visible_only=True, include_children=False
+    ):
         if os.name != "nt":
             return None
 
@@ -241,7 +273,20 @@ class JABOperator:
             found.append(hwnd)
             return False
 
+        def child_callback(hwnd, _lparam):
+            return callback(hwnd, _lparam)
+
         user32.EnumWindows(enum_proc(callback), 0)
+        if include_children and not found:
+            user32.EnumWindows(
+                enum_proc(
+                    lambda hwnd, _lparam: (
+                        user32.EnumChildWindows(hwnd, enum_proc(child_callback), 0)
+                        or True
+                    )
+                ),
+                0,
+            )
         return found[0] if found else None
 
     def press_key(self, key, wait=None):
@@ -252,14 +297,18 @@ class JABOperator:
         self.ensure_started()
 
         log.debug("JAB 点击生成按钮")
-        if not self.click_control("生成", roles=("push button",), timeout=self.search_timeout):
+        if not self.click_control(
+            "生成", roles=("push button",), timeout=self.search_timeout
+        ):
             return False
 
         time.sleep(self.menu_wait)
         check_abort()
 
         log.debug("JAB 点击前台生成菜单项")
-        return self.click_control("前台生成", roles=("menu item",), timeout=self.search_timeout)
+        return self.click_control(
+            "前台生成", roles=("menu item",), timeout=self.search_timeout
+        )
 
     def run_named_steps(self, steps):
         self.ensure_started()
@@ -267,10 +316,20 @@ class JABOperator:
             check_abort()
             name = step["name"] if isinstance(step, dict) else str(step)
             role = step.get("role") if isinstance(step, dict) else None
-            wait = float(step.get("wait", self.menu_wait)) if isinstance(step, dict) else self.menu_wait
-            timeout = float(step.get("timeout", self.search_timeout)) if isinstance(step, dict) else self.search_timeout
+            wait = (
+                float(step.get("wait", self.menu_wait))
+                if isinstance(step, dict)
+                else self.menu_wait
+            )
+            timeout = (
+                float(step.get("timeout", self.search_timeout))
+                if isinstance(step, dict)
+                else self.search_timeout
+            )
             action = step.get("action") if isinstance(step, dict) else None
-            require_showing = step.get("require_showing", True) if isinstance(step, dict) else True
+            require_showing = (
+                step.get("require_showing", True) if isinstance(step, dict) else True
+            )
             roles = (role,) if role else ()
 
             log.info(f"JAB 执行步骤 {index}/{len(steps)}: name={name} role={role}")
@@ -286,7 +345,192 @@ class JABOperator:
 
         return True
 
-    def click_control(self, name, roles=(), timeout=None, action_name=None, require_showing=False):
+    def do_action_by_path(
+        self,
+        path,
+        title=None,
+        class_name=None,
+        name=None,
+        role=None,
+        action_name=None,
+        wait=None,
+        timeout=None,
+        require_showing=False,
+    ):
+        self.ensure_started()
+        if not path:
+            raise ValueError("JAB action path is required")
+
+        deadline = time.time() + (timeout or self.search_timeout)
+        while time.time() < deadline:
+            check_abort()
+            result = self.find_context_by_path_once(
+                path,
+                title=title,
+                class_name=class_name,
+                name=name,
+                role=role,
+                require_showing=require_showing,
+            )
+            context, vm_id, owned_contexts, window_info = result
+            if context:
+                try:
+                    ok = self.do_action(vm_id, context, action_name=action_name)
+                    if ok:
+                        log.info(
+                            "JAB path 动作成功: "
+                            f"path={path} action={action_name or '<default>'} "
+                            f"hwnd={window_info.get('hwnd')} "
+                            f"title={window_info.get('title')!r}"
+                        )
+                        time.sleep(self.menu_wait if wait is None else wait)
+                    return ok
+                finally:
+                    self.release_contexts(vm_id, owned_contexts)
+            time.sleep(0.2)
+
+        log.warning(
+            f"JAB path 未找到可执行控件: path={path} title={title!r} class={class_name!r}"
+        )
+        return False
+
+    def trigger_action_by_path_async(
+        self,
+        path,
+        title=None,
+        class_name=None,
+        name=None,
+        role=None,
+        action_name=None,
+        timeout=None,
+        require_showing=False,
+    ):
+        self.ensure_started()
+        result = self.find_context_by_path_once(
+            path,
+            title=title,
+            class_name=class_name,
+            name=name,
+            role=role,
+            require_showing=require_showing,
+        )
+        context, vm_id, owned_contexts, window_info = result
+        if not context:
+            log.warning(
+                "JAB async path 未找到可执行控件: "
+                f"path={path} title={title!r} class={class_name!r}"
+            )
+            return None
+
+        def target():
+            try:
+                ok = self.do_action(vm_id, context, action_name=action_name)
+                log.info(
+                    "JAB async path 动作返回: "
+                    f"path={path} action={action_name or '<default>'} ok={ok} "
+                    f"hwnd={window_info.get('hwnd')} title={window_info.get('title')!r}"
+                )
+            finally:
+                self.release_contexts(vm_id, owned_contexts)
+
+        thread = threading.Thread(target=target, daemon=True)
+        thread.start()
+        thread.join(timeout or 0)
+        return thread
+
+    def find_context_by_path_once(
+        self,
+        path,
+        title=None,
+        class_name=None,
+        name=None,
+        role=None,
+        require_showing=False,
+    ):
+        parts = self.parse_context_path(path)
+        windows = enum_windows(include_children=True)
+        normalized_role = role.lower() if role else None
+
+        for hwnd, window_title, window_class, pid, visible in windows:
+            if title and window_title != title:
+                continue
+            if class_name and window_class != class_name:
+                continue
+            if not self.dll.isJavaWindow(hwnd):
+                continue
+
+            vm_id = ctypes.c_long()
+            root_context = JOBJECT()
+            if not self.dll.getAccessibleContextFromHWND(
+                hwnd,
+                ctypes.byref(vm_id),
+                ctypes.byref(root_context),
+            ):
+                continue
+
+            context = root_context.value
+            owned_contexts = []
+            for index in parts[1:]:
+                child = self.dll.getAccessibleChildFromContext(
+                    vm_id.value, context, index
+                )
+                if not child:
+                    self.release_contexts(vm_id.value, owned_contexts)
+                    context = None
+                    break
+                context = child
+                owned_contexts.append(child)
+
+            if not context:
+                continue
+
+            if require_showing or name or normalized_role:
+                info = self.get_context_info(vm_id.value, context)
+                if not info:
+                    self.release_contexts(vm_id.value, owned_contexts)
+                    continue
+                control_name = info.name.strip()
+                desc = info.description.strip()
+                control_role = (info.role_en_US.strip() or info.role.strip()).lower()
+                states = (info.states_en_US.strip() or info.states.strip()).lower()
+                if name and control_name != name and desc != name:
+                    self.release_contexts(vm_id.value, owned_contexts)
+                    continue
+                if normalized_role and control_role != normalized_role:
+                    self.release_contexts(vm_id.value, owned_contexts)
+                    continue
+                if "visible" not in states or "showing" not in states:
+                    self.release_contexts(vm_id.value, owned_contexts)
+                    continue
+
+            return (
+                context,
+                vm_id.value,
+                owned_contexts,
+                {
+                    "hwnd": int(hwnd),
+                    "title": window_title,
+                    "class": window_class,
+                    "pid": pid,
+                    "visible": visible,
+                },
+            )
+
+        return None, None, [], {}
+
+    @staticmethod
+    def parse_context_path(path):
+        try:
+            parts = [int(part) for part in str(path).split(".") if part != ""]
+        except ValueError as exc:
+            raise ValueError(f"Invalid JAB context path: {path!r}") from exc
+        if not parts or parts[0] != 0:
+            raise ValueError(f"JAB context path must start with 0: {path!r}")
+        return parts
+
+    def click_control(
+        self, name, roles=(), timeout=None, action_name=None, require_showing=False
+    ):
         self.ensure_started()
         context, vm_id, owned_contexts = self.find_context(
             name,
@@ -305,7 +549,9 @@ class JABOperator:
 
     def find_amount_rows(self, amount, amount_col=None, timeout=None):
         self.ensure_started()
-        table_context, vm_id, owned_contexts, table_info = self.find_main_table(timeout=timeout)
+        table_context, vm_id, owned_contexts, table_info = self.find_main_table(
+            timeout=timeout
+        )
         if not table_context:
             log.warning("JAB 未找到业务表格")
             return []
@@ -319,21 +565,31 @@ class JABOperator:
             matched_rows = []
             for row in range(table_info.rowCount):
                 check_abort()
-                cell_text = self.get_table_cell_text(vm_id, table_context, row, amount_col)
+                cell_text = self.get_table_cell_text(
+                    vm_id, table_context, row, amount_col
+                )
                 if self.normalize_amount(cell_text) == target:
                     matched_rows.append(row)
 
-            log.info(f"JAB 表格金额匹配: amount={amount} col={amount_col} rows={matched_rows}")
+            log.info(
+                f"JAB 表格金额匹配: amount={amount} col={amount_col} rows={matched_rows}"
+            )
             return matched_rows
         finally:
             self.release_contexts(vm_id, owned_contexts)
 
-    def select_amount_row(self, amount, amount_col=None, selection_col=None, timeout=None):
-        matched_rows = self.find_amount_rows(amount, amount_col=amount_col, timeout=timeout)
+    def select_amount_row(
+        self, amount, amount_col=None, selection_col=None, timeout=None
+    ):
+        matched_rows = self.find_amount_rows(
+            amount, amount_col=amount_col, timeout=timeout
+        )
         if len(matched_rows) != 1:
             log.warning(f"JAB 金额匹配行数不是 1: amount={amount} rows={matched_rows}")
             return False
-        return self.select_table_rows(matched_rows, selection_col=selection_col, timeout=timeout)
+        return self.select_table_rows(
+            matched_rows, selection_col=selection_col, timeout=timeout
+        )
 
     def find_amount_partner_rows(
         self,
@@ -345,7 +601,9 @@ class JABOperator:
         match_mode="exact",
     ):
         self.ensure_started()
-        table_context, vm_id, owned_contexts, table_info = self.find_main_table(timeout=timeout)
+        table_context, vm_id, owned_contexts, table_info = self.find_main_table(
+            timeout=timeout
+        )
         if not table_context:
             log.warning("JAB 未找到业务表格")
             return []
@@ -364,12 +622,16 @@ class JABOperator:
             amount_rows = []
             for row in range(table_info.rowCount):
                 check_abort()
-                amount_text = self.get_table_cell_text(vm_id, table_context, row, amount_col)
+                amount_text = self.get_table_cell_text(
+                    vm_id, table_context, row, amount_col
+                )
                 if self.normalize_amount(amount_text) != target_amount:
                     continue
 
                 amount_rows.append(row)
-                partner_text = self.get_table_cell_text(vm_id, table_context, row, partner_col)
+                partner_text = self.get_table_cell_text(
+                    vm_id, table_context, row, partner_col
+                )
                 if self.text_matches(partner_text, target_partner, match_mode):
                     matched_rows.append(row)
 
@@ -406,11 +668,15 @@ class JABOperator:
                 f"amount={amount} partner={partner_name} rows={matched_rows}"
             )
             return False
-        return self.select_table_rows(matched_rows, selection_col=selection_col, timeout=timeout)
+        return self.select_table_rows(
+            matched_rows, selection_col=selection_col, timeout=timeout
+        )
 
     def select_table_rows(self, rows, selection_col=None, clear=True, timeout=None):
         self.ensure_started()
-        table_context, vm_id, owned_contexts, table_info = self.find_main_table(timeout=timeout)
+        table_context, vm_id, owned_contexts, table_info = self.find_main_table(
+            timeout=timeout
+        )
         if not table_context:
             log.warning("JAB 未找到业务表格")
             return False
@@ -428,9 +694,13 @@ class JABOperator:
                 if row < 0 or row >= table_info.rowCount:
                     raise ValueError(f"行号越界: {row}, rowCount={table_info.rowCount}")
                 if selection_col < 0 or selection_col >= table_info.columnCount:
-                    raise ValueError(f"列号越界: {selection_col}, colCount={table_info.columnCount}")
+                    raise ValueError(
+                        f"列号越界: {selection_col}, colCount={table_info.columnCount}"
+                    )
                 child_index = row * table_info.columnCount + selection_col
-                self.dll.addAccessibleSelectionFromContext(vm_id, table_context, child_index)
+                self.dll.addAccessibleSelectionFromContext(
+                    vm_id, table_context, child_index
+                )
 
             selected_indexes = self.get_selected_child_indexes(
                 vm_id,
@@ -438,8 +708,7 @@ class JABOperator:
                 table_info.rowCount * table_info.columnCount,
             )
             expected_indexes = [
-                row * table_info.columnCount + selection_col
-                for row in rows
+                row * table_info.columnCount + selection_col for row in rows
             ]
             ok = all(index in selected_indexes for index in expected_indexes)
             log.info(
@@ -488,18 +757,26 @@ class JABOperator:
 
     def read_amount_column(self, amount_col=None, limit=None, timeout=None):
         self.ensure_started()
-        table_context, vm_id, owned_contexts, table_info = self.find_main_table(timeout=timeout)
+        table_context, vm_id, owned_contexts, table_info = self.find_main_table(
+            timeout=timeout
+        )
         if not table_context:
             log.warning("JAB 未找到业务表格")
             return []
 
         try:
             amount_col = self.resolve_amount_col(amount_col)
-            row_count = table_info.rowCount if limit is None else min(table_info.rowCount, limit)
+            row_count = (
+                table_info.rowCount
+                if limit is None
+                else min(table_info.rowCount, limit)
+            )
             values = []
             for row in range(row_count):
                 check_abort()
-                values.append(self.get_table_cell_text(vm_id, table_context, row, amount_col))
+                values.append(
+                    self.get_table_cell_text(vm_id, table_context, row, amount_col)
+                )
             return values
         finally:
             self.release_contexts(vm_id, owned_contexts)
@@ -514,7 +791,9 @@ class JABOperator:
         timeout=None,
     ):
         self.ensure_started()
-        table_context, vm_id, owned_contexts, table_info = self.find_main_table(timeout=timeout)
+        table_context, vm_id, owned_contexts, table_info = self.find_main_table(
+            timeout=timeout
+        )
         if not table_context:
             log.warning("JAB 未找到业务表格")
             return []
@@ -523,12 +802,20 @@ class JABOperator:
             amount_col = self.resolve_amount_col(amount_col)
             partner_col = self.resolve_partner_col(partner_col)
             extra_cols = extra_cols or []
-            row_count = table_info.rowCount if limit is None else min(table_info.rowCount, limit)
+            row_count = (
+                table_info.rowCount
+                if limit is None
+                else min(table_info.rowCount, limit)
+            )
             rows = []
             for row in range(row_count):
                 check_abort()
-                amount_text = self.get_table_cell_text(vm_id, table_context, row, amount_col)
-                partner_text = self.get_table_cell_text(vm_id, table_context, row, partner_col)
+                amount_text = self.get_table_cell_text(
+                    vm_id, table_context, row, amount_col
+                )
+                partner_text = self.get_table_cell_text(
+                    vm_id, table_context, row, partner_col
+                )
                 item = {
                     "row_index": row,
                     "amount_text": amount_text,
@@ -569,42 +856,25 @@ class JABOperator:
         tables = self.find_tables_once()
         result = []
 
-        for table_index, (table_context, vm_id, owned_contexts, table_info, window_info) in enumerate(tables):
+        for table_index, (
+            table_context,
+            vm_id,
+            owned_contexts,
+            table_info,
+            window_info,
+        ) in enumerate(tables):
             try:
-                row_count = table_info.rowCount
-                col_count = table_info.columnCount
-                row_limit = row_count if max_rows is None else min(row_count, max_rows)
-                col_limit = col_count if max_cols is None else min(col_count, max_cols)
-                rows = []
-
-                for row in range(row_limit):
-                    check_abort()
-                    cells = []
-                    selected = False
-                    for col in range(col_limit):
-                        text, is_selected = self.get_table_cell_text_and_selection(
-                            vm_id,
-                            table_context,
-                            row,
-                            col,
-                        )
-                        cells.append(text)
-                        selected = selected or is_selected
-                    rows.append({
-                        "row_index": row,
-                        "cells": cells,
-                        "selected": selected,
-                    })
-
-                result.append({
-                    "table_index": table_index,
-                    "window_title": window_info["title"],
-                    "window_class": window_info["class_name"],
-                    "window_visible": window_info["visible"],
-                    "row_count": row_count,
-                    "col_count": col_count,
-                    "rows": rows,
-                })
+                result.append(
+                    self.read_table_cells_from_context(
+                        table_index,
+                        table_context,
+                        vm_id,
+                        table_info,
+                        window_info,
+                        max_rows=max_rows,
+                        max_cols=max_cols,
+                    )
+                )
             finally:
                 self.release_contexts(vm_id, owned_contexts)
 
@@ -612,8 +882,186 @@ class JABOperator:
         return result
 
     def read_window_table_cells(self, window_title, max_rows=None, max_cols=None):
-        tables = self.read_all_table_cells(max_rows=max_rows, max_cols=max_cols)
-        return [table for table in tables if table.get("window_title") == window_title]
+        self.ensure_started()
+        cached = self.get_window_table_cache(window_title)
+        if cached is None:
+            tables = self.read_all_table_cells(max_rows=max_rows, max_cols=max_cols)
+            return [
+                table for table in tables if table.get("window_title") == window_title
+            ]
+
+        result = []
+        try:
+            for table in cached:
+                table_info = self.get_table_info(table["vm_id"], table["context"])
+                if (
+                    not table_info
+                    or table_info.rowCount <= 0
+                    or table_info.columnCount <= 0
+                ):
+                    raise RuntimeError("cached table is no longer readable")
+                result.append(
+                    self.read_table_cells_from_context(
+                        table["table_index"],
+                        table["context"],
+                        table["vm_id"],
+                        table_info,
+                        table["window_info"],
+                        max_rows=max_rows,
+                        max_cols=max_cols,
+                    )
+                )
+            log.debug(
+                f"JAB 读取缓存窗口表格: window={window_title} count={len(result)}"
+            )
+            return result
+        except Exception as exc:
+            log.warning(f"JAB 窗口表缓存失效，回退全量查找: {exc}")
+            self.clear_table_cache(window_title)
+            tables = self.read_all_table_cells(max_rows=max_rows, max_cols=max_cols)
+            return [
+                table for table in tables if table.get("window_title") == window_title
+            ]
+
+    def read_window_table_counts(self, window_title):
+        self.ensure_started()
+        cached = self.get_window_table_cache(window_title)
+        if cached is None:
+            return []
+
+        try:
+            result = []
+            for table in cached:
+                table_info = self.get_table_info(table["vm_id"], table["context"])
+                if not table_info:
+                    raise RuntimeError("cached table is no longer readable")
+                result.append(
+                    {
+                        "table_index": table["table_index"],
+                        "window_title": table["window_info"].get("title"),
+                        "window_class": table["window_info"].get("class_name"),
+                        "row_count": table_info.rowCount,
+                        "col_count": table_info.columnCount,
+                    }
+                )
+            log.debug(
+                f"JAB 读取缓存窗口表格行数: window={window_title} count={len(result)}"
+            )
+            return result
+        except Exception as exc:
+            log.warning(f"JAB 窗口表行数缓存失效，回退全量查找: {exc}")
+            self.clear_table_cache(window_title)
+            cached = self.get_window_table_cache(window_title)
+            if cached is None:
+                return []
+            result = []
+            for table in cached:
+                table_info = self.get_table_info(table["vm_id"], table["context"])
+                if not table_info:
+                    continue
+                result.append(
+                    {
+                        "table_index": table["table_index"],
+                        "window_title": table["window_info"].get("title"),
+                        "window_class": table["window_info"].get("class_name"),
+                        "row_count": table_info.rowCount,
+                        "col_count": table_info.columnCount,
+                    }
+                )
+            return result
+
+    def read_table_cells_from_context(
+        self,
+        table_index,
+        table_context,
+        vm_id,
+        table_info,
+        window_info,
+        max_rows=None,
+        max_cols=None,
+    ):
+        row_count = table_info.rowCount
+        col_count = table_info.columnCount
+        row_limit = row_count if max_rows is None else min(row_count, max_rows)
+        col_limit = col_count if max_cols is None else min(col_count, max_cols)
+        rows = []
+
+        for row in range(row_limit):
+            check_abort()
+            cells = []
+            selected = False
+            for col in range(col_limit):
+                text, is_selected = self.get_table_cell_text_and_selection(
+                    vm_id,
+                    table_context,
+                    row,
+                    col,
+                )
+                cells.append(text)
+                selected = selected or is_selected
+            rows.append(
+                {
+                    "row_index": row,
+                    "cells": cells,
+                    "selected": selected,
+                }
+            )
+
+        return {
+            "table_index": table_index,
+            "window_title": window_info.get("title"),
+            "window_class": window_info.get("class_name"),
+            "window_visible": window_info.get("visible"),
+            "row_count": row_count,
+            "col_count": col_count,
+            "rows": rows,
+        }
+
+    def get_window_table_cache(self, window_title):
+        cached = self.table_cache.get(window_title)
+        if cached is not None:
+            return cached
+
+        tables = self.find_tables_once()
+        matches = []
+        for table_index, (
+            table_context,
+            vm_id,
+            owned_contexts,
+            _table_info,
+            window_info,
+        ) in enumerate(tables):
+            if window_info.get("title") == window_title:
+                matches.append(
+                    {
+                        "table_index": table_index,
+                        "context": table_context,
+                        "vm_id": vm_id,
+                        "owned_contexts": owned_contexts,
+                        "window_info": window_info,
+                    }
+                )
+            else:
+                self.release_contexts(vm_id, owned_contexts)
+
+        if not matches:
+            return None
+
+        self.table_cache[window_title] = matches
+        log.debug(f"JAB 缓存窗口表格: window={window_title} count={len(matches)}")
+        return matches
+
+    def clear_table_cache(self, window_title=None):
+        if not self.table_cache:
+            return
+        keys = [window_title] if window_title is not None else list(self.table_cache)
+        for key in keys:
+            cached = self.table_cache.pop(key, [])
+            for table in cached:
+                self.release_contexts(
+                    table.get("vm_id"),
+                    table.get("owned_contexts", []),
+                )
 
     def select_visible_table_rows(
         self,
@@ -646,43 +1094,111 @@ class JABOperator:
         window_title=None,
         selection_col=0,
     ):
+        if window_title is not None:
+            cached = self.get_window_table_cache(window_title)
+            if cached is not None:
+                for table in cached:
+                    if table["table_index"] != table_index:
+                        continue
+                    try:
+                        table_info = self.get_table_info(
+                            table["vm_id"],
+                            table["context"],
+                        )
+                        if not table_info:
+                            raise RuntimeError("cached table is no longer readable")
+                        return self.select_table_rows_from_context(
+                            table_index,
+                            rows,
+                            table["context"],
+                            table["vm_id"],
+                            table_info,
+                            window_title=window_title,
+                            selection_col=selection_col,
+                        )
+                    except Exception as exc:
+                        log.warning(f"JAB 选行缓存失效，回退全量查找: {exc}")
+                        self.clear_table_cache(window_title)
+                        break
+
         tables = self.find_tables_once()
-        for current_index, (table_context, vm_id, owned_contexts, table_info, window_info) in enumerate(tables):
+        for current_index, (
+            table_context,
+            vm_id,
+            owned_contexts,
+            table_info,
+            window_info,
+        ) in enumerate(tables):
             try:
                 if current_index != table_index:
                     continue
-                if window_title is not None and window_info.get("title") != window_title:
+                if (
+                    window_title is not None
+                    and window_info.get("title") != window_title
+                ):
                     return False
                 if not self.has_selection_api():
                     log.warning("当前 JAB DLL 不支持 selection API")
                     return False
                 if selection_col < 0 or selection_col >= table_info.columnCount:
-                    raise ValueError(f"列号越界: {selection_col}, colCount={table_info.columnCount}")
+                    raise ValueError(
+                        f"列号越界: {selection_col}, colCount={table_info.columnCount}"
+                    )
 
-                self.dll.clearAccessibleSelectionFromContext(vm_id, table_context)
-                expected_indexes = []
-                for row in rows:
-                    if row < 0 or row >= table_info.rowCount:
-                        raise ValueError(f"行号越界: {row}, rowCount={table_info.rowCount}")
-                    child_index = row * table_info.columnCount + selection_col
-                    expected_indexes.append(child_index)
-                    self.dll.addAccessibleSelectionFromContext(vm_id, table_context, child_index)
-
-                selected_indexes = self.get_selected_child_indexes(
-                    vm_id,
+                return self.select_table_rows_from_context(
+                    table_index,
+                    rows,
                     table_context,
-                    table_info.rowCount * table_info.columnCount,
+                    vm_id,
+                    table_info,
+                    window_title=window_title,
+                    selection_col=selection_col,
                 )
-                ok = all(index in selected_indexes for index in expected_indexes)
-                log.info(
-                    f"JAB 选中可见表格行: table={table_index} window={window_title} "
-                    f"rows={rows} expected={expected_indexes} selected={selected_indexes[:40]}"
-                )
-                return ok
             finally:
                 self.release_contexts(vm_id, owned_contexts)
 
         return False
+
+    def select_table_rows_from_context(
+        self,
+        table_index,
+        rows,
+        table_context,
+        vm_id,
+        table_info,
+        window_title=None,
+        selection_col=0,
+    ):
+        if not self.has_selection_api():
+            log.warning("当前 JAB DLL 不支持 selection API")
+            return False
+        if selection_col < 0 or selection_col >= table_info.columnCount:
+            raise ValueError(
+                f"列号越界: {selection_col}, colCount={table_info.columnCount}"
+            )
+
+        self.dll.clearAccessibleSelectionFromContext(vm_id, table_context)
+        expected_indexes = []
+        for row in rows:
+            if row < 0 or row >= table_info.rowCount:
+                raise ValueError(f"行号越界: {row}, rowCount={table_info.rowCount}")
+            child_index = row * table_info.columnCount + selection_col
+            expected_indexes.append(child_index)
+            self.dll.addAccessibleSelectionFromContext(
+                vm_id, table_context, child_index
+            )
+
+        selected_indexes = self.get_selected_child_indexes(
+            vm_id,
+            table_context,
+            table_info.rowCount * table_info.columnCount,
+        )
+        ok = all(index in selected_indexes for index in expected_indexes)
+        log.info(
+            f"JAB 选中可见表格行: table={table_index} window={window_title} "
+            f"rows={rows} expected={expected_indexes} selected={selected_indexes[:40]}"
+        )
+        return ok
 
     def wait_for_record_visible(
         self,
@@ -807,9 +1323,18 @@ class JABOperator:
             return None
 
         tables = self.find_tables_once()
-        for table_index, (table_context, vm_id, owned_contexts, table_info, window_info) in enumerate(tables):
+        for table_index, (
+            table_context,
+            vm_id,
+            owned_contexts,
+            table_info,
+            window_info,
+        ) in enumerate(tables):
             try:
-                if window_title is not None and window_info.get("title") != window_title:
+                if (
+                    window_title is not None
+                    and window_info.get("title") != window_title
+                ):
                     continue
 
                 row_limit = min(table_info.rowCount, max_rows)
@@ -837,7 +1362,9 @@ class JABOperator:
 
                     self.dll.clearAccessibleSelectionFromContext(vm_id, table_context)
                     child_index = row * table_info.columnCount + selection_col
-                    self.dll.addAccessibleSelectionFromContext(vm_id, table_context, child_index)
+                    self.dll.addAccessibleSelectionFromContext(
+                        vm_id, table_context, child_index
+                    )
                     selected_indexes = self.get_selected_child_indexes(
                         vm_id,
                         table_context,
@@ -903,8 +1430,13 @@ class JABOperator:
             check_abort()
             tables = self.find_tables_once()
             if tables:
-                tables.sort(key=lambda item: item[3].rowCount * item[3].columnCount, reverse=True)
-                table_context, vm_id, owned_contexts, table_info, _window_info = tables[0]
+                tables.sort(
+                    key=lambda item: item[3].rowCount * item[3].columnCount,
+                    reverse=True,
+                )
+                table_context, vm_id, owned_contexts, table_info, _window_info = tables[
+                    0
+                ]
 
                 log.debug(
                     f"JAB 找到业务表格: rows={table_info.rowCount} cols={table_info.columnCount}"
@@ -958,7 +1490,9 @@ class JABOperator:
         if role == "table":
             table_info = self.get_table_info(vm_id, context)
             if table_info and table_info.rowCount > 0 and table_info.columnCount > 0:
-                return [(context, vm_id, list(owned_path), table_info, window_info or {})]
+                return [
+                    (context, vm_id, list(owned_path), table_info, window_info or {})
+                ]
             return []
 
         if depth >= self.max_depth:
@@ -990,7 +1524,9 @@ class JABOperator:
             return None
 
         table_info = AccessibleTableInfo()
-        if not self.dll.getAccessibleTableInfo(vm_id, context, ctypes.byref(table_info)):
+        if not self.dll.getAccessibleTableInfo(
+            vm_id, context, ctypes.byref(table_info)
+        ):
             return None
         return table_info
 
@@ -1109,7 +1645,9 @@ class JABOperator:
 
         return None, None, []
 
-    def find_in_tree(self, vm_id, context, name, normalized_roles, require_showing, depth, owned_path):
+    def find_in_tree(
+        self, vm_id, context, name, normalized_roles, require_showing, depth, owned_path
+    ):
         info = self.get_context_info(vm_id, context)
         if not info:
             return None, []
@@ -1183,10 +1721,15 @@ class JABOperator:
         actions = AccessibleActions()
         if not self.dll.getAccessibleActions(vm_id, context, ctypes.byref(actions)):
             return []
-        return [actions.actionInfo[index].name.strip() for index in range(actions.actionsCount)]
+        return [
+            actions.actionInfo[index].name.strip()
+            for index in range(actions.actionsCount)
+        ]
 
     def do_action(self, vm_id, context, action_name=None):
-        if not hasattr(self.dll, "getAccessibleActions") or not hasattr(self.dll, "doAccessibleActions"):
+        if not hasattr(self.dll, "getAccessibleActions") or not hasattr(
+            self.dll, "doAccessibleActions"
+        ):
             log.warning("当前 JAB DLL 不支持 AccessibleActions")
             return False
 
@@ -1197,7 +1740,9 @@ class JABOperator:
 
         chosen_action = action_name or action_names[0]
         if chosen_action not in action_names:
-            log.warning(f"JAB 控件不支持动作 {chosen_action!r}，可用动作: {action_names}")
+            log.warning(
+                f"JAB 控件不支持动作 {chosen_action!r}，可用动作: {action_names}"
+            )
             return False
 
         todo = AccessibleActionsToDo()
@@ -1210,7 +1755,9 @@ class JABOperator:
             ctypes.byref(todo),
             ctypes.byref(failure),
         )
-        log.debug(f"JAB 执行动作 {chosen_action!r}: ok={bool(ok)} failure={failure.value}")
+        log.debug(
+            f"JAB 执行动作 {chosen_action!r}: ok={bool(ok)} failure={failure.value}"
+        )
         return bool(ok)
 
     def release_contexts(self, vm_id, contexts):

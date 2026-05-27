@@ -6,10 +6,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from core.jab_batch_processor import JABBatchProcessor
-from core.data_handler import DataHandler
-from core.logger import log
-from core.utils import load_config
+from core.data_handler import DataHandler  # noqa: E402
+from core.jab_batch_processor import JABBatchProcessor  # noqa: E402
+from core.logger import log  # noqa: E402
+from core.utils import load_config  # noqa: E402
 
 
 def build_parser():
@@ -18,15 +18,37 @@ def build_parser():
     )
     parser.add_argument(
         "command",
-        choices=("plan", "generate", "switch-generated", "backfill", "split-keys"),
+        choices=(
+            "plan",
+            "generate",
+            "resume-voucher",
+            "switch-generated",
+            "backfill",
+            "split-keys",
+        ),
         help=(
             "plan=只匹配分批; generate=真实生成并保存; "
+            "resume-voucher=不再点击生成，恢复保存当前制单窗口; "
             "switch-generated=自动切到已生成列表; backfill=在已生成列表回填凭证号; "
             "split-keys=把金额+对手方拼接列拆成两列"
         ),
     )
     parser.add_argument("--config", default="config.json", help="配置文件路径")
-    parser.add_argument("--limit", type=int, default=None, help="仅处理前 N 条 Excel 数据")
+    parser.add_argument(
+        "--limit", type=int, default=None, help="仅处理前 N 条 Excel 数据"
+    )
+    parser.add_argument(
+        "--start-row",
+        type=int,
+        default=None,
+        help="仅处理 Excel 起始行号，包含该行",
+    )
+    parser.add_argument(
+        "--end-row",
+        type=int,
+        default=None,
+        help="仅处理 Excel 结束行号，包含该行",
+    )
     parser.add_argument(
         "--max-batches",
         type=int,
@@ -38,17 +60,35 @@ def build_parser():
         action="store_true",
         help="generate 时跳过二次确认",
     )
+    parser.add_argument(
+        "--perf",
+        action="store_true",
+        help="记录性能耗时 JSONL 到 logs/perf_*.jsonl",
+    )
+    parser.add_argument(
+        "--perf-label",
+        default=None,
+        help="性能日志标签，默认使用时间戳",
+    )
     return parser
 
 
 def main():
     args = build_parser().parse_args()
     cfg = load_config(args.config)
-    processor = JABBatchProcessor(cfg)
+    processor = JABBatchProcessor(
+        cfg,
+        perf_enabled=args.perf,
+        perf_label=args.perf_label,
+    )
 
     try:
         if args.command == "plan":
-            result = processor.dry_run(limit=args.limit)
+            result = processor.dry_run(
+                limit=args.limit,
+                start_row=args.start_row,
+                end_row=args.end_row,
+            )
             print_summary(result)
             return
 
@@ -62,8 +102,19 @@ def main():
             saved = processor.generate_and_save(
                 limit=args.limit,
                 max_batches=args.max_batches,
+                start_row=args.start_row,
+                end_row=args.end_row,
             )
             print(f"生成保存完成: {saved} 张")
+            return
+
+        if args.command == "resume-voucher":
+            saved = processor.resume_current_voucher_window(
+                limit=args.limit,
+                start_row=args.start_row,
+                end_row=args.end_row,
+            )
+            print(f"恢复制单窗口保存完成: {saved} 张")
             return
 
         if args.command == "switch-generated":
@@ -72,7 +123,11 @@ def main():
             return
 
         if args.command == "backfill":
-            updates = processor.backfill_generated_vouchers(limit=args.limit)
+            updates = processor.backfill_generated_vouchers(
+                limit=args.limit,
+                start_row=args.start_row,
+                end_row=args.end_row,
+            )
             print(f"回填完成: {len(updates)} 行")
             return
 

@@ -54,7 +54,9 @@ RSYNC_ARGS=(
   -a
   --delete
   --exclude .git
+  --exclude .venv
   --exclude .venv-local
+  --exclude .ruff_cache
   --exclude .agents
   --exclude .codex
   --exclude .vscode
