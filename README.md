@@ -47,11 +47,19 @@ git status --short
 实际操作 NC 前，同步到 H 盘运行镜像：
 
 ```bash
-rsync -a --delete \
-  --exclude .git \
-  --exclude .venv-local \
-  /home/queclink/project/nc_auto_v2/ \
-  /mnt/h/python脚本/.venv/nc_auto_v2/
+tools/sync_to_windows.sh
+```
+
+需要持续自动同步时：
+
+```bash
+tools/sync_to_windows.sh --watch
+```
+
+先看同步会改什么，不实际写入：
+
+```bash
+tools/sync_to_windows.sh --dry-run
 ```
 
 进入 H 盘镜像目录，用 Windows Python 运行：

@@ -14,11 +14,10 @@
 
 ## 1. 开发/运行流程
 
-1. 增加同步脚本
-   - 新增 `tools/sync_to_windows.sh`。
-   - 从 WSL 同步到 H 盘运行镜像。
-   - 排除 `.git`、`.venv-local`、缓存、日志大文件。
-   - 同步后可选跑 `jab_batch.py plan` 做冒烟。
+1. 同步脚本增强
+   - 已新增 `tools/sync_to_windows.sh`。
+   - 支持一次同步、`--watch` 自动同步、`--dry-run` 预览。
+   - 后续可加同步后自动冒烟：可选执行 `jab_batch.py plan`。
 
 2. README 继续维护
    - README 已改为 JAB 主线。
