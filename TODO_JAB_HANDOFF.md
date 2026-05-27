@@ -30,17 +30,25 @@
    - 当前 `backfill` 假设界面已经在已生成/正式单据列表。
    - 增加参数或默认流程：先 `switch-generated`，再回填。
    - 切换失败时要明确当前界面状态，不要直接按待生成表列位误读。
+   - 已验证单据生成页 JAB 查询入口：
+     `0.0.1.0.0.0.0.2.0.0.0.0.0.0.0.2`。
+   - 该控件是 `查询` / `push button` / `单击`，可以打开查询窗口。
+   - 但同一个进程、同一个 Access Bridge 会话里继续点击查询窗口中的 `正式单据` / `确定` 不稳定，可能找不到控件或卡住。
+   - 默认暂时不启用 `jab_action`，`config.json` 保持 `open_query.method=hotkey`，继续走 F3。
+   - 代码保留 `jab_action` 能力和 `hotkey` fallback，明天继续单独试 JAB path。
 
 4. Excel 文件锁检测
    - 写入前检测文件是否被 WPS/Excel 占用。
    - 如果被占用，先报清楚。
-   - 避免 NC 已生成成功，但 Excel B 列状态/凭证号写不进去。
+   - 避免 NC 已生成成功，但 Excel C 列状态/凭证号写不进去。
 
 5. 保存策略显式配置
-   - 新增 `save_strategy=single|batch`。
+   - 新增 `save_strategy=batch_reverse_select|batch|bottom_up|single`。
+   - `batch_reverse_select`：默认策略，按 Excel 顺序组批，但反序加入 NC selection。
+   - `batch`：按 Excel 顺序组批并按 Excel 顺序加入 selection，作为对照策略。
+   - `bottom_up`：旧策略，只合并制单行号严格递减的连续 Excel 行，已保留但不再默认。
    - `single`：制单窗口一行一保存，凭证号顺序最稳。
-   - `batch`：制单窗口递增批量保存，速度更快但凭证号可能不递增。
-   - 默认建议先用 `single`，等回填和审计稳定后再实验 `batch`。
+   - 下一次真实批量保存后，用回填凭证号验证“后选中先发号”假设。
 
 6. 性能优化
    - 记录每张凭证耗时。
@@ -192,5 +200,14 @@
 - JAB 不能由 WSL/Linux Python 直接运行，实际控制 NC 时必须调用 Windows Python。
 - JAB path 和 hwnd 不稳定，不要长期硬编码。
 - JAB `bounds` 不可靠，不要用它恢复坐标点击。
+- 隐藏或非 visible 的 `SunAwtDialog` 查询窗口可能是残留，不应作为可操作窗口依据。
 - 左上角空白蓝框/截图样遮挡窗口通常是 `SunAwtWindow` 无标题小窗口，优先检查 `hide_blank_awt_windows()`。
 - Excel/WPS 打开文件时可能导致写回 `PermissionError`。
+
+## 10. 提交前静态检查目标
+
+- `.venv/bin/python -m json.tool config.json`
+- `.venv/bin/ruff check .`
+- `.venv/bin/ruff format --check .`
+- `.venv/bin/python -m compileall -q core tools`
+- `.venv/bin/basedpyright .`
