@@ -1,0 +1,12 @@
+.venv-local/
+__pycache__/
+*.py[cod]
+
+logs/
+*.log
+
+.agents/
+.codex/
+.vscode/
+
+tools/jab_probe_output.txt

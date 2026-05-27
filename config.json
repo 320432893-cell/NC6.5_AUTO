@@ -1,0 +1,126 @@
+{
+    "excel_path": "C:\\Users\\Queclink\\Desktop\\5.27凭证.xlsx",
+    "sheet_my": "Sheet1",
+    "sheet_finance": "Sheet2",
+    "my_amount_col": 1,
+    "my_voucher_col": 2,
+    "finance_amount_col": 5,
+    "has_header": true,
+    "debug_screenshots": false,
+    "verify_amount": false,
+    "verify_input": false,
+    "ensure_window_focus": false,
+    "use_mouse_movement": false,
+    "health_check_interval": 0,
+    "jab": {
+        "enabled": true,
+        "dll_path": "C:\\Users\\Queclink\\AppData\\Local\\UClient\\share\\java1.7.0_51-x64\\bin\\WindowsAccessBridge-64.dll",
+        "startup_wait": 2.0,
+        "search_timeout": 5.0,
+        "max_depth": 25,
+        "max_children": 1000,
+        "menu_wait": 0.5,
+        "amount_col": 4,
+        "partner_col": 3,
+        "selection_col": 0,
+        "hide_blank_awt_windows": true
+    },
+    "jab_batch": {
+        "key_col": 1,
+        "result_col": 2,
+        "match_mode": "exact",
+        "max_batch_size": 50,
+        "generated_voucher_col": 22,
+        "generated_date_col": 18,
+        "generated_voucher_max": 9999,
+        "generated_status": "已生成待回填",
+        "save_wait": 0.5,
+        "save_success_timeout": 8.0,
+        "verify_voucher_advance": true,
+        "voucher_record_timeout": 8.0,
+        "voucher_window_title": "制单",
+        "voucher_window_class": "SunAwtDialog",
+        "pending_refresh_wait": 1.0,
+        "close_voucher_window": {
+            "enabled": true,
+            "title": "制单",
+            "class_name": "SunAwtDialog",
+            "wait": 0.5
+        },
+        "open_query": {
+            "method": "hotkey",
+            "key": "f3",
+            "main_title": "Yonyou UClient",
+            "main_class": "YonyouUWnd",
+            "dialog_title": "查询",
+            "dialog_class": "SunAwtDialog",
+            "timeout": 5,
+            "wait": 0.8
+        },
+        "switch_generated_steps": [
+            {
+                "name": "正式单据",
+                "role": "radio button",
+                "require_showing": true,
+                "timeout": 8,
+                "wait": 0.2
+            },
+            {
+                "name": "确定",
+                "role": "push button",
+                "require_showing": true,
+                "timeout": 8,
+                "wait": 1.0
+            }
+        ]
+    },
+    "positions": {
+        "first_amount_cell": [
+            746,
+            360
+        ],
+        "find_next_btn": [
+            888,
+            616
+        ],
+        "find_close_btn": [
+            1024,
+            624
+        ],
+        "generate_btn": [
+            437,
+            215
+        ],
+        "front_generate": [
+            457,
+            301
+        ],
+        "voucher_num_box": [
+            906,
+            285
+        ],
+        "return_btn": [
+            1700,
+            115
+        ]
+    },
+    "timing": {
+        "action_delay": 0.1,
+        "window_wait": 0.8,
+        "save_timeout": 30,
+        "page_timeout": 8,
+        "between_tasks": 0.05,
+        "input_interval": 0.02,
+        "mouse_move_duration": 0.01,
+        "voucher_load_wait": 0.2,
+        "global_pause": 0.05,
+        "missing_image_wait": 0.2,
+        "skip_image_verify": true,
+        "image_poll_interval": 0.2
+    },
+    "retry": {
+        "max_retries": 2,
+        "copy_retries": 3,
+        "click_retries": 2
+    }
+}
