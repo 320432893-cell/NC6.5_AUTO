@@ -7,6 +7,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from core.jab_batch_processor import JABBatchProcessor
+from core.data_handler import DataHandler
 from core.logger import log
 from core.utils import load_config
 
@@ -17,8 +18,12 @@ def build_parser():
     )
     parser.add_argument(
         "command",
-        choices=("plan", "generate", "switch-generated", "backfill"),
-        help="plan=只匹配分批; generate=真实生成并保存; switch-generated=自动切到已生成列表; backfill=在已生成列表回填凭证号",
+        choices=("plan", "generate", "switch-generated", "backfill", "split-keys"),
+        help=(
+            "plan=只匹配分批; generate=真实生成并保存; "
+            "switch-generated=自动切到已生成列表; backfill=在已生成列表回填凭证号; "
+            "split-keys=把金额+对手方拼接列拆成两列"
+        ),
     )
     parser.add_argument("--config", default="config.json", help="配置文件路径")
     parser.add_argument("--limit", type=int, default=None, help="仅处理前 N 条 Excel 数据")
@@ -69,6 +74,16 @@ def main():
         if args.command == "backfill":
             updates = processor.backfill_generated_vouchers(limit=args.limit)
             print(f"回填完成: {len(updates)} 行")
+            return
+
+        if args.command == "split-keys":
+            result = DataHandler(cfg).split_jab_keys_to_columns(limit=args.limit)
+            print(
+                "拆分完成: "
+                f"{result['updates']} 行, "
+                f"金额列={result['amount_col']}, 对手方列={result['partner_col']}, "
+                f"错误={len(result['errors'])} 行"
+            )
             return
     finally:
         processor.close()

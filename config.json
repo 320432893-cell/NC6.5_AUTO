@@ -28,6 +28,8 @@
     "jab_batch": {
         "key_col": 1,
         "result_col": 2,
+        "amount_out_col": 3,
+        "partner_out_col": 4,
         "match_mode": "exact",
         "max_batch_size": 50,
         "generated_voucher_col": 22,

@@ -28,6 +28,8 @@ class DataHandler:
         batch_cfg = config.get("jab_batch", {})
         self.jab_key_col = batch_cfg.get("key_col", self.my_amount_col)
         self.jab_result_col = batch_cfg.get("result_col", self.my_voucher_col)
+        self.jab_amount_out_col = batch_cfg.get("amount_out_col", 3)
+        self.jab_partner_out_col = batch_cfg.get("partner_out_col", 4)
 
     def load_my_data(self):
         wb = openpyxl.load_workbook(self.excel_path)
@@ -121,6 +123,49 @@ class DataHandler:
             raise ValueError(f"金额格式无法识别: {amount_text!r}") from e
 
         return amount, partner
+
+    def split_jab_keys_to_columns(self, limit=None):
+        """把“金额+对手方”拼接列拆成独立金额列和对手方列。"""
+        wb = openpyxl.load_workbook(self.excel_path)
+        ws = wb[self.sheet_my]
+
+        start_row = 2 if self.has_header else 1
+        end_row = ws.max_row
+        if limit:
+            end_row = min(end_row, start_row + limit - 1)
+
+        if self.has_header:
+            ws.cell(row=1, column=self.jab_amount_out_col, value="金额")
+            ws.cell(row=1, column=self.jab_partner_out_col, value="对手方")
+
+        updates = 0
+        errors = {}
+        for row in range(start_row, end_row + 1):
+            raw_key = ws.cell(row=row, column=self.jab_key_col).value
+            if raw_key is None or (isinstance(raw_key, str) and raw_key.strip() == ""):
+                continue
+
+            try:
+                amount, partner = self.parse_jab_concat_key(raw_key)
+            except ValueError as e:
+                errors[row] = str(e)
+                log.warning(f"行{row} 拼接索引拆分失败: {raw_key!r}, {e}")
+                continue
+
+            ws.cell(row=row, column=self.jab_amount_out_col, value=float(amount))
+            ws.cell(row=row, column=self.jab_partner_out_col, value=partner)
+            updates += 1
+            log.info(f"行{row} 拆分索引: amount={amount} partner={partner}")
+
+        wb.save(self.excel_path)
+        wb.close()
+        log.info(f"JAB 拼接索引拆分完成: updates={updates}, errors={len(errors)}")
+        return {
+            "updates": updates,
+            "errors": errors,
+            "amount_col": self.jab_amount_out_col,
+            "partner_col": self.jab_partner_out_col,
+        }
 
     def save_jab_results(self, row_values):
         if not row_values:

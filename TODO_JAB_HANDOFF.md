@@ -85,6 +85,18 @@
 .\.venv-local\Scripts\python.exe .\tools\jab_batch.py backfill
 ```
 
+拆分 A 列拼接 key 到金额列/对手方列：
+
+```powershell
+.\.venv-local\Scripts\python.exe .\tools\jab_batch.py split-keys
+```
+
+只拆前 N 条：
+
+```powershell
+.\.venv-local\Scripts\python.exe .\tools\jab_batch.py split-keys --limit 10
+```
+
 注意：PowerShell 换行续写要用反引号。不要写成：
 
 ```powershell
@@ -100,6 +112,7 @@
   - 新增读取 `Sheet1` 的 `金额+对手方` 拼接 key。
   - 新增 `load_jab_batch_data()`。
   - 新增 `save_jab_results()`。
+  - 新增 `split_jab_keys_to_columns()`，可把拼接 key 拆成金额列和对手方列。
 - `core/jab_operator.py`
   - 封装 JAB 表格读取、控件点击、窗口关闭、按键、表格多选。
   - 新增隐藏空白 AWT 浮窗逻辑。
@@ -117,6 +130,7 @@
     - `generate`
     - `switch-generated`
     - `backfill`
+    - `split-keys`
 - `tools/test_voucher_selection.py`
   - 用于制单窗口行选择、跨行多选测试。
 - `config.json`
@@ -125,6 +139,8 @@
   - `generated_voucher_col=22`
   - `generated_date_col=18`
   - `generated_voucher_max=9999`
+  - `amount_out_col=3`
+  - `partner_out_col=4`
 
 ### 仍需继续测试/完善
 
@@ -174,6 +190,14 @@
   - 待生成表从 246 行变成 222 行。
   - 已生成表回填凭证号到 Excel。
 - Excel 第 25、26 行出现凭证号顺序 `370, 369`，这是按已生成表真实匹配结果回填，建议人工复核一次。
+  - 关键日志：
+    `excel_rows=[25, 26] voucher_rows=[1, 9]`
+  - 说明一次保存多行时，NC 凭证号分配顺序不一定等于 Excel 顺序。
+  - 如果凭证号必须严格按 Excel 顺序递增，制单窗口内不能批量保存多行，应改为一行一保存。
+- 新增 `split-keys` 命令，用于把 A 列 `金额+对手方` 拼接 key 拆到独立两列。
+  - 默认金额输出列：C 列。
+  - 默认对手方输出列：D 列。
+  - Excel 文件被 WPS/Excel 打开时，保存会失败并报 `PermissionError`。
 
 ### 推荐优先级
 
