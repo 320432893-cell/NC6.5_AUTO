@@ -7,7 +7,9 @@ from core.logger import log
 
 def load_config(path="config.json"):
     with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+        cfg = json.load(f)
+    cfg["_config_path"] = path
+    return cfg
 
 
 def check_abort():

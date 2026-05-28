@@ -89,6 +89,12 @@ cd /mnt/h/python脚本/.venv/nc_auto_v2
 /mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/jab_batch.py switch-generated
 ```
 
+按指定目的业务日期切到已生成/正式单据列表，并记录性能：
+
+```bash
+/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/jab_batch.py switch-generated --generated-date 2026-05-27 --perf --perf-label switch-20260527
+```
+
 从已生成列表回填凭证号：
 
 ```bash
@@ -218,9 +224,18 @@ C:\Users\Queclink\Desktop\5.27凭证.xlsx
 1. 如有 `制单` 窗口，先尝试关闭。
 2. 激活 NC 主窗口。
 3. 用 F3 打开查询窗口。
-4. 选择 `正式单据`。
-5. 点击 `确定`。
-6. 读取表格确认已进入已生成列表。
+4. 等查询窗口内 `正式单据` 控件出现。
+5. 用 JAB AccessibleAction 选择 `正式单据`。
+6. 等 `目的业务日期` 条件出现。
+7. 用 JAB `setTextContents` 写入两个日期框。
+8. 用 JAB AccessibleAction 点击 `确定`。
+9. 读取表格确认已进入已生成列表。
+
+日期默认优先级：
+
+1. 命令行 `--generated-date YYYY-MM-DD`。
+2. `config.json` 中 `jab_batch.generated_date_value`。
+3. 当天日期。
 
 已生成和待生成占同一个业务窗口。不要每生成一张就来回切；全部生成后统一切到已生成表回填。
 
@@ -230,9 +245,12 @@ JAB 查询入口现状：
   `0.0.1.0.0.0.0.2.0.0.0.0.0.0.0.2`
 - 控件信息：`查询` / `push button` / `单击`。
 - 该 path 可以打开查询窗口。
-- 但实测在同一个进程、同一个 Access Bridge 会话里，继续点击查询窗口里的 `正式单据` / `确定` 不稳定，可能找不到控件或卡住。
-- 因此默认暂时不启用 `jab_action`，`config.json` 默认保持 `open_query.method=hotkey`，也就是 F3 路径。
-- 代码保留 `jab_action` 能力和 `hotkey` fallback，后续单独继续验证。
+- 但主查询入口用 JAB action 会触发 Access Bridge 不稳定，因此默认仍用 F3 打开查询窗口。
+- 查询窗口内部已验证：`正式单据` / `确定` 走 JAB AccessibleAction，日期框走 JAB `setTextContents`。
+- `目的业务日期` 条件操作符是 `介于`，限定当天时两个日期框都要填同一天。
+- F3 后不要固定 sleep 盲点，必须等查询窗口内目标 path 出现后再执行下一步。
+- 开启 `--perf` 后，查询窗口步骤会拆分记录 `switch_step_formal_action`、`switch_step_date_from`、`switch_step_date_to`、`switch_step_confirm_action`。
+- NC 查询条件区的视觉布局不等于 JAB 结构：有些输入框看起来像上下两行，实际可能像同一个 div/容器里换行显示，JAB 仍会归到同一个容器或同一行组。定位时必须按 label、role、row 容器、bounds 和后置状态验证综合判断。
 
 ### 回填
 
@@ -251,14 +269,20 @@ JAB 查询入口现状：
 
 ## 制单保存策略
 
-当前代码在制单窗口中按保存策略拆成可保存批次，选中后保存，并验证当前批次消失。
+当前正式主线是 `single + jab_button + use_voucher_queue_cache`：
+
+- 一张一保存，保证凭证号按 Excel 顺序递增。
+- 保存触发走 JAB 保存按钮，稳定性高于快捷键。
+- 制单表只读取一次初始队列；每保存一张后，缓存中位于被删行下方的行号统一减 1。
+- Excel 状态在保存结束后批量写入，减少 I/O。
+
+代码只保留稳定主线、一个快速备选策略和旧兼容策略。
 
 可配置策略：
 
-- `batch_reverse_select`：默认策略。按 Excel 顺序组批，但向 NC selection 反序加入制单行；用于验证 NC 疑似“后选中先发号”的规律，保留批量速度。
-- `batch`：按 Excel 顺序组批，也按 Excel 顺序加入 selection；保留给对照测试。
+- `single`：当前正式策略。一行一保存，凭证号顺序最稳，速度较慢。
 - `bottom_up`：旧策略，只合并制单行号严格递减的连续 Excel 行。已保留但不再默认。
-- `single`：一行一保存，凭证号顺序最稳，但速度最慢。
+- `safe_batch_by_pending_row`：快速备选策略。只合并 Excel 顺序中待生成 NC 行号递增、且制单窗口行号递增的连续段；其它自动拆成单张。它整体线性，但不承诺凭证号严格按 Excel 递增。
 
 已发生真实案例：
 
@@ -269,7 +293,18 @@ Excel行25 -> 370
 Excel行26 -> 369
 ```
 
-45-54 后续实测又出现递减制单行批次反号，说明行号递增/递减不是唯一规律。当前默认改为反序加入 selection，下一次真实批量保存后用回填结果验证。
+45-54 后续实测又出现递减制单行批次反号，说明行号递增/递减不是唯一规律。后续反序选择也未解决顺序问题，因此批量保存不再作为顺序固定场景的正式策略。
+
+2026-05-28 用 5.28 凭证做过历史实验：
+
+- `batch_reverse_select`：Excel 行 2/3/4 回填为 561/560/559。
+- `batch`：Excel 行 5/6/7 回填为 565/564/563。
+
+两组都显示选择顺序不能保证 Excel 顺序对应凭证号递增，且没有继续维护价值，相关策略已删除。顺序固定优先时，正式策略使用 `single`。
+
+`Ctrl+S` 保存触发也做过对照：每张激活和首张激活一次都能保存成功，但只是把“触发保存”的耗时转移到“等待 NC 删行验证”，端到端没有优于 JAB 按钮。因此默认仍使用 JAB 按钮。
+
+批量保存保留为快速备选：`safe_batch_by_pending_row` 基于待生成行号和制单窗口行序做保守合并，不满足递增条件时自动拆成单张。2026-05-28 小样本显示它整体线性，但局部仍可能出现反序，因此不作为严格顺序主线。
 
 ## 验证规则
 

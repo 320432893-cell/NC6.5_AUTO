@@ -1,5 +1,68 @@
 # 更新日志
 
+## 2026-05-28 - 查询切换快路径和日期筛选验证
+
+### 本次追加
+
+- `tools/jab_batch.py` 增加 `--generated-date YYYY-MM-DD`，用于显式指定已生成列表的 `目的业务日期`。
+- `generated_date_value` 优先级调整为：命令行参数、`config.json`、当天日期。
+- `switch-generated --perf` 细分查询窗口内步骤耗时：
+  - `switch_step_formal_action`
+  - `switch_step_date_from`
+  - `switch_step_date_to`
+  - `switch_step_confirm_action`
+- 5.28 凭证小样本验证显示，`batch_reverse_select` 和 `batch` 都不能保证 Excel 顺序对应凭证号递增。
+- 删除无继续维护价值的 `batch_reverse_select` 和 `batch` 保存策略。
+- 顺序固定优先时，保存策略改为 `single`；批量保存策略仅保留作性能对照。
+- 进一步验证 `Ctrl+S` 保存触发：
+  - 每张激活、首张激活一次都能保存并保持凭证号递增。
+  - 触发动作更快，但 NC 落库/删行等待相应变长，保存闭环约 0.65 秒/张，未优于 JAB 按钮。
+- 正式主线收敛为 `single + jab_button + use_voucher_queue_cache`：
+  - 每张用 JAB 保存按钮触发。
+  - 制单表行缓存按“只调整被删行下方行号”的规则推进。
+  - Excel 状态批量写入，固定批间等待为 0。
+- 新增实验策略 `safe_batch_by_pending_row`：
+  - 只合并待生成 NC 行号递增、且制单窗口行号递增的连续段。
+  - 不满足条件时自动拆成单张。
+  - 用于验证“批量发号顺序和待生成行号/制单窗口行序相关”的假设。
+  - 7 张小样本验证显示整体线性，但局部仍可能反序，因此定位为快速备选，不作为严格顺序主线。
+
+### `switch-generated` 快路径
+
+- 保持主查询入口走 F3，避免用 JAB action 点击主界面 `查询` 导致 Access Bridge 不稳定。
+- 查询窗口内部改为 JAB 底层动作：
+  - `正式单据`：JAB AccessibleAction `单击`。
+  - `目的业务日期`：JAB `setTextContents`。
+  - `确定`：JAB AccessibleAction `单击`。
+- 增加 path guard：F3 后等待查询窗口内目标控件出现，不再固定 sleep 后盲点。
+- `目的业务日期` 是 `介于` 条件，限定当天时必须同时填写起始和结束两个日期框。
+- 已确认 JAB `bounds` 不是底层动作，只是控件当前矩形，不能作为主路径恢复坐标点击。
+
+### 已验证结果
+
+`switch-generated --perf --perf-label fast-guard-test` 成功：
+
+```text
+switch_open_query:          0.394s
+switch_run_steps:           4.001s
+switch_generated_snapshot:  0.446s
+switch_generated_total:     5.487s
+rows=11
+sample_voucher_count=11
+```
+
+`jab.startup_wait` 实验结果：
+
+- `0.5s` 已验证可用。
+- `0.2s` 不稳定，曾出现 path guard 等满失败。
+
+### 已知注意事项
+
+- `setTextContents` 对日期框写入有效，但 `getAccessibleTextInfo/getAccessibleTextRange` 可能读回空字符串，不能把读回空直接判定为写入失败。
+- `ok=True` 只能代表 JAB 动作返回成功，业务上仍需要用后置状态验证，例如 `正式单据` 后检查 `目的业务日期` 是否出现。
+- 隐藏或 `visible=False` 的查询窗口可能仍能被 JAB 枚举到，不应作为可操作窗口依据。
+- NC 查询条件区的视觉换行不一定对应 JAB 结构换行；有些视觉上像两行的输入框，实际可能像同一个 div/容器里换行显示，JAB 仍会归到同一个容器或同一行组。定位不能只看视觉行，要结合 label、role、bounds、容器关系和后置状态验证。
+
 ## 2026-05-27 - JAB 批量凭证生成主线成型
 
 ### JAB 查询入口验证
@@ -134,7 +197,7 @@
 - JAB `bounds` 不可靠，可能返回负坐标或 `-1,-1,-1,-1`。
 - 开启 JAB 后可能出现左上角空白蓝框/截图样遮挡窗口，通常是 `SunAwtWindow` 无标题小窗口，已通过 `hide_blank_awt_windows()` 处理。
 - Excel/WPS 打开文件时，写入 C 列或自动拆分 A/B 时可能报 `PermissionError`。
-- 多行批量保存时，凭证号顺序可能不等于 Excel 顺序。旧的 `bottom_up` 行号递减策略已保留但不再默认，当前默认 `batch_reverse_select`：按 Excel 顺序组批，反序加入 NC selection，用来验证 NC 疑似“后选中先发号”的规律。
+- 多行批量保存时，凭证号顺序可能不等于 Excel 顺序。旧的 `bottom_up` 行号递减策略已保留但不再默认。历史实验策略 `batch_reverse_select` / `batch` 已删除，保留 `safe_batch_by_pending_row` 作为快速备选。
 
 真实案例：
 

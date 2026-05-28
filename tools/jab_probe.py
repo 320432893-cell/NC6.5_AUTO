@@ -58,6 +58,14 @@ class AccessibleTableCellInfo(ctypes.Structure):
     ]
 
 
+class AccessibleTextInfo(ctypes.Structure):
+    _fields_ = [
+        ("charCount", ctypes.c_int),
+        ("caretIndex", ctypes.c_int),
+        ("indexAtPoint", ctypes.c_int),
+    ]
+
+
 class AccessibleActionInfo(ctypes.Structure):
     _fields_ = [
         ("name", ctypes.c_wchar * 256),
@@ -204,6 +212,35 @@ def configure_jab(dll):
             ctypes.POINTER(ctypes.c_int),
         ]
         dll.doAccessibleActions.restype = wintypes.BOOL
+
+    if hasattr(dll, "requestFocus"):
+        dll.requestFocus.argtypes = [ctypes.c_long, JOBJECT]
+        dll.requestFocus.restype = wintypes.BOOL
+
+    if hasattr(dll, "setTextContents"):
+        dll.setTextContents.argtypes = [ctypes.c_long, JOBJECT, ctypes.c_wchar_p]
+        dll.setTextContents.restype = wintypes.BOOL
+
+    if hasattr(dll, "getAccessibleTextInfo"):
+        dll.getAccessibleTextInfo.argtypes = [
+            ctypes.c_long,
+            JOBJECT,
+            ctypes.POINTER(AccessibleTextInfo),
+            ctypes.c_int,
+            ctypes.c_int,
+        ]
+        dll.getAccessibleTextInfo.restype = wintypes.BOOL
+
+    if hasattr(dll, "getAccessibleTextRange"):
+        dll.getAccessibleTextRange.argtypes = [
+            ctypes.c_long,
+            JOBJECT,
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_wchar_p,
+            ctypes.c_short,
+        ]
+        dll.getAccessibleTextRange.restype = wintypes.BOOL
 
     if hasattr(dll, "getAccessibleSelectionCountFromContext"):
         dll.getAccessibleSelectionCountFromContext.argtypes = [ctypes.c_long, JOBJECT]

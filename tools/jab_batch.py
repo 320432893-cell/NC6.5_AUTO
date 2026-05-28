@@ -1,6 +1,7 @@
 import argparse
 import sys
 from pathlib import Path
+from datetime import date
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -70,17 +71,78 @@ def build_parser():
         default=None,
         help="性能日志标签，默认使用时间戳",
     )
+    parser.add_argument(
+        "--generated-date",
+        default=None,
+        help="已生成列表的目的业务日期，格式 YYYY-MM-DD；不传则使用配置或当天",
+    )
+    parser.add_argument(
+        "--save-trigger",
+        choices=("jab_button", "hotkey"),
+        default=None,
+        help="覆盖保存触发方式：jab_button=JAB按钮；hotkey=Ctrl+S",
+    )
+    parser.add_argument(
+        "--save-strategy",
+        choices=(
+            "single",
+            "bottom_up",
+            "safe_batch_by_pending_row",
+        ),
+        default=None,
+        help="覆盖制单保存策略；备选批量用 safe_batch_by_pending_row",
+    )
+    parser.add_argument(
+        "--voucher-order-fallback",
+        choices=("strict", "same_count"),
+        default=None,
+        help="制单表匹配兜底：same_count=制单行数等于本批数量时按行序匹配",
+    )
+    parser.add_argument(
+        "--foreign-currency-rate",
+        type=str,
+        default=None,
+        help="外币到本位币汇率；不传则同名多行自动估计一致汇率",
+    )
+    parser.add_argument(
+        "--hotkey-activate-policy",
+        choices=("always", "first", "foreground_guard"),
+        default=None,
+        help="Ctrl+S 保存前窗口处理：always=每张激活；first=仅首张激活；foreground_guard=只校验前台制单",
+    )
     return parser
 
 
 def main():
     args = build_parser().parse_args()
+    if args.generated_date is not None:
+        try:
+            date.fromisoformat(args.generated_date)
+        except ValueError as exc:
+            raise SystemExit(
+                f"--generated-date 格式必须是 YYYY-MM-DD: {args.generated_date!r}"
+            ) from exc
     cfg = load_config(args.config)
+    if args.save_strategy is not None:
+        cfg.setdefault("jab_batch", {})["save_strategy"] = args.save_strategy
+    if args.voucher_order_fallback is not None:
+        cfg.setdefault("jab_batch", {})["voucher_order_fallback_mode"] = (
+            args.voucher_order_fallback
+        )
+    if args.foreign_currency_rate is not None:
+        cfg.setdefault("jab_batch", {})["foreign_currency_rate"] = (
+            args.foreign_currency_rate
+        )
     processor = JABBatchProcessor(
         cfg,
         perf_enabled=args.perf,
         perf_label=args.perf_label,
+        command=args.command,
+        generated_date_value=args.generated_date,
+        save_trigger=args.save_trigger,
+        hotkey_activate_policy=args.hotkey_activate_policy,
     )
+    state_finished = False
 
     try:
         if args.command == "plan":
@@ -98,6 +160,9 @@ def main():
                 answer = input("确认继续请输入 yes: ").strip().lower()
                 if answer != "yes":
                     log.warning("用户取消 generate")
+                    processor.run_state.set_stage("generate_cancelled")
+                    processor.finish_run_state("cancelled")
+                    state_finished = True
                     return
             saved = processor.generate_and_save(
                 limit=args.limit,
@@ -140,7 +205,14 @@ def main():
                 f"错误={len(result['errors'])} 行"
             )
             return
+    except BaseException as exc:
+        status = "aborted" if isinstance(exc, SystemExit) else "failed"
+        processor.finish_run_state(status, error=f"{type(exc).__name__}: {exc}")
+        state_finished = True
+        raise
     finally:
+        if not state_finished:
+            processor.finish_run_state("success")
         processor.close()
 
 

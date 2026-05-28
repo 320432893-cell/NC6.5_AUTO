@@ -1,11 +1,11 @@
 {
-    "excel_path": "C:\\Users\\Queclink\\Desktop\\5.27凭证.xlsx",
+    "excel_path": "C:\\Users\\Queclink\\Desktop\\5.28凭证.xlsx",
     "sheet_my": "Sheet1",
     "has_header": true,
     "jab": {
         "enabled": true,
         "dll_path": "C:\\Users\\Queclink\\AppData\\Local\\UClient\\share\\java1.7.0_51-x64\\bin\\WindowsAccessBridge-64.dll",
-        "startup_wait": 2.0,
+        "startup_wait": 0.5,
         "search_timeout": 5.0,
         "max_depth": 25,
         "max_children": 1000,
@@ -13,7 +13,10 @@
         "amount_col": 4,
         "partner_col": 3,
         "selection_col": 0,
-        "hide_blank_awt_windows": true
+        "hide_blank_awt_windows": true,
+        "save_button_path": null,
+        "save_button_title": "制单",
+        "save_button_class": "SunAwtDialog"
     },
     "jab_batch": {
         "key_col": 1,
@@ -21,14 +24,21 @@
         "partner_out_col": 2,
         "result_col": 3,
         "match_mode": "exact",
-        "save_strategy": "batch_reverse_select",
-        "voucher_selection_order": "reverse_excel",
+        "save_strategy": "single",
         "max_batch_size": 50,
         "generated_voucher_col": 22,
         "generated_date_col": 18,
         "generated_voucher_max": 9999,
         "generated_status": "已生成待回填",
         "save_wait": 0.5,
+        "save_trigger": "jab_button",
+        "hotkey_activate_policy": "always",
+        "wait_between_save_batches": 0.0,
+        "write_generated_status_each_save": false,
+        "use_voucher_queue_cache": true,
+        "voucher_order_fallback_mode": "strict",
+        "foreign_currency_rate": null,
+        "foreign_currency_rate_tolerance": 0.02,
         "save_success_timeout": 8.0,
         "verify_voucher_advance": true,
         "voucher_record_timeout": 8.0,
@@ -47,6 +57,7 @@
             "name": "查询",
             "role": "push button",
             "action": "单击",
+            "click_mode": "bounds",
             "window_title": "",
             "window_class": "SunAwtCanvas",
             "key": "f3",
@@ -59,24 +70,50 @@
             "require_showing": true,
             "wait_dialog": true,
             "fallback_method": "hotkey",
+            "runner": "subprocess",
+            "process_timeout": 4.0,
             "return_timeout": 0.2,
             "activate_timeout": 1,
             "timeout": 5,
-            "wait": 0.8
+            "wait": 0.0
         },
         "switch_generated_steps": [
             {
+                "path": "0.0.1.0.0.4.0.0.2",
                 "name": "正式单据",
                 "role": "radio button",
+                "action": "单击",
                 "require_showing": true,
-                "timeout": 8,
-                "wait": 0.2
+                "guard_timeout": 5,
+                "timeout": 1,
+                "wait": 0.0
             },
             {
+                "path": "0.0.1.0.0.4.0.1.0.0.0.0.0.11.1.0.0",
+                "role": "text",
+                "set_text": "{generated_date_value}",
+                "require_showing": true,
+                "guard_timeout": 3,
+                "timeout": 1,
+                "wait": 0.0
+            },
+            {
+                "path": "0.0.1.0.0.4.0.1.0.0.0.0.0.11.1.2.0",
+                "role": "text",
+                "set_text": "{generated_date_value}",
+                "require_showing": true,
+                "guard_timeout": 3,
+                "timeout": 1,
+                "wait": 0.0
+            },
+            {
+                "path": "0.0.1.0.0.0.0",
                 "name": "确定",
                 "role": "push button",
+                "action": "单击",
                 "require_showing": true,
-                "timeout": 8,
+                "guard_timeout": 3,
+                "timeout": 1,
                 "wait": 1.0
             }
         ]

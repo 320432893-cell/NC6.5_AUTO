@@ -101,7 +101,8 @@ class DataHandler:
         errors = []
 
         try:
-            amount, partner = self.parse_jab_concat_key(raw_key)
+            selected_key = self.select_jab_concat_candidate(raw_key, raw_partner)
+            amount, partner = self.parse_jab_concat_key(selected_key)
             return amount, partner, "concat"
         except ValueError as e:
             errors.append(f"A列拼接索引: {e}")
@@ -118,6 +119,42 @@ class DataHandler:
             errors.append(result)
 
         raise ValueError("; ".join(errors))
+
+    def select_jab_concat_candidate(self, raw_key, raw_selector):
+        if self._is_blank(raw_key):
+            return raw_key
+
+        text = str(raw_key).strip()
+        if "/" not in text:
+            return text
+
+        candidates = [part.strip() for part in text.split("/")]
+        if any(not part for part in candidates):
+            raise ValueError("A列多候选存在空项")
+
+        if self._is_blank(raw_selector):
+            raise ValueError("A列多候选需要B列填写选择序号")
+
+        selector = self.parse_jab_candidate_selector(raw_selector)
+        if selector < 1:
+            raise ValueError(f"B列选择序号不是正整数: {raw_selector!r}")
+        if selector > len(candidates):
+            raise ValueError(
+                f"B列选择序号越界: 选择{selector}, 候选{len(candidates)}个"
+            )
+
+        return candidates[selector - 1]
+
+    def parse_jab_candidate_selector(self, value):
+        text = str(value).strip()
+        try:
+            selector_decimal = Decimal(text)
+        except InvalidOperation as e:
+            raise ValueError(f"B列选择序号不是正整数: {value!r}") from e
+
+        if selector_decimal != selector_decimal.to_integral_value():
+            raise ValueError(f"B列选择序号不是正整数: {value!r}")
+        return int(selector_decimal)
 
     def _try_parse_split_row(self, raw_amount, raw_partner, source, label):
         has_amount = not self._is_blank(raw_amount)
@@ -184,7 +221,9 @@ class DataHandler:
                 continue
 
             try:
-                amount, partner = self.parse_jab_concat_key(raw_key)
+                raw_selector = ws.cell(row=row, column=self.jab_partner_out_col).value
+                selected_key = self.select_jab_concat_candidate(raw_key, raw_selector)
+                amount, partner = self.parse_jab_concat_key(selected_key)
             except ValueError as e:
                 errors[row] = str(e)
                 log.warning(f"行{row} 拼接索引拆分失败: {raw_key!r}, {e}")

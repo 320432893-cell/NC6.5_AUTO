@@ -5,8 +5,6 @@ from ctypes import wintypes
 import threading
 import time
 
-import pyautogui
-
 from core.logger import log
 from core.utils import check_abort
 from tools.jab_probe import (
@@ -15,6 +13,7 @@ from tools.jab_probe import (
     AccessibleContextInfo,
     AccessibleTableCellInfo,
     AccessibleTableInfo,
+    AccessibleTextInfo,
     JOBJECT,
     configure_jab,
     enum_windows,
@@ -40,6 +39,9 @@ class JABOperator:
         self.amount_col = jab_cfg.get("amount_col", 4)
         self.partner_col = jab_cfg.get("partner_col", 3)
         self.selection_col = jab_cfg.get("selection_col", 0)
+        self.save_button_path = jab_cfg.get("save_button_path")
+        self.save_button_title = jab_cfg.get("save_button_title", "制单")
+        self.save_button_class = jab_cfg.get("save_button_class", "SunAwtDialog")
         self.hide_blank_awt_windows_enabled = jab_cfg.get(
             "hide_blank_awt_windows", True
         )
@@ -213,6 +215,37 @@ class JABOperator:
             time.sleep(0.2)
         return False
 
+    def get_foreground_window_info(self):
+        if os.name != "nt":
+            return None
+
+        user32 = ctypes.windll.user32
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return None
+
+        length = user32.GetWindowTextLengthW(hwnd)
+        window_title = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, window_title, length + 1)
+
+        window_class = ctypes.create_unicode_buffer(256)
+        user32.GetClassNameW(hwnd, window_class, 256)
+        return {
+            "hwnd": int(hwnd),
+            "title": window_title.value,
+            "class_name": window_class.value,
+        }
+
+    def foreground_window_matches(self, title, class_name=None):
+        info = self.get_foreground_window_info()
+        if not info:
+            return False
+        if info["title"] != title:
+            return False
+        if class_name and info["class_name"] != class_name:
+            return False
+        return True
+
     def wait_window_by_title(
         self,
         title,
@@ -290,7 +323,15 @@ class JABOperator:
         return found[0] if found else None
 
     def press_key(self, key, wait=None):
+        import pyautogui
+
         pyautogui.press(key)
+        time.sleep(self.menu_wait if wait is None else wait)
+
+    def press_hotkey(self, *keys, wait=None):
+        import pyautogui
+
+        pyautogui.hotkey(*keys)
         time.sleep(self.menu_wait if wait is None else wait)
 
     def do_generate_front(self):
@@ -345,6 +386,75 @@ class JABOperator:
 
         return True
 
+    def run_named_steps_in_window(
+        self,
+        steps,
+        window_title=None,
+        window_class=None,
+        visible_only=True,
+        scope_hwnd=None,
+    ):
+        self.ensure_started()
+        for index, step in enumerate(steps, start=1):
+            check_abort()
+            name = step["name"] if isinstance(step, dict) else str(step)
+            role = step.get("role") if isinstance(step, dict) else None
+            wait = (
+                float(step.get("wait", self.menu_wait))
+                if isinstance(step, dict)
+                else self.menu_wait
+            )
+            timeout = (
+                float(step.get("timeout", self.search_timeout))
+                if isinstance(step, dict)
+                else self.search_timeout
+            )
+            action = step.get("action") if isinstance(step, dict) else None
+            path = step.get("path") if isinstance(step, dict) else None
+            require_showing = (
+                step.get("require_showing", True) if isinstance(step, dict) else True
+            )
+            roles = (role,) if role else ()
+
+            log.info(
+                "JAB 执行窗口步骤 "
+                f"{index}/{len(steps)}: window={window_title!r}/{window_class!r} "
+                f"name={name} role={role}"
+            )
+            if path:
+                thread = self.trigger_action_by_path_async(
+                    path,
+                    title=window_title,
+                    class_name=window_class,
+                    name=name,
+                    role=role,
+                    action_name=action,
+                    timeout=float(step.get("return_timeout", 0.2))
+                    if isinstance(step, dict)
+                    else 0.2,
+                    require_showing=require_showing,
+                )
+                if thread:
+                    time.sleep(wait)
+                    continue
+            if not self.click_control(
+                name,
+                roles=roles,
+                timeout=timeout,
+                action_name=action,
+                require_showing=require_showing,
+                window_title=window_title,
+                window_class=window_class,
+                visible_only=visible_only,
+                scope_hwnd=scope_hwnd,
+            ):
+                raise RuntimeError(
+                    f"JAB 窗口步骤失败: window={window_title!r} name={name}"
+                )
+            time.sleep(wait)
+
+        return True
+
     def do_action_by_path(
         self,
         path,
@@ -353,6 +463,7 @@ class JABOperator:
         name=None,
         role=None,
         action_name=None,
+        click_mode=None,
         wait=None,
         timeout=None,
         require_showing=False,
@@ -375,11 +486,15 @@ class JABOperator:
             context, vm_id, owned_contexts, window_info = result
             if context:
                 try:
-                    ok = self.do_action(vm_id, context, action_name=action_name)
+                    if click_mode == "bounds":
+                        ok = self.click_context_center(vm_id, context)
+                    else:
+                        ok = self.do_action(vm_id, context, action_name=action_name)
                     if ok:
                         log.info(
                             "JAB path 动作成功: "
-                            f"path={path} action={action_name or '<default>'} "
+                            f"path={path} mode={click_mode or 'action'} "
+                            f"action={action_name or '<default>'} "
                             f"hwnd={window_info.get('hwnd')} "
                             f"title={window_info.get('title')!r}"
                         )
@@ -393,6 +508,637 @@ class JABOperator:
             f"JAB path 未找到可执行控件: path={path} title={title!r} class={class_name!r}"
         )
         return False
+
+    def set_text_by_path(
+        self,
+        path,
+        text,
+        title=None,
+        class_name=None,
+        name=None,
+        role=None,
+        guard_path=None,
+        guard_name=None,
+        guard_role=None,
+        wait=None,
+        timeout=None,
+        require_showing=False,
+    ):
+        self.ensure_started()
+        if not path:
+            raise ValueError("JAB text path is required")
+
+        deadline = time.time() + (timeout or self.search_timeout)
+        while time.time() < deadline:
+            check_abort()
+            if guard_path:
+                guard = self.find_context_by_path_once(
+                    guard_path,
+                    title=title,
+                    class_name=class_name,
+                    name=guard_name,
+                    role=guard_role,
+                    require_showing=require_showing,
+                )
+                guard_context, guard_vm_id, guard_owned_contexts, _guard_window = guard
+                if guard_context:
+                    self.release_contexts(guard_vm_id, guard_owned_contexts)
+                else:
+                    time.sleep(0.2)
+                    continue
+
+            result = self.find_context_by_path_once(
+                path,
+                title=title,
+                class_name=class_name,
+                name=name,
+                role=role,
+                require_showing=require_showing,
+            )
+            context, vm_id, owned_contexts, window_info = result
+            if context:
+                try:
+                    if not self.set_text_context(vm_id, context, text):
+                        return False
+                    log.info(
+                        "JAB path 文本输入成功: "
+                        f"path={path} text={text!r} "
+                        f"hwnd={window_info.get('hwnd')} "
+                        f"title={window_info.get('title')!r}"
+                    )
+                    time.sleep(self.menu_wait if wait is None else wait)
+                    return True
+                finally:
+                    self.release_contexts(vm_id, owned_contexts)
+            time.sleep(0.2)
+
+        log.warning(
+            f"JAB path 未找到文本控件: path={path} title={title!r} class={class_name!r}"
+        )
+        return False
+
+    def set_text_near_label(
+        self,
+        label,
+        text,
+        title=None,
+        class_name=None,
+        wait=None,
+        timeout=None,
+        require_showing=True,
+    ):
+        self.ensure_started()
+        deadline = time.time() + (timeout or self.search_timeout)
+
+        while time.time() < deadline:
+            check_abort()
+            result = self.find_text_context_near_label_once(
+                label,
+                title=title,
+                class_name=class_name,
+                require_showing=require_showing,
+            )
+            context, vm_id, owned_contexts, label_info, text_info, window_info = result
+            if context:
+                try:
+                    if not self.set_text_context(vm_id, context, text):
+                        return False
+                    log.info(
+                        "JAB label 文本输入成功: "
+                        f"label={label!r} text={text!r} "
+                        f"label_bounds={label_info.x},{label_info.y},{label_info.width},{label_info.height} "
+                        f"text_bounds={text_info.x},{text_info.y},{text_info.width},{text_info.height} "
+                        f"hwnd={window_info.get('hwnd')} title={window_info.get('title')!r}"
+                    )
+                    time.sleep(self.menu_wait if wait is None else wait)
+                    return True
+                finally:
+                    self.release_contexts(vm_id, owned_contexts)
+            time.sleep(0.2)
+
+        log.warning(
+            f"JAB 未找到 label 右侧文本控件: label={label!r} title={title!r} class={class_name!r}"
+        )
+        return False
+
+    def set_text_context(self, vm_id, context, text):
+        if not hasattr(self.dll, "setTextContents"):
+            log.warning("当前 JAB DLL 不支持 setTextContents，拒绝使用全局键盘输入")
+            return False
+
+        if hasattr(self.dll, "requestFocus") and not self.dll.requestFocus(
+            vm_id, context
+        ):
+            log.warning("JAB requestFocus 失败，拒绝写入文本")
+            return False
+
+        value = str(text)
+        ok = self.dll.setTextContents(vm_id, context, value)
+        if not ok:
+            log.warning(f"JAB setTextContents 失败: text={value!r}")
+            return False
+
+        actual = self.get_text_context_value(vm_id, context)
+        if actual is None:
+            log.info("JAB 文本写入成功，但当前控件不支持读回验证")
+            return True
+        if actual != value:
+            log.info(
+                f"JAB 文本写入返回成功，读回值不一致: expected={value!r} actual={actual!r}"
+            )
+            return True
+
+        return True
+
+    def get_text_context_value(self, vm_id, context):
+        if not (
+            hasattr(self.dll, "getAccessibleTextInfo")
+            and hasattr(self.dll, "getAccessibleTextRange")
+        ):
+            return None
+
+        text_info = AccessibleTextInfo()
+        if not self.dll.getAccessibleTextInfo(
+            vm_id,
+            context,
+            ctypes.byref(text_info),
+            0,
+            0,
+        ):
+            return None
+
+        if text_info.charCount <= 0:
+            return ""
+
+        buffer_len = min(text_info.charCount + 1, 4096)
+        buffer = ctypes.create_unicode_buffer(buffer_len)
+        if not self.dll.getAccessibleTextRange(
+            vm_id,
+            context,
+            0,
+            min(text_info.charCount, buffer_len - 1),
+            buffer,
+            buffer_len,
+        ):
+            return None
+
+        return buffer.value
+
+    def find_text_context_near_label_once(
+        self,
+        label,
+        title=None,
+        class_name=None,
+        require_showing=True,
+    ):
+        windows = enum_windows(include_children=True)
+        for hwnd, window_title, window_class, pid, visible in windows:
+            if title is not None and window_title != title:
+                continue
+            if class_name is not None and window_class != class_name:
+                continue
+            if not self.dll.isJavaWindow(hwnd):
+                continue
+
+            vm_id = ctypes.c_long()
+            root_context = JOBJECT()
+            if not self.dll.getAccessibleContextFromHWND(
+                hwnd,
+                ctypes.byref(vm_id),
+                ctypes.byref(root_context),
+            ):
+                continue
+
+            found = self.find_text_near_label_by_bounds(
+                vm_id.value,
+                root_context.value,
+                label,
+                require_showing=require_showing,
+            )
+            if found[0]:
+                context, owned_contexts, label_info, text_info = found
+                return (
+                    context,
+                    vm_id.value,
+                    owned_contexts,
+                    label_info,
+                    text_info,
+                    {
+                        "hwnd": int(hwnd),
+                        "title": window_title,
+                        "class": window_class,
+                        "pid": pid,
+                        "visible": visible,
+                    },
+                )
+
+        return None, None, [], None, None, {}
+
+    def describe_text_near_label(
+        self,
+        label,
+        title=None,
+        class_name=None,
+        require_showing=True,
+    ):
+        """Read-only diagnostic for label-to-text matching."""
+        self.ensure_started()
+        windows = []
+
+        for hwnd, window_title, window_class, pid, visible in enum_windows(
+            include_children=True
+        ):
+            if title is not None and window_title != title:
+                continue
+            if class_name is not None and window_class != class_name:
+                continue
+
+            window_result = {
+                "hwnd": int(hwnd),
+                "title": window_title,
+                "class": window_class,
+                "pid": pid,
+                "visible": visible,
+                "is_java": bool(self.dll.isJavaWindow(hwnd)),
+                "labels": [],
+            }
+            windows.append(window_result)
+            if not window_result["is_java"]:
+                continue
+
+            vm_id = ctypes.c_long()
+            root_context = JOBJECT()
+            if not self.dll.getAccessibleContextFromHWND(
+                hwnd,
+                ctypes.byref(vm_id),
+                ctypes.byref(root_context),
+            ):
+                window_result["error"] = "getAccessibleContextFromHWND failed"
+                continue
+
+            labels = []
+            texts = []
+            owned = []
+            try:
+                self.collect_labels_and_texts(
+                    vm_id.value,
+                    root_context.value,
+                    label,
+                    labels,
+                    texts,
+                    owned,
+                    require_showing=require_showing,
+                    depth=0,
+                )
+                labels.sort(key=lambda item: (item[1].y, item[1].x))
+                for label_context, label_info in labels:
+                    label_mid_y = label_info.y + label_info.height / 2
+                    label_result = {
+                        "label": self.info_to_dict(label_info),
+                        "selected": None,
+                        "candidates": [],
+                    }
+                    for _text_context, text_info in texts:
+                        text_mid_y = text_info.y + text_info.height / 2
+                        dy = text_mid_y - label_mid_y
+                        rejected = []
+                        if text_info.x <= label_info.x + label_info.width:
+                            rejected.append("not_right_of_label")
+                        if abs(dy) > 6:
+                            rejected.append("different_row")
+                        label_result["candidates"].append(
+                            {
+                                "text": self.info_to_dict(text_info),
+                                "dy": dy,
+                                "rejected": rejected,
+                            }
+                        )
+
+                    label_result["candidates"].sort(
+                        key=lambda item: (
+                            bool(item["rejected"]),
+                            item["text"]["x"],
+                            abs(item["dy"]),
+                            item["text"]["y"],
+                        )
+                    )
+                    usable = [
+                        item
+                        for item in label_result["candidates"]
+                        if not item["rejected"]
+                    ]
+                    if usable:
+                        label_result["selected"] = usable[0]
+                    window_result["labels"].append(label_result)
+            finally:
+                self.release_contexts(vm_id.value, owned)
+
+        return windows
+
+    @staticmethod
+    def info_to_dict(info):
+        return {
+            "name": info.name.strip(),
+            "description": info.description.strip(),
+            "role": (info.role_en_US.strip() or info.role.strip()),
+            "states": (info.states_en_US.strip() or info.states.strip()),
+            "index_in_parent": info.indexInParent,
+            "children_count": info.childrenCount,
+            "x": info.x,
+            "y": info.y,
+            "width": info.width,
+            "height": info.height,
+        }
+
+    def find_text_near_label_by_bounds(
+        self,
+        vm_id,
+        root_context,
+        label,
+        require_showing=True,
+    ):
+        labels = []
+        texts = []
+        owned = []
+        self.collect_labels_and_texts(
+            vm_id,
+            root_context,
+            label,
+            labels,
+            texts,
+            owned,
+            require_showing=require_showing,
+            depth=0,
+        )
+        if not labels:
+            self.release_contexts(vm_id, owned)
+            return None, [], None, None
+
+        labels.sort(key=lambda item: (item[1].y, item[1].x))
+        for label_context, label_info in labels:
+            label_mid_y = label_info.y + label_info.height / 2
+            candidates = []
+            for text_context, text_info in texts:
+                text_mid_y = text_info.y + text_info.height / 2
+                if text_info.x <= label_info.x + label_info.width:
+                    continue
+                if abs(text_mid_y - label_mid_y) > 6:
+                    continue
+                candidates.append((text_context, text_info))
+            if candidates:
+                candidates.sort(key=lambda item: (item[1].x, item[1].y))
+                text_context, text_info = candidates[0]
+                keep = {label_context, text_context}
+                release = [context for context in owned if context not in keep]
+                self.release_contexts(vm_id, release)
+                return (
+                    text_context,
+                    [label_context, text_context],
+                    label_info,
+                    text_info,
+                )
+
+        self.release_contexts(vm_id, owned)
+        return None, [], None, None
+
+    def collect_labels_and_texts(
+        self,
+        vm_id,
+        context,
+        target_label,
+        labels,
+        texts,
+        owned,
+        require_showing=True,
+        depth=0,
+    ):
+        info = self.get_context_info(vm_id, context)
+        if not info:
+            return
+
+        role = (info.role_en_US.strip() or info.role.strip()).lower()
+        if role == "table" or depth >= self.max_depth:
+            return
+
+        child_count = min(info.childrenCount, self.max_children)
+        for index in range(child_count):
+            child = self.dll.getAccessibleChildFromContext(vm_id, context, index)
+            if not child:
+                continue
+            child_info = self.get_context_info(vm_id, child)
+            if not child_info:
+                self.release_contexts(vm_id, [child])
+                continue
+
+            owned.append(child)
+            child_role = (
+                child_info.role_en_US.strip() or child_info.role.strip()
+            ).lower()
+            child_states = (
+                child_info.states_en_US.strip() or child_info.states.strip()
+            ).lower()
+            showing = "visible" in child_states and "showing" in child_states
+
+            if (
+                child_role == "label"
+                and child_info.name.strip() == target_label
+                and (not require_showing or showing)
+            ):
+                labels.append((child, child_info))
+            elif (
+                child_role == "text"
+                and "editable" in child_states
+                and (not require_showing or showing)
+            ):
+                texts.append((child, child_info))
+
+            self.collect_labels_and_texts(
+                vm_id,
+                child,
+                target_label,
+                labels,
+                texts,
+                owned,
+                require_showing=require_showing,
+                depth=depth + 1,
+            )
+
+    def find_text_near_label_in_tree(
+        self,
+        vm_id,
+        context,
+        label,
+        require_showing=True,
+        depth=0,
+        owned_path=None,
+    ):
+        owned_path = owned_path or []
+        info = self.get_context_info(vm_id, context)
+        if not info:
+            return None, [], None, None
+
+        role = (info.role_en_US.strip() or info.role.strip()).lower()
+        if role == "table":
+            return None, [], None, None
+
+        children = []
+        child_count = min(info.childrenCount, self.max_children)
+        for index in range(child_count):
+            child = self.dll.getAccessibleChildFromContext(vm_id, context, index)
+            if not child:
+                continue
+            child_info = self.get_context_info(vm_id, child)
+            if child_info:
+                children.append((child, child_info))
+
+        for label_context, label_info in children:
+            label_role = (
+                label_info.role_en_US.strip() or label_info.role.strip()
+            ).lower()
+            label_states = (
+                label_info.states_en_US.strip() or label_info.states.strip()
+            ).lower()
+            if label_role != "label" or label_info.name.strip() != label:
+                continue
+            if require_showing and (
+                "visible" not in label_states or "showing" not in label_states
+            ):
+                continue
+
+            candidates = self.find_text_candidates_right_of_label(
+                vm_id,
+                context,
+                label_info,
+                require_showing=require_showing,
+                depth=0,
+                owned_path=[],
+                skip_contexts={label_context},
+            )
+
+            if candidates:
+                candidates.sort(key=lambda item: (item[1].x, item[1].y))
+                text_context, text_info, text_owned = candidates[0]
+                owned = list(owned_path) + [label_context] + text_owned
+                for extra_context, _extra_info in children:
+                    if extra_context not in (label_context, text_owned[0]):
+                        self.release_contexts(vm_id, [extra_context])
+                return text_context, owned, label_info, text_info
+
+        if depth >= self.max_depth:
+            self.release_contexts(vm_id, [child for child, _info in children])
+            return None, [], None, None
+
+        for child, child_info in children:
+            child_role = (
+                child_info.role_en_US.strip() or child_info.role.strip()
+            ).lower()
+            if child_role == "table":
+                self.release_contexts(vm_id, [child])
+                continue
+            found = self.find_text_near_label_in_tree(
+                vm_id,
+                child,
+                label,
+                require_showing=require_showing,
+                depth=depth + 1,
+                owned_path=owned_path + [child],
+            )
+            if found[0]:
+                for sibling, _info in children:
+                    if sibling != child:
+                        self.release_contexts(vm_id, [sibling])
+                return found
+            self.release_contexts(vm_id, [child])
+
+        return None, [], None, None
+
+    def find_text_candidates_right_of_label(
+        self,
+        vm_id,
+        context,
+        label_info,
+        require_showing=True,
+        depth=0,
+        owned_path=None,
+        skip_contexts=None,
+    ):
+        owned_path = owned_path or []
+        skip_contexts = skip_contexts or set()
+        info = self.get_context_info(vm_id, context)
+        if not info:
+            return []
+
+        role = (info.role_en_US.strip() or info.role.strip()).lower()
+        states = (info.states_en_US.strip() or info.states.strip()).lower()
+        label_mid_y = label_info.y + label_info.height / 2
+
+        candidates = []
+        if context not in skip_contexts and role == "text" and "editable" in states:
+            if not require_showing or ("visible" in states and "showing" in states):
+                text_mid_y = info.y + info.height / 2
+                if info.x > label_info.x + label_info.width and abs(
+                    text_mid_y - label_mid_y
+                ) <= max(label_info.height, 24):
+                    return [(context, info, list(owned_path))]
+
+        if depth >= self.max_depth or role == "table":
+            return []
+
+        child_count = min(info.childrenCount, self.max_children)
+        for index in range(child_count):
+            child = self.dll.getAccessibleChildFromContext(vm_id, context, index)
+            if not child:
+                continue
+            child_candidates = self.find_text_candidates_right_of_label(
+                vm_id,
+                child,
+                label_info,
+                require_showing=require_showing,
+                depth=depth + 1,
+                owned_path=owned_path + [child],
+                skip_contexts=skip_contexts,
+            )
+            if child_candidates:
+                candidates.extend(child_candidates)
+            else:
+                self.release_contexts(vm_id, [child])
+
+        return candidates
+
+    def click_context_center(self, vm_id, context):
+        info = self.get_context_info(vm_id, context)
+        if not info:
+            log.warning("JAB bounds 点击失败: 控件信息不可读")
+            return False
+
+        if info.width <= 0 or info.height <= 0:
+            log.warning(
+                "JAB bounds 点击失败: 控件尺寸无效 "
+                f"name={info.name.strip()!r} bounds={info.x},{info.y},{info.width},{info.height}"
+            )
+            return False
+
+        x = int(info.x + info.width / 2)
+        y = int(info.y + info.height / 2)
+
+        import pyautogui
+
+        screen_width, screen_height = pyautogui.size()
+        if not (0 <= x < screen_width and 0 <= y < screen_height):
+            log.warning(
+                "JAB bounds 点击失败: 控件坐标超出屏幕 "
+                f"name={info.name.strip()!r} bounds={info.x},{info.y},{info.width},{info.height} "
+                f"screen={screen_width}x{screen_height}"
+            )
+            return False
+
+        pyautogui.click(x=x, y=y)
+        log.debug(
+            "JAB bounds 点击: "
+            f"name={info.name.strip()!r} role={info.role_en_US.strip() or info.role.strip()!r} "
+            f"x={x} y={y}"
+        )
+        return True
 
     def trigger_action_by_path_async(
         self,
@@ -518,6 +1264,35 @@ class JABOperator:
 
         return None, None, [], {}
 
+    def wait_context_by_path(
+        self,
+        path,
+        title=None,
+        class_name=None,
+        name=None,
+        role=None,
+        require_showing=False,
+        timeout=None,
+    ):
+        self.ensure_started()
+        deadline = time.time() + (timeout or self.search_timeout)
+        while time.time() < deadline:
+            check_abort()
+            result = self.find_context_by_path_once(
+                path,
+                title=title,
+                class_name=class_name,
+                name=name,
+                role=role,
+                require_showing=require_showing,
+            )
+            context, vm_id, owned_contexts, window_info = result
+            if context:
+                self.release_contexts(vm_id, owned_contexts)
+                return window_info
+            time.sleep(0.1)
+        return None
+
     @staticmethod
     def parse_context_path(path):
         try:
@@ -529,7 +1304,16 @@ class JABOperator:
         return parts
 
     def click_control(
-        self, name, roles=(), timeout=None, action_name=None, require_showing=False
+        self,
+        name,
+        roles=(),
+        timeout=None,
+        action_name=None,
+        require_showing=False,
+        window_title=None,
+        window_class=None,
+        visible_only=True,
+        scope_hwnd=None,
     ):
         self.ensure_started()
         context, vm_id, owned_contexts = self.find_context(
@@ -537,6 +1321,10 @@ class JABOperator:
             roles=roles,
             timeout=timeout,
             require_showing=require_showing,
+            window_title=window_title,
+            window_class=window_class,
+            visible_only=visible_only,
+            scope_hwnd=scope_hwnd,
         )
         if not context:
             log.warning(f"JAB 未找到控件: {name}")
@@ -1391,11 +2179,34 @@ class JABOperator:
 
     def click_save(self, timeout=None):
         self.ensure_started()
-        return self.click_control(
+        if self.save_button_path:
+            with_path = self.do_action_by_path(
+                self.save_button_path,
+                title=self.save_button_title,
+                class_name=self.save_button_class,
+                name="保存(Ctrl+S)",
+                role="push button",
+                timeout=timeout or self.search_timeout,
+                wait=0,
+            )
+            if with_path:
+                return True
+            log.warning(
+                "JAB 保存按钮 path 快路径失败，回退按名称查找: "
+                f"path={self.save_button_path}"
+            )
+
+        ok, path = self.click_control_with_path(
             "保存(Ctrl+S)",
             roles=("push button",),
             timeout=timeout or self.search_timeout,
+            window_title=self.save_button_title,
+            window_class=self.save_button_class,
         )
+        if ok and path:
+            log.info(f"JAB 保存按钮候选 path: {path}")
+            self.save_button_path = path
+        return ok
 
     def wait_for_control(self, name, roles=(), timeout=None, require_showing=False):
         self.ensure_started()
@@ -1594,7 +2405,17 @@ class JABOperator:
             return target in text
         return text == target
 
-    def find_context(self, name, roles=(), timeout=None, require_showing=False):
+    def find_context(
+        self,
+        name,
+        roles=(),
+        timeout=None,
+        require_showing=False,
+        window_title=None,
+        window_class=None,
+        visible_only=True,
+        scope_hwnd=None,
+    ):
         deadline = time.time() + (timeout or self.search_timeout)
         normalized_roles = {role.lower() for role in roles}
 
@@ -1604,6 +2425,10 @@ class JABOperator:
                 name,
                 normalized_roles,
                 require_showing=require_showing,
+                window_title=window_title,
+                window_class=window_class,
+                visible_only=visible_only,
+                scope_hwnd=scope_hwnd,
             )
             if result[0]:
                 return result
@@ -1611,10 +2436,156 @@ class JABOperator:
 
         return None, None, []
 
-    def find_context_once(self, name, normalized_roles, require_showing=False):
-        windows = enum_windows(include_children=True)
+    def click_control_with_path(
+        self,
+        name,
+        roles=(),
+        timeout=None,
+        action_name=None,
+        require_showing=False,
+        window_title=None,
+        window_class=None,
+        visible_only=True,
+        scope_hwnd=None,
+    ):
+        self.ensure_started()
+        context, vm_id, owned_contexts, owned_indexes = self.find_context_with_path(
+            name,
+            roles=roles,
+            timeout=timeout,
+            require_showing=require_showing,
+            window_title=window_title,
+            window_class=window_class,
+            visible_only=visible_only,
+            scope_hwnd=scope_hwnd,
+        )
+        if not context:
+            log.warning(f"JAB 未找到控件: {name}")
+            return False, None
+
+        try:
+            return self.do_action(vm_id, context, action_name=action_name), (
+                "0" + "".join(f".{index}" for index in owned_indexes)
+            )
+        finally:
+            self.release_contexts(vm_id, owned_contexts)
+
+    def find_context_with_path(
+        self,
+        name,
+        roles=(),
+        timeout=None,
+        require_showing=False,
+        window_title=None,
+        window_class=None,
+        visible_only=True,
+        scope_hwnd=None,
+    ):
+        deadline = time.time() + (timeout or self.search_timeout)
+        normalized_roles = {role.lower() for role in roles}
+
+        while time.time() < deadline:
+            check_abort()
+            result = self.find_context_once_with_path(
+                name,
+                normalized_roles,
+                require_showing=require_showing,
+                window_title=window_title,
+                window_class=window_class,
+                visible_only=visible_only,
+                scope_hwnd=scope_hwnd,
+            )
+            if result[0]:
+                return result
+            time.sleep(0.2)
+
+        return None, None, [], []
+
+    def find_context_once_with_path(
+        self,
+        name,
+        normalized_roles,
+        require_showing=False,
+        window_title=None,
+        window_class=None,
+        visible_only=True,
+        scope_hwnd=None,
+    ):
+        windows = self.get_scoped_windows(scope_hwnd, include_children=True)
 
         for hwnd, title, class_name, pid, visible in windows:
+            if visible_only and not visible:
+                continue
+            if (
+                scope_hwnd is None
+                and window_title is not None
+                and title != window_title
+            ):
+                continue
+            if (
+                scope_hwnd is None
+                and window_class is not None
+                and class_name != window_class
+            ):
+                continue
+            if not self.dll.isJavaWindow(hwnd):
+                continue
+
+            vm_id = ctypes.c_long()
+            root_context = JOBJECT()
+            if not self.dll.getAccessibleContextFromHWND(
+                hwnd,
+                ctypes.byref(vm_id),
+                ctypes.byref(root_context),
+            ):
+                continue
+
+            context, owned_contexts, owned_indexes = self.find_in_tree_with_path(
+                vm_id.value,
+                root_context.value,
+                name,
+                normalized_roles,
+                require_showing,
+                depth=0,
+                owned_contexts=[],
+                owned_indexes=[],
+            )
+            if context:
+                log.debug(
+                    f"JAB 找到控件 {name}: hwnd={int(hwnd)} pid={pid} "
+                    f"class={class_name!r} title={title!r} visible={visible}"
+                )
+                return context, vm_id.value, owned_contexts, owned_indexes
+
+        return None, None, [], []
+
+    def find_context_once(
+        self,
+        name,
+        normalized_roles,
+        require_showing=False,
+        window_title=None,
+        window_class=None,
+        visible_only=True,
+        scope_hwnd=None,
+    ):
+        windows = self.get_scoped_windows(scope_hwnd, include_children=True)
+
+        for hwnd, title, class_name, pid, visible in windows:
+            if visible_only and not visible:
+                continue
+            if (
+                scope_hwnd is None
+                and window_title is not None
+                and title != window_title
+            ):
+                continue
+            if (
+                scope_hwnd is None
+                and window_class is not None
+                and class_name != window_class
+            ):
+                continue
             if not self.dll.isJavaWindow(hwnd):
                 continue
 
@@ -1644,6 +2615,45 @@ class JABOperator:
                 return context, vm_id.value, owned_contexts
 
         return None, None, []
+
+    def get_scoped_windows(self, scope_hwnd=None, include_children=True):
+        windows = enum_windows(include_children=include_children)
+        if scope_hwnd is None or os.name != "nt":
+            return windows
+
+        user32 = ctypes.windll.user32
+        scope_pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(
+            wintypes.HWND(scope_hwnd), ctypes.byref(scope_pid)
+        )
+        scope_pid_value = int(scope_pid.value)
+        if not scope_pid_value:
+            return windows
+
+        child_hwnds = set()
+        enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+        def child_callback(hwnd, _lparam):
+            child_hwnds.add(int(hwnd))
+            return True
+
+        user32.EnumChildWindows(wintypes.HWND(scope_hwnd), enum_proc(child_callback), 0)
+
+        scoped = []
+        for hwnd, title, class_name, pid, visible in windows:
+            hwnd_value = int(hwnd)
+            if hwnd_value == int(scope_hwnd) or hwnd_value in child_hwnds:
+                scoped.append((hwnd, title, class_name, pid, visible))
+                continue
+            if pid == scope_pid_value and class_name in (
+                "SunAwtCanvas",
+                "SunAwtFrame",
+                "SunAwtDialog",
+                "YonyouUWnd",
+            ):
+                scoped.append((hwnd, title, class_name, pid, visible))
+
+        return scoped
 
     def find_in_tree(
         self, vm_id, context, name, normalized_roles, require_showing, depth, owned_path
@@ -1694,6 +2704,65 @@ class JABOperator:
             self.release_contexts(vm_id, [child])
 
         return None, []
+
+    def find_in_tree_with_path(
+        self,
+        vm_id,
+        context,
+        name,
+        normalized_roles,
+        require_showing,
+        depth,
+        owned_contexts,
+        owned_indexes,
+    ):
+        info = self.get_context_info(vm_id, context)
+        if not info:
+            return None, [], []
+
+        role = (info.role_en_US.strip() or info.role.strip()).lower()
+        control_name = info.name.strip()
+        desc = info.description.strip()
+        states = (info.states_en_US.strip() or info.states.strip()).lower()
+
+        if self.matches_control(
+            control_name,
+            desc,
+            role,
+            states,
+            name,
+            normalized_roles,
+            require_showing,
+        ):
+            return context, list(owned_contexts), list(owned_indexes)
+
+        if depth >= self.max_depth:
+            return None, [], []
+        if role == "table" and "table" not in normalized_roles:
+            return None, [], []
+
+        child_count = min(info.childrenCount, self.max_children)
+        for index in range(child_count):
+            child = self.dll.getAccessibleChildFromContext(vm_id, context, index)
+            if not child:
+                continue
+
+            found, found_contexts, found_indexes = self.find_in_tree_with_path(
+                vm_id,
+                child,
+                name,
+                normalized_roles,
+                require_showing,
+                depth + 1,
+                owned_contexts + [child],
+                owned_indexes + [index],
+            )
+            if found:
+                return found, found_contexts, found_indexes
+
+            self.release_contexts(vm_id, [child])
+
+        return None, [], []
 
     def get_context_info(self, vm_id, context):
         info = AccessibleContextInfo()
