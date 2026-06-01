@@ -21,7 +21,13 @@
 ## 关键文件
 
 - `tools/jab_batch.py`：批量命令入口。
-- `core/jab_batch_processor.py`：凭证生成/回填业务流程。
+- `core/jab_batch_processor.py`：批量流程装配入口，只保留 CLI 任务级入口和共享运行状态。
+- `core/nc_state.py` / `core/nc_page_probe.py`：NC 页面状态识别和 JAB 页面特征探测。
+- `core/nc_pending_workflow.py`：待生成列表匹配、生成入口、恢复当前制单窗口。
+- `core/nc_voucher_workflow.py`：制单窗口匹配、保存、关闭后验证。
+- `core/nc_switch_generated_workflow.py`：切换到已生成/正式单据列表。
+- `core/nc_backfill_workflow.py`：已生成列表凭证号回填。
+- `core/nc_table_matcher.py`：NC 表格按金额、对手方、日期的匹配逻辑。
 - `core/jab_operator.py`：JAB 底层封装，负责读表、选行、按钮动作、F3/F5、关闭窗口、隐藏空白 AWT 小窗。
 - `core/data_handler.py`：Excel 读取、拼接 key 解析、结果写回、拆分 key。
 - `config.json`：Excel 路径、JAB DLL、列位和查询切换配置。

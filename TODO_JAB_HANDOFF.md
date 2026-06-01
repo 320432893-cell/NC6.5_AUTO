@@ -1,8 +1,27 @@
 # NC JAB 后续 TODO
 
-日期：2026-05-28
+日期：2026-06-01
 
 当前项目说明在 `README.md`，已实现和验证记录在 `CHANGELOG.md`。本文只保留后续开发待办。
+
+## 2026-06-01 当前进度和结论
+
+- `JABBatchProcessor` 已从大单文件拆成装配入口：
+  - `core/nc_state.py` / `core/nc_page_probe.py`：页面状态识别和页面特征探测。
+  - `core/nc_pending_workflow.py`：待生成列表、生成入口、恢复当前制单窗口。
+  - `core/nc_voucher_workflow.py`：制单窗口匹配、保存、关闭后验证。
+  - `core/nc_switch_generated_workflow.py`：切换到已生成/正式单据列表。
+  - `core/nc_backfill_workflow.py`：已生成列表凭证号回填。
+  - `core/nc_table_matcher.py`：表格匹配和批次构造。
+- 页面状态识别已落地为 `pending`、`generated`、`voucher_open`、`query_open`、`loading`、`error`，流程入口已加 `require_page_state()` 守卫。
+- 生成、保存、切已生成、回填流程已拆出独立 workflow，并补了状态事件和状态跳转记录。
+- 当前没有继续低风险拆分项；后续若继续改，优先做模型/契约/错误类型这类有设计影响的结构化演进。
+
+### 当前不继续做的拆分
+
+- 不继续拆 `NCVoucherWorkflow`，虽然文件仍较长，但它内部保存策略、匹配兜底、验证逻辑耦合较强，继续拆会扩大行为风险。
+- 不把状态识别 wrapper 全部从 `JABBatchProcessor` 移除；当前 workflow 统一通过装配入口共享状态检测能力，先保持边界稳定。
+- 不把 `__getattr__` 代理立即删掉；下一步若做强类型模型/显式依赖注入，再一并收紧。
 
 ## 2026-05-28 当前进度和结论
 
@@ -59,24 +78,18 @@ sample_voucher_count=11
 - NC 查询条件区有些输入框视觉上像两行，实际 JAB/布局树里可能像同一个 div/容器里换行显示，仍属于同一个容器或同一行组。不能只按肉眼的“上一行/下一行”推断控件归属，必须结合 label、row 容器、role、bounds 和后置状态验证。
 - UI 现象和日志不一致时，应暂停并对齐，不要继续叠加实验。
 
-### 下一步
+### 已完成/仍待办
 
-1. 把 `generated_date_value` 做成显式配置或命令参数。
-   - 默认 `date.today()` 容易误查今天。
-   - 测试 5/27 时应显式传 `2026-05-27`。
+1. `generated_date_value` 已支持显式命令参数 `--generated-date YYYY-MM-DD`。
+   - 优先级：命令行、`config.json`、当天日期。
 
-2. 继续拆分 `switch_run_steps` 内部耗时。
-   - 当前 perf 只记录了整体 `switch_run_steps=4.001s`。
-   - 需要细分：`formal_action`、`date_from`、`date_to`、`confirm_action`。
+2. `switch_run_steps` 内部耗时已细分为正式单据、起始日期、结束日期、确定等步骤。
 
-3. `backfill` 增加“最近 N 行扫描 + 全表兜底”。
+3. `backfill` 仍可增加“最近 N 行扫描 + 全表兜底”。
    - 在日期筛选后表格已变小的情况下，优先匹配当前结果集。
    - 如未找到，再全表兜底，避免漏回填。
 
-4. `switch-generated` 完整纳入正式流程后，再更新 README/CHANGELOG。
-   - 当前 TODO 先记录实验结论。
-   - README 只写稳定操作手册。
-   - CHANGELOG 记录最终确认后的变更。
+4. README/CHANGELOG 已记录稳定操作手册和历史变更，后续新增命令或配置时继续同步维护。
 
 ## 0. 当前边界
 

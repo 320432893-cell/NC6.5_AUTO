@@ -1,5 +1,34 @@
 # 更新日志
 
+## 2026-06-01 - JAB workflow 拆分和状态守卫
+
+### 本次追加
+
+- 新增页面状态识别和状态守卫：
+  - `pending`
+  - `generated`
+  - `voucher_open`
+  - `query_open`
+  - `loading`
+  - `error`
+- 页面状态识别同时检查父页面标签/按钮布局/表格数据特征；制单、查询按阻塞式子窗口处理。
+- 增加状态事件和状态跳转记录，便于后续定位“卡在哪个页面/窗口”。
+- 将原 `JABBatchProcessor` 大文件拆分为多个 workflow：
+  - `core/nc_state.py`
+  - `core/nc_page_probe.py`
+  - `core/nc_pending_workflow.py`
+  - `core/nc_voucher_workflow.py`
+  - `core/nc_switch_generated_workflow.py`
+  - `core/nc_backfill_workflow.py`
+  - `core/nc_table_matcher.py`
+- `JABBatchProcessor` 收敛为装配入口，只保留 CLI 使用的任务级方法和共享运行状态。
+- 清理重构过渡期的纯转发 wrapper，减少主类 API 噪音。
+
+### 当前结论
+
+- 当前没有继续低风险拆分项。
+- 后续结构演进优先级应放在 dataclass 模型、契约检查、统一错误类型，而不是继续机械拆文件。
+
 ## 2026-05-28 - 查询切换快路径和日期筛选验证
 
 ### 本次追加
