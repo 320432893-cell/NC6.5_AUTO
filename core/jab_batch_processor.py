@@ -3,7 +3,6 @@ import re
 import subprocess
 import sys
 import itertools
-from dataclasses import dataclass
 from collections import defaultdict
 from datetime import date
 from decimal import Decimal
@@ -12,17 +11,10 @@ from pathlib import Path
 from core.data_handler import DataHandler
 from core.jab_operator import JABOperator
 from core.logger import log
+from core.nc_state import NCStateDetector, normalize_generated_voucher
 from core.perf import PerfRecorder
 from core.run_state import RunStateRecorder
 from core.utils import check_abort
-
-
-@dataclass
-class NCPageState:
-    name: str
-    reason: str
-    table: dict | None = None
-    match_ratio: float | None = None
 
 
 class JABBatchProcessor:
@@ -96,9 +88,15 @@ class JABBatchProcessor:
             self.batch_cfg.get("generated_voucher_max", 9999)
         )
         self.config_path = config.get("_config_path", "config.json")
-        self.state_wait_timeout = float(self.batch_cfg.get("state_wait_timeout", 2.0))
-        self.state_wait_interval = float(
-            self.batch_cfg.get("state_wait_interval", 0.2)
+        self.state_detector = NCStateDetector(
+            self.jab,
+            self.batch_cfg,
+            self.generated_date_value,
+            self.generated_date_col,
+            self.voucher_col,
+            self.generated_voucher_max,
+            self.record_event,
+            self.record_transition,
         )
 
     def close(self):
@@ -929,209 +927,33 @@ class JABBatchProcessor:
         return "unknown"
 
     def require_page_state(self, expected, items=None, command=""):
-        deadline = time.time() + self.state_wait_timeout
-        last_state = None
-        while True:
-            last_state = self.detect_page_state(items=items)
-            self.record_event(
-                "nc_page_state",
-                command=command,
-                expected=expected,
-                actual=last_state.name,
-                reason=last_state.reason,
-                match_ratio=last_state.match_ratio,
-            )
-            if last_state.name == expected:
-                self.record_transition(
-                    "state_guard_passed",
-                    to_state=last_state.name,
-                    command=command,
-                    expected=expected,
-                    reason=last_state.reason,
-                )
-                log.info(
-                    f"NC 页面状态确认: expected={expected} reason={last_state.reason}"
-                )
-                return last_state
-            if last_state.name != "loading" or time.time() >= deadline:
-                break
-            time.sleep(self.state_wait_interval)
-
-        raise RuntimeError(
-            f"NC 页面状态不正确: command={command} expected={expected} "
-            f"actual={last_state.name} reason={last_state.reason}"
-        )
+        return self.state_detector.require_page_state(expected, items, command)
 
     def detect_page_state(self, items=None):
-        if self.jab.window_exists(
-            self.voucher_window_title,
-            class_name=self.voucher_window_class,
-        ):
-            return self.detect_voucher_window_state()
-
-        open_query = self.batch_cfg.get("open_query", {})
-        if self.jab.window_exists(
-            open_query.get("dialog_title", "查询"),
-            class_name=open_query.get("dialog_class", "SunAwtDialog"),
-        ):
-            return NCPageState("query_open", "查询子窗口打开，父页面被阻塞")
-
-        controls = self.collect_page_controls()
-        has_parent = any(control["name"] == "单据生成" for control in controls)
-        visible_names = {
-            control["name"] for control in controls if control.get("showing")
-        }
-        has_buttons = {"查询", "生成"}.issubset(visible_names)
-        has_formal = "正式单据" in visible_names
-
-        tables = self.read_page_table_signatures()
-        main = self.choose_main_signature_table(tables)
-
-        if not has_parent or not main:
-            if self.looks_loading(controls, tables):
-                return NCPageState(
-                    "loading",
-                    f"父页面/主表暂不完整 parent={has_parent} tables={len(tables)}",
-                )
-            return NCPageState(
-                "error",
-                f"缺少父页面或主表 parent={has_parent} tables={len(tables)}",
-            )
-
-        if not has_buttons:
-            return NCPageState(
-                "error",
-                f"按钮布局不完整 visible={sorted(visible_names)}",
-                table=main,
-            )
-
-        if self.is_generated_signature(main, require_formal=has_formal):
-            return NCPageState("generated", "父页+按钮+已生成表特征", table=main)
-
-        ratio = self.table_match_ratio(main.get("rows", []), items or [])
-        if self.is_pending_signature(main, visible_names):
-            return NCPageState(
-                "pending",
-                f"父页+按钮+待生成表特征 sample_match_ratio={ratio:.3f}",
-                table=main,
-                match_ratio=ratio,
-            )
-
-        if self.looks_loading(controls, tables):
-            return NCPageState("loading", "父页面存在但表格特征暂不完整", table=main)
-
-        return NCPageState(
-            "error",
-            (
-                f"未知页面 rows={main.get('row_count')} cols={main.get('col_count')} "
-                f"match_ratio={ratio:.3f}"
-            ),
-            table=main,
-            match_ratio=ratio,
-        )
+        return self.state_detector.detect_page_state(items)
 
     def detect_voucher_window_state(self):
-        tables = self.jab.read_window_table_cells(
-            self.voucher_window_title,
-            max_rows=5,
-            max_cols=13,
-        )
-        voucher_tables = [
-            table
-            for table in tables
-            if table.get("row_count", 0) > 0 and table.get("col_count") == 13
-        ]
-        buttons = self.collect_window_controls(
-            self.voucher_window_title,
-            self.voucher_window_class,
-            ("修改", "保存"),
-        )
-        visible_buttons = {button["name"] for button in buttons if button["showing"]}
-        if voucher_tables and {"修改", "保存"}.issubset(visible_buttons):
-            rows = sum(table["row_count"] for table in voucher_tables)
-            return NCPageState(
-                "voucher_open",
-                f"制单子窗口打开，父页面被阻塞 rows={rows} buttons={sorted(visible_buttons)}",
-            )
-        return NCPageState(
-            "error",
-            (
-                "制单窗口特征不完整: "
-                f"tables={[(t.get('row_count'), t.get('col_count')) for t in tables]} "
-                f"buttons={sorted(visible_buttons)}"
-            ),
-        )
+        return self.state_detector.detect_voucher_window_state()
 
     def collect_page_controls(self):
-        self.jab.ensure_started()
-        names = ("单据生成", "查询", "生成", "前台生成", "正式单据")
-        controls = []
-        seen = set()
-        for name in names:
-            context, vm_id, owned, path = self.jab.find_context_once_with_path(
-                name,
-                normalized_roles=[],
-                require_showing=True,
-                visible_only=True,
-            )
-            if not context:
-                continue
-            info = self.jab.get_context_info(vm_id, context)
-            if not info:
-                self.jab.release_contexts(vm_id, owned)
-                continue
-            states = (info.states_en_US.strip() or info.states.strip()).lower()
-            key = (name, ".".join(map(str, path)))
-            if key not in seen:
-                seen.add(key)
-                controls.append(
-                    {
-                        "name": name,
-                        "path": ".".join(map(str, path)),
-                        "role": (info.role_en_US.strip() or info.role.strip()),
-                        "showing": "visible" in states and "showing" in states,
-                    }
-                )
-            self.jab.release_contexts(vm_id, owned)
-        return controls
+        return self.state_detector.probe.collect_named_controls(
+            ("单据生成", "查询", "生成", "前台生成", "正式单据")
+        )
 
     def collect_window_controls(self, window_title, window_class, names):
-        self.jab.ensure_started()
-        controls = []
-        seen = set()
-        for name in names:
-            context, vm_id, owned, path = self.jab.find_context_once_with_path(
-                name,
-                normalized_roles=[],
-                require_showing=True,
-                window_title=window_title,
-                window_class=window_class,
-                visible_only=True,
-            )
-            if not context:
-                continue
-            info = self.jab.get_context_info(vm_id, context)
-            if not info:
-                self.jab.release_contexts(vm_id, owned)
-                continue
-            states = (info.states_en_US.strip() or info.states.strip()).lower()
-            key = (name, ".".join(map(str, path)))
-            if key not in seen:
-                seen.add(key)
-                controls.append(
-                    {
-                        "name": name,
-                        "path": ".".join(map(str, path)),
-                        "role": (info.role_en_US.strip() or info.role.strip()),
-                        "showing": "visible" in states and "showing" in states,
-                    }
-                )
-            self.jab.release_contexts(vm_id, owned)
-        return controls
+        return self.state_detector.probe.collect_named_controls(
+            names,
+            window_title=window_title,
+            window_class=window_class,
+        )
 
     def read_page_table_signatures(self):
-        tables = self.jab.read_all_table_cells(max_rows=25, max_cols=30)
-        return [self.describe_signature_table(table) for table in tables]
+        return self.state_detector.probe.read_page_table_signatures(
+            self.generated_date_col,
+            self.voucher_col,
+            self.jab.amount_col,
+            self.jab.partner_col,
+        )
 
     def describe_signature_table(self, table):
         date_values = self.sample_table_col(table, self.generated_date_col)
@@ -1175,76 +997,28 @@ class JABBatchProcessor:
         return values
 
     def choose_main_signature_table(self, tables):
-        candidates = [table for table in tables if table.get("col_count", 0) > 1]
-        if not candidates:
-            return None
-        return max(
-            candidates,
-            key=lambda table: table.get("row_count", 0) * table.get("col_count", 0),
-        )
+        from core.nc_state import choose_main_signature_table
+
+        return choose_main_signature_table(tables)
 
     def is_generated_signature(self, table, require_formal=True):
-        if table.get("col_count") != 23:
-            return False
-        if require_formal is False:
-            return False
-        target = str(self.generated_date_value).strip()
-        date_values = [str(value).strip() for value in table.get("date_values", [])]
-        if target and not date_values:
-            return False
-        if target and any(value != target for value in date_values[:5]):
-            return False
-        vouchers = table.get("voucher_values", [])
-        return any(self.normalize_generated_voucher(value) for value in vouchers)
+        return self.state_detector.is_generated_signature(table, require_formal)
 
     def is_pending_signature(self, table, visible_names):
-        if table.get("col_count") != 25:
-            return False
-        if table.get("col_count") == 23 and table.get("voucher_values"):
-            return False
-        if "前台生成" not in visible_names:
-            log.info("未枚举到前台生成按钮，按父页按钮和表格列数判定待生成页")
-        return not table.get("voucher_values")
+        from core.nc_state import is_pending_signature
+
+        return is_pending_signature(table, visible_names)
 
     def table_match_ratio(self, rows, items):
-        parsed = [item for item in items if not item.get("parse_error")]
-        if not parsed:
-            return 0.0
-        index = {
-            (row.get("amount"), row.get("partner"))
-            for row in rows
-            if row.get("amount") is not None and row.get("partner")
-        }
-        if not index:
-            return 0.0
-        matched = 0
-        for item in parsed:
-            key = (
-                self._as_decimal(item["amount"]),
-                self.jab.normalize_text(item["partner"]),
-            )
-            if key in index:
-                matched += 1
-        return matched / len(parsed)
+        return self.state_detector.table_match_ratio(rows, items)
 
     def looks_loading(self, controls, tables):
-        if not controls and not tables:
-            return True
-        if controls and not tables:
-            return True
-        main = self.choose_main_signature_table(tables)
-        return bool(main and main.get("row_count", 0) == 0)
+        from core.nc_state import looks_loading
+
+        return looks_loading(controls, tables)
 
     def normalize_generated_voucher(self, raw_voucher):
-        text = str(raw_voucher or "").strip()
-        match = re.search(r"\d+", text)
-        if not match:
-            return None
-
-        value = int(match.group(0))
-        if value <= 0 or value > self.generated_voucher_max:
-            return None
-        return value
+        return normalize_generated_voucher(raw_voucher, self.generated_voucher_max)
 
     def match_current_table(self, items, voucher_col=None, prefer_generated_date=False):
         extra_cols = [self.generated_date_col] if prefer_generated_date else None
