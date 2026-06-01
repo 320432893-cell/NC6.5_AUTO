@@ -73,8 +73,8 @@ class NCPendingWorkflow:
 
         self.require_page_state("pending", parsed_items, command="plan")
         self.run_state.set_stage("plan_match_pending_table")
-        matches, issues = self.match_current_table(parsed_items)
-        batches = self.build_increasing_batches(matches)
+        matches, issues = self.table_matcher.match_current_table(parsed_items)
+        batches = self.table_matcher.build_increasing_batches(matches)
         self.run_state.update_counts(
             parse_errors=len(parse_errors),
             matches=len(matches),
@@ -159,7 +159,7 @@ class NCPendingWorkflow:
                     "generate_match_pending_table",
                     excel_rows=[item["row"] for item in pending],
                 )
-                matches, issues = self.match_current_table(pending)
+                matches, issues = self.table_matcher.match_current_table(pending)
                 self.perf.event(
                     "pending_match_done",
                     pending=len(pending),
@@ -270,7 +270,9 @@ class NCPendingWorkflow:
                 pending=len(pending),
                 save_batch_index=save_batches + 1,
             ):
-                voucher_matches, issues = self.match_voucher_table(pending)
+                voucher_matches, issues = (
+                    self.processor.voucher_workflow.match_voucher_table(pending)
+                )
             self.perf.event(
                 "voucher_match_done",
                 pending=len(pending),
@@ -285,7 +287,11 @@ class NCPendingWorkflow:
                 )
                 raise RuntimeError(f"制单表匹配失败: {detail}")
 
-            new_saved, new_batches = self.save_current_voucher_matches(voucher_matches)
+            new_saved, new_batches = (
+                self.processor.voucher_workflow.save_current_voucher_matches(
+                    voucher_matches
+                )
+            )
             saved_matches.extend(new_saved)
             saved_rows = {match["item"]["row"] for match in new_saved}
             if max_save_batches and save_batches >= max_save_batches:
@@ -310,7 +316,9 @@ class NCPendingWorkflow:
             saved_excel_rows=[match["item"]["row"] for match in saved_matches],
         )
         with self.perf.span("pending_final_verify", rows=len(saved_matches)):
-            self.close_and_verify_pending_removed(saved_matches)
+            self.processor.voucher_workflow.close_and_verify_pending_removed(
+                saved_matches
+            )
         return saved_matches, save_batches
 
     def resume_current_voucher_window(self, limit=None, start_row=None, end_row=None):
@@ -347,7 +355,7 @@ class NCPendingWorkflow:
                 pending,
                 command="resume-voucher",
             )
-            tables = self.read_voucher_tables(len(pending))
+            tables = self.processor.voucher_workflow.read_voucher_tables(len(pending))
             matches = [
                 {
                     "item": item,
@@ -356,7 +364,11 @@ class NCPendingWorkflow:
                 }
                 for item in pending
             ]
-            voucher_matches, issues = self.match_voucher_table(matches, tables=tables)
+            voucher_matches, issues = (
+                self.processor.voucher_workflow.match_voucher_table(
+                    matches, tables=tables
+                )
+            )
             if issues:
                 table_rows = sum(table["row_count"] for table in tables)
                 if len(voucher_matches) != table_rows:
@@ -370,15 +382,19 @@ class NCPendingWorkflow:
                     f"excel_rows={[issue['item']['row'] for issue in issues]}"
                 )
 
-            saved_matches, save_batches = self.save_current_voucher_matches(
-                voucher_matches
+            saved_matches, save_batches = (
+                self.processor.voucher_workflow.save_current_voucher_matches(
+                    voucher_matches
+                )
             )
             self.run_state.set_stage(
                 "resume_pending_final_verify",
                 saved_excel_rows=[match["item"]["row"] for match in saved_matches],
             )
             with self.perf.span("resume_pending_final_verify", rows=len(saved_matches)):
-                self.close_and_verify_pending_removed(saved_matches)
+                self.processor.voucher_workflow.close_and_verify_pending_removed(
+                    saved_matches
+                )
             log.info(
                 f"JAB 恢复制单窗口保存完成: batches={save_batches}, saved={len(saved_matches)}"
             )
@@ -397,15 +413,6 @@ class NCPendingWorkflow:
                 reason = f"{reason}-NC行{','.join(str(r) for r in issue['rows'][:5])}"
             updates[issue["item"]["row"]] = f"{prefix}{reason}"
         return updates
-
-    def _append_match_or_issue(self, *args, **kwargs):
-        return self.table_matcher._append_match_or_issue(*args, **kwargs)
-
-    def _find_contains(self, *args, **kwargs):
-        return self.table_matcher._find_contains(*args, **kwargs)
-
-    def _as_decimal(self, *args, **kwargs):
-        return self.table_matcher._as_decimal(*args, **kwargs)
 
     def _log_plan(self, items, parse_errors, matches, issues, batches):
         log.info(

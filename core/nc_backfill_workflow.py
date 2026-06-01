@@ -21,7 +21,7 @@ class NCBackfillWorkflow:
                 start_row=start_row,
                 end_row=end_row,
             )
-            items = self.load_pending_items(
+            items = self.processor.pending_workflow.load_pending_items(
                 skip_filled=False,
                 skip_any_status=False,
                 limit=limit,
@@ -54,7 +54,7 @@ class NCBackfillWorkflow:
                 excel_rows=[item["row"] for item in items],
             )
             self.require_page_state("generated", items, command="backfill")
-            matches, issues = self.match_current_table(
+            matches, issues = self.table_matcher.match_current_table(
                 items,
                 voucher_col=self.voucher_col,
                 prefer_generated_date=True,
@@ -85,7 +85,11 @@ class NCBackfillWorkflow:
                 else:
                     updates[match["item"]["row"]] = "已生成未取到凭证号"
 
-            updates.update(self.format_issue_updates(issues, prefix="回填"))
+            updates.update(
+                self.processor.pending_workflow.format_issue_updates(
+                    issues, prefix="回填"
+                )
+            )
             self.run_state.set_stage("backfill_write_excel", rows=len(updates))
             with self.perf.span("backfill_excel_save", rows=len(updates)):
                 self.data_handler.save_jab_results(updates)

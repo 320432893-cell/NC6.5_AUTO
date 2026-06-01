@@ -138,42 +138,6 @@ class JABBatchProcessor:
     def switch_to_generated_list(self, *args, **kwargs):
         return self.switch_generated_workflow.switch_to_generated_list(*args, **kwargs)
 
-    def run_switch_generated_steps(self, *args, **kwargs):
-        return self.switch_generated_workflow.run_switch_generated_steps(
-            *args, **kwargs
-        )
-
-    def get_switch_step_name(self, *args, **kwargs):
-        return self.switch_generated_workflow.get_switch_step_name(*args, **kwargs)
-
-    def run_query_window_step(self, *args, **kwargs):
-        return self.switch_generated_workflow.run_query_window_step(*args, **kwargs)
-
-    def find_query_window(self, *args, **kwargs):
-        return self.switch_generated_workflow.find_query_window(*args, **kwargs)
-
-    def open_query_with_jab_action(self, *args, **kwargs):
-        return self.switch_generated_workflow.open_query_with_jab_action(
-            *args, **kwargs
-        )
-
-    def _trigger_query_action_path(self, *args, **kwargs):
-        return self.switch_generated_workflow._trigger_query_action_path(
-            *args, **kwargs
-        )
-
-    def _do_query_action_path(self, *args, **kwargs):
-        return self.switch_generated_workflow._do_query_action_path(*args, **kwargs)
-
-    def run_jab_action_subprocess(self, *args, **kwargs):
-        return self.switch_generated_workflow.run_jab_action_subprocess(*args, **kwargs)
-
-    def open_query_with_hotkey(self, *args, **kwargs):
-        return self.switch_generated_workflow.open_query_with_hotkey(*args, **kwargs)
-
-    def get_nc_workflow_state(self, *args, **kwargs):
-        return self.switch_generated_workflow.get_nc_workflow_state(*args, **kwargs)
-
     def require_page_state(self, expected, items=None, command=""):
         return self.state_detector.require_page_state(expected, items, command)
 
@@ -271,96 +235,10 @@ class JABBatchProcessor:
     def match_current_table(self, *args, **kwargs):
         return self.table_matcher.match_current_table(*args, **kwargs)
 
-    def filter_generated_date_rows(self, *args, **kwargs):
-        return self.table_matcher.filter_generated_date_rows(*args, **kwargs)
-
-    def build_increasing_batches(self, *args, **kwargs):
-        return self.table_matcher.build_increasing_batches(*args, **kwargs)
-
-    def process_full_selection(self, *args, **kwargs):
-        return self.pending_workflow.process_full_selection(*args, **kwargs)
-
     def resume_current_voucher_window(self, *args, **kwargs):
         return self.pending_workflow.resume_current_voucher_window(*args, **kwargs)
-
-    def save_current_voucher_matches(self, *args, **kwargs):
-        return self.voucher_workflow.save_current_voucher_matches(*args, **kwargs)
-
-    def trigger_voucher_save(self, *args, **kwargs):
-        return self.voucher_workflow.trigger_voucher_save(*args, **kwargs)
-
-    def prepare_hotkey_save_focus(self, *args, **kwargs):
-        return self.voucher_workflow.prepare_hotkey_save_focus(*args, **kwargs)
-
-    def voucher_verify_result_state(self, *args, **kwargs):
-        return self.voucher_workflow.voucher_verify_result_state(*args, **kwargs)
-
-    def should_use_voucher_queue_cache(self, *args, **kwargs):
-        return self.voucher_workflow.should_use_voucher_queue_cache(*args, **kwargs)
-
-    def advance_voucher_queue_cache(self, *args, **kwargs):
-        return self.voucher_workflow.advance_voucher_queue_cache(*args, **kwargs)
-
-    def read_voucher_tables(self, *args, **kwargs):
-        return self.voucher_workflow.read_voucher_tables(*args, **kwargs)
-
-    def filter_voucher_tables(self, *args, **kwargs):
-        return self.voucher_workflow.filter_voucher_tables(*args, **kwargs)
-
-    def match_voucher_table(self, *args, **kwargs):
-        return self.voucher_workflow.match_voucher_table(*args, **kwargs)
-
-    def _append_voucher_match(self, *args, **kwargs):
-        return self.voucher_workflow._append_voucher_match(*args, **kwargs)
-
-    def find_voucher_order_fallback(self, *args, **kwargs):
-        return self.voucher_workflow.find_voucher_order_fallback(*args, **kwargs)
-
-    def find_partner_rate_group_matches(self, *args, **kwargs):
-        return self.voucher_workflow.find_partner_rate_group_matches(*args, **kwargs)
-
-    def choose_rate_consistent_assignment(self, *args, **kwargs):
-        return self.voucher_workflow.choose_rate_consistent_assignment(*args, **kwargs)
-
-    def normalize_partner_match_text(self, *args, **kwargs):
-        return self.voucher_workflow.normalize_partner_match_text(*args, **kwargs)
-
-    def find_voucher_same_count_order_fallback(self, *args, **kwargs):
-        return self.voucher_workflow.find_voucher_same_count_order_fallback(
-            *args, **kwargs
-        )
-
-    def build_voucher_save_batches(self, *args, **kwargs):
-        return self.voucher_workflow.build_voucher_save_batches(*args, **kwargs)
-
-    def build_safe_pending_row_batches(self, *args, **kwargs):
-        return self.voucher_workflow.build_safe_pending_row_batches(*args, **kwargs)
-
-    def build_voucher_bottom_up_batches(self, *args, **kwargs):
-        return self.voucher_workflow.build_voucher_bottom_up_batches(*args, **kwargs)
-
-    def get_voucher_selection_rows(self, *args, **kwargs):
-        return self.voucher_workflow.get_voucher_selection_rows(*args, **kwargs)
-
-    def verify_voucher_batch_removed(self, *args, **kwargs):
-        return self.voucher_workflow.verify_voucher_batch_removed(*args, **kwargs)
-
-    def close_and_verify_pending_removed(self, *args, **kwargs):
-        return self.voucher_workflow.close_and_verify_pending_removed(*args, **kwargs)
-
-    def verify_current_voucher_record(self, *args, **kwargs):
-        return self.voucher_workflow.verify_current_voucher_record(*args, **kwargs)
-
-    def wait_for_next_voucher_record(self, *args, **kwargs):
-        return self.voucher_workflow.wait_for_next_voucher_record(*args, **kwargs)
 
     def parse_optional_decimal(self, value):
         if value in (None, ""):
             return None
         return Decimal(str(value))
-
-    def format_issue_updates(self, *args, **kwargs):
-        return self.pending_workflow.format_issue_updates(*args, **kwargs)
-
-    def _log_plan(self, *args, **kwargs):
-        return self.pending_workflow._log_plan(*args, **kwargs)

@@ -393,7 +393,8 @@ class NCVoucherWorkflow:
                         }
                     )
                 if (
-                    record["amount"] == self._as_decimal(match["item"]["amount"])
+                    record["amount"]
+                    == self.table_matcher._as_decimal(match["item"]["amount"])
                     and partner_key
                     and partner_key in record["partner_key_text"]
                 ):
@@ -567,7 +568,7 @@ class NCVoucherWorkflow:
             rates = []
             valid = True
             for match, record in zip(matches, permutation):
-                excel_amount = self._as_decimal(match["item"]["amount"])
+                excel_amount = self.table_matcher._as_decimal(match["item"]["amount"])
                 if not excel_amount:
                     valid = False
                     break
@@ -811,7 +812,7 @@ class NCVoucherWorkflow:
         for match in voucher_batch:
             item = match["item"]
             key = (
-                self._as_decimal(item["amount"]),
+                self.table_matcher._as_decimal(item["amount"]),
                 self.jab.normalize_text(item["partner"]),
             )
             if index.get(key):
