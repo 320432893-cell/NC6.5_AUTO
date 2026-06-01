@@ -3,6 +3,7 @@ import re
 import subprocess
 import sys
 import itertools
+from dataclasses import dataclass
 from collections import defaultdict
 from datetime import date
 from decimal import Decimal
@@ -14,6 +15,14 @@ from core.logger import log
 from core.perf import PerfRecorder
 from core.run_state import RunStateRecorder
 from core.utils import check_abort
+
+
+@dataclass
+class NCPageState:
+    name: str
+    reason: str
+    table: dict | None = None
+    match_ratio: float | None = None
 
 
 class JABBatchProcessor:
@@ -87,12 +96,29 @@ class JABBatchProcessor:
             self.batch_cfg.get("generated_voucher_max", 9999)
         )
         self.config_path = config.get("_config_path", "config.json")
+        self.state_wait_timeout = float(self.batch_cfg.get("state_wait_timeout", 2.0))
+        self.state_wait_interval = float(
+            self.batch_cfg.get("state_wait_interval", 0.2)
+        )
 
     def close(self):
         self.jab.close()
 
     def finish_run_state(self, status, error=None):
         self.run_state.finish(status, error=error)
+
+    def record_event(self, name, **kwargs):
+        self.run_state.event(name, **kwargs)
+        self.perf.event(name, **kwargs)
+
+    def record_transition(self, event, from_state=None, to_state=None, **kwargs):
+        self.record_event(
+            "state_transition",
+            event=event,
+            from_state=from_state,
+            to_state=to_state,
+            **kwargs,
+        )
 
     def load_pending_items(
         self,
@@ -154,6 +180,7 @@ class JABBatchProcessor:
         parsed_items = [item for item in items if not item.get("parse_error")]
         parse_errors = [item for item in items if item.get("parse_error")]
 
+        self.require_page_state("pending", parsed_items, command="plan")
         self.run_state.set_stage("plan_match_pending_table")
         matches, issues = self.match_current_table(parsed_items)
         batches = self.build_increasing_batches(matches)
@@ -236,6 +263,7 @@ class JABBatchProcessor:
 
             if pending:
                 check_abort()
+                self.require_page_state("pending", pending, command="generate")
                 self.run_state.set_stage(
                     "generate_match_pending_table",
                     excel_rows=[item["row"] for item in pending],
@@ -335,6 +363,7 @@ class JABBatchProcessor:
                 "backfill_match_generated_table",
                 excel_rows=[item["row"] for item in items],
             )
+            self.require_page_state("generated", items, command="backfill")
             matches, issues = self.match_current_table(
                 items,
                 voucher_col=self.voucher_col,
@@ -421,6 +450,11 @@ class JABBatchProcessor:
             query_hwnd = self.find_query_window(open_query, timeout=0.5)
             if query_method == "jab_action":
                 self.run_state.set_stage("switch_open_query_jab_action")
+                self.record_event(
+                    "event_query_open_start",
+                    method="jab_action",
+                    existing=bool(query_hwnd),
+                )
                 with self.perf.span("switch_open_query_jab_action"):
                     if query_hwnd:
                         log.info("查询窗口已存在，跳过 JAB 查询入口触发")
@@ -444,8 +478,19 @@ class JABBatchProcessor:
                         )
                     if not query_hwnd:
                         raise RuntimeError("未检测到查询窗口")
+                self.record_transition(
+                    "query_opened",
+                    from_state="pending",
+                    to_state="query_open",
+                    method="jab_action",
+                )
             elif query_method == "hotkey":
                 self.run_state.set_stage("switch_open_query_hotkey")
+                self.record_event(
+                    "event_query_open_start",
+                    method="hotkey",
+                    existing=bool(query_hwnd),
+                )
                 with self.perf.span("switch_open_query"):
                     if not query_hwnd:
                         self.open_query_with_hotkey(open_query)
@@ -455,6 +500,12 @@ class JABBatchProcessor:
                         )
                     if not query_hwnd:
                         raise RuntimeError("按快捷键后未检测到查询窗口")
+                self.record_transition(
+                    "query_opened",
+                    from_state="pending",
+                    to_state="query_open",
+                    method="hotkey",
+                )
             elif query_method:
                 raise RuntimeError(f"不支持的 open_query.method: {query_method}")
 
@@ -465,6 +516,16 @@ class JABBatchProcessor:
                 )
             try:
                 self.run_state.set_stage("switch_run_query_steps")
+                self.require_page_state(
+                    "query_open",
+                    items=None,
+                    command="switch-generated",
+                )
+                self.record_event(
+                    "event_query_confirm_start",
+                    steps=len(steps),
+                    generated_date_value=self.generated_date_value,
+                )
                 with self.perf.span("switch_run_steps", steps=len(steps)):
                     self.run_switch_generated_steps(
                         open_query,
@@ -472,6 +533,12 @@ class JABBatchProcessor:
                         query_method,
                         query_hwnd=query_hwnd,
                     )
+                self.record_transition(
+                    "query_confirmed",
+                    from_state="query_open",
+                    to_state="loading",
+                    generated_date_value=self.generated_date_value,
+                )
             except RuntimeError:
                 if (
                     query_method == "jab_action"
@@ -496,15 +563,26 @@ class JABBatchProcessor:
                     raise
             with self.perf.span("switch_generated_snapshot"):
                 self.run_state.set_stage("switch_verify_generated_snapshot")
-                rows = self.jab.read_table_snapshot(voucher_col=self.voucher_col)
-            if not rows:
-                raise RuntimeError("切换后未读到已生成列表表格")
-            with_voucher = [row for row in rows[:50] if row.get("voucher_text")]
-            log.info(
-                "已切换到疑似已生成列表: "
-                f"rows={len(rows)} sample_voucher_count={len(with_voucher)}"
+                state = self.require_page_state(
+                    "generated",
+                    items=None,
+                    command="switch-generated",
+                )
+            self.record_transition(
+                "generated_list_loaded",
+                from_state="loading",
+                to_state="generated",
+                rows=state.table.get("row_count", 0) if state.table else 0,
             )
-            self.run_state.update_counts(generated_snapshot_rows=len(rows))
+            rows = state.table.get("row_count", 0) if state.table else 0
+            with_voucher = (
+                state.table.get("voucher_values", []) if state.table else []
+            )
+            log.info(
+                "已切换到已生成列表: "
+                f"rows={rows} sample_voucher_count={len(with_voucher)}"
+            )
+            self.run_state.update_counts(generated_snapshot_rows=rows)
             self.run_state.set_stage("switch_generated_done")
             return True
 
@@ -850,6 +928,313 @@ class JABBatchProcessor:
         log.warning("NC 状态: 未检测到制单子窗口，也未确认父界面")
         return "unknown"
 
+    def require_page_state(self, expected, items=None, command=""):
+        deadline = time.time() + self.state_wait_timeout
+        last_state = None
+        while True:
+            last_state = self.detect_page_state(items=items)
+            self.record_event(
+                "nc_page_state",
+                command=command,
+                expected=expected,
+                actual=last_state.name,
+                reason=last_state.reason,
+                match_ratio=last_state.match_ratio,
+            )
+            if last_state.name == expected:
+                self.record_transition(
+                    "state_guard_passed",
+                    to_state=last_state.name,
+                    command=command,
+                    expected=expected,
+                    reason=last_state.reason,
+                )
+                log.info(
+                    f"NC 页面状态确认: expected={expected} reason={last_state.reason}"
+                )
+                return last_state
+            if last_state.name != "loading" or time.time() >= deadline:
+                break
+            time.sleep(self.state_wait_interval)
+
+        raise RuntimeError(
+            f"NC 页面状态不正确: command={command} expected={expected} "
+            f"actual={last_state.name} reason={last_state.reason}"
+        )
+
+    def detect_page_state(self, items=None):
+        if self.jab.window_exists(
+            self.voucher_window_title,
+            class_name=self.voucher_window_class,
+        ):
+            return self.detect_voucher_window_state()
+
+        open_query = self.batch_cfg.get("open_query", {})
+        if self.jab.window_exists(
+            open_query.get("dialog_title", "查询"),
+            class_name=open_query.get("dialog_class", "SunAwtDialog"),
+        ):
+            return NCPageState("query_open", "查询子窗口打开，父页面被阻塞")
+
+        controls = self.collect_page_controls()
+        has_parent = any(control["name"] == "单据生成" for control in controls)
+        visible_names = {
+            control["name"] for control in controls if control.get("showing")
+        }
+        has_buttons = {"查询", "生成"}.issubset(visible_names)
+        has_formal = "正式单据" in visible_names
+
+        tables = self.read_page_table_signatures()
+        main = self.choose_main_signature_table(tables)
+
+        if not has_parent or not main:
+            if self.looks_loading(controls, tables):
+                return NCPageState(
+                    "loading",
+                    f"父页面/主表暂不完整 parent={has_parent} tables={len(tables)}",
+                )
+            return NCPageState(
+                "error",
+                f"缺少父页面或主表 parent={has_parent} tables={len(tables)}",
+            )
+
+        if not has_buttons:
+            return NCPageState(
+                "error",
+                f"按钮布局不完整 visible={sorted(visible_names)}",
+                table=main,
+            )
+
+        if self.is_generated_signature(main, require_formal=has_formal):
+            return NCPageState("generated", "父页+按钮+已生成表特征", table=main)
+
+        ratio = self.table_match_ratio(main.get("rows", []), items or [])
+        if self.is_pending_signature(main, visible_names):
+            return NCPageState(
+                "pending",
+                f"父页+按钮+待生成表特征 sample_match_ratio={ratio:.3f}",
+                table=main,
+                match_ratio=ratio,
+            )
+
+        if self.looks_loading(controls, tables):
+            return NCPageState("loading", "父页面存在但表格特征暂不完整", table=main)
+
+        return NCPageState(
+            "error",
+            (
+                f"未知页面 rows={main.get('row_count')} cols={main.get('col_count')} "
+                f"match_ratio={ratio:.3f}"
+            ),
+            table=main,
+            match_ratio=ratio,
+        )
+
+    def detect_voucher_window_state(self):
+        tables = self.jab.read_window_table_cells(
+            self.voucher_window_title,
+            max_rows=5,
+            max_cols=13,
+        )
+        voucher_tables = [
+            table
+            for table in tables
+            if table.get("row_count", 0) > 0 and table.get("col_count") == 13
+        ]
+        buttons = self.collect_window_controls(
+            self.voucher_window_title,
+            self.voucher_window_class,
+            ("修改", "保存"),
+        )
+        visible_buttons = {button["name"] for button in buttons if button["showing"]}
+        if voucher_tables and {"修改", "保存"}.issubset(visible_buttons):
+            rows = sum(table["row_count"] for table in voucher_tables)
+            return NCPageState(
+                "voucher_open",
+                f"制单子窗口打开，父页面被阻塞 rows={rows} buttons={sorted(visible_buttons)}",
+            )
+        return NCPageState(
+            "error",
+            (
+                "制单窗口特征不完整: "
+                f"tables={[(t.get('row_count'), t.get('col_count')) for t in tables]} "
+                f"buttons={sorted(visible_buttons)}"
+            ),
+        )
+
+    def collect_page_controls(self):
+        self.jab.ensure_started()
+        names = ("单据生成", "查询", "生成", "前台生成", "正式单据")
+        controls = []
+        seen = set()
+        for name in names:
+            context, vm_id, owned, path = self.jab.find_context_once_with_path(
+                name,
+                normalized_roles=[],
+                require_showing=True,
+                visible_only=True,
+            )
+            if not context:
+                continue
+            info = self.jab.get_context_info(vm_id, context)
+            if not info:
+                self.jab.release_contexts(vm_id, owned)
+                continue
+            states = (info.states_en_US.strip() or info.states.strip()).lower()
+            key = (name, ".".join(map(str, path)))
+            if key not in seen:
+                seen.add(key)
+                controls.append(
+                    {
+                        "name": name,
+                        "path": ".".join(map(str, path)),
+                        "role": (info.role_en_US.strip() or info.role.strip()),
+                        "showing": "visible" in states and "showing" in states,
+                    }
+                )
+            self.jab.release_contexts(vm_id, owned)
+        return controls
+
+    def collect_window_controls(self, window_title, window_class, names):
+        self.jab.ensure_started()
+        controls = []
+        seen = set()
+        for name in names:
+            context, vm_id, owned, path = self.jab.find_context_once_with_path(
+                name,
+                normalized_roles=[],
+                require_showing=True,
+                window_title=window_title,
+                window_class=window_class,
+                visible_only=True,
+            )
+            if not context:
+                continue
+            info = self.jab.get_context_info(vm_id, context)
+            if not info:
+                self.jab.release_contexts(vm_id, owned)
+                continue
+            states = (info.states_en_US.strip() or info.states.strip()).lower()
+            key = (name, ".".join(map(str, path)))
+            if key not in seen:
+                seen.add(key)
+                controls.append(
+                    {
+                        "name": name,
+                        "path": ".".join(map(str, path)),
+                        "role": (info.role_en_US.strip() or info.role.strip()),
+                        "showing": "visible" in states and "showing" in states,
+                    }
+                )
+            self.jab.release_contexts(vm_id, owned)
+        return controls
+
+    def read_page_table_signatures(self):
+        tables = self.jab.read_all_table_cells(max_rows=25, max_cols=30)
+        return [self.describe_signature_table(table) for table in tables]
+
+    def describe_signature_table(self, table):
+        date_values = self.sample_table_col(table, self.generated_date_col)
+        voucher_values = self.sample_table_col(table, self.voucher_col)
+        return {
+            "table_index": table["table_index"],
+            "window_title": table.get("window_title"),
+            "window_class": table.get("window_class"),
+            "row_count": table["row_count"],
+            "col_count": table["col_count"],
+            "date_values": date_values,
+            "voucher_values": voucher_values,
+            "rows": [
+                {
+                    "row_index": row["row_index"],
+                    "amount": self.jab.normalize_amount(
+                        row["cells"][self.jab.amount_col]
+                        if self.jab.amount_col < len(row["cells"])
+                        else ""
+                    ),
+                    "partner": self.jab.normalize_text(
+                        row["cells"][self.jab.partner_col]
+                        if self.jab.partner_col < len(row["cells"])
+                        else ""
+                    ),
+                }
+                for row in table.get("rows", [])
+            ],
+        }
+
+    def sample_table_col(self, table, col):
+        if col is None:
+            return []
+        values = []
+        for row in table.get("rows", []):
+            cells = row.get("cells", [])
+            if 0 <= col < len(cells):
+                text = str(cells[col]).strip()
+                if text:
+                    values.append(text)
+        return values
+
+    def choose_main_signature_table(self, tables):
+        candidates = [table for table in tables if table.get("col_count", 0) > 1]
+        if not candidates:
+            return None
+        return max(
+            candidates,
+            key=lambda table: table.get("row_count", 0) * table.get("col_count", 0),
+        )
+
+    def is_generated_signature(self, table, require_formal=True):
+        if table.get("col_count") != 23:
+            return False
+        if require_formal is False:
+            return False
+        target = str(self.generated_date_value).strip()
+        date_values = [str(value).strip() for value in table.get("date_values", [])]
+        if target and not date_values:
+            return False
+        if target and any(value != target for value in date_values[:5]):
+            return False
+        vouchers = table.get("voucher_values", [])
+        return any(self.normalize_generated_voucher(value) for value in vouchers)
+
+    def is_pending_signature(self, table, visible_names):
+        if table.get("col_count") != 25:
+            return False
+        if table.get("col_count") == 23 and table.get("voucher_values"):
+            return False
+        if "前台生成" not in visible_names:
+            log.info("未枚举到前台生成按钮，按父页按钮和表格列数判定待生成页")
+        return not table.get("voucher_values")
+
+    def table_match_ratio(self, rows, items):
+        parsed = [item for item in items if not item.get("parse_error")]
+        if not parsed:
+            return 0.0
+        index = {
+            (row.get("amount"), row.get("partner"))
+            for row in rows
+            if row.get("amount") is not None and row.get("partner")
+        }
+        if not index:
+            return 0.0
+        matched = 0
+        for item in parsed:
+            key = (
+                self._as_decimal(item["amount"]),
+                self.jab.normalize_text(item["partner"]),
+            )
+            if key in index:
+                matched += 1
+        return matched / len(parsed)
+
+    def looks_loading(self, controls, tables):
+        if not controls and not tables:
+            return True
+        if controls and not tables:
+            return True
+        main = self.choose_main_signature_table(tables)
+        return bool(main and main.get("row_count", 0) == 0)
+
     def normalize_generated_voucher(self, raw_voucher):
         text = str(raw_voucher or "").strip()
         match = re.search(r"\d+", text)
@@ -970,20 +1355,39 @@ class JABBatchProcessor:
             excel_rows=[match["item"]["row"] for match in matches],
             nc_rows=rows,
         )
+        self.record_event(
+            "event_pending_rows_select_start",
+            rows=len(rows),
+            excel_rows=[match["item"]["row"] for match in matches],
+            nc_rows=rows,
+        )
         with self.perf.span("pending_rows_select", rows=len(rows)):
             if not self.jab.select_table_rows(rows):
                 raise RuntimeError(f"选中 NC 行失败: {rows}")
+        self.record_event(
+            "event_pending_rows_selected",
+            rows=len(rows),
+            nc_rows=rows,
+        )
 
         self.run_state.set_stage("front_generate_click", nc_rows=rows)
+        self.record_event("event_front_generate_click", rows=len(rows), nc_rows=rows)
         with self.perf.span("front_generate_click", rows=len(rows)):
             if not self.jab.do_generate_front():
                 raise RuntimeError("点击 生成 -> 前台生成 失败")
+        self.record_transition(
+            "front_generate_clicked",
+            from_state="pending",
+            to_state="voucher_open",
+            rows=len(rows),
+        )
 
         self.run_state.set_stage("front_generate_wait")
         with self.perf.span("front_generate_wait", wait=self.save_wait):
             time.sleep(self.save_wait)
 
         pending = list(matches)
+        self.require_page_state("voucher_open", pending, command="generate")
         saved_matches = []
         save_batches = 0
 
@@ -1190,6 +1594,18 @@ class JABBatchProcessor:
                 save_batch_index=save_batches + 1,
                 excel_rows=[match["item"]["row"] for match in voucher_batch],
             )
+            self.require_page_state(
+                "voucher_open",
+                voucher_batch,
+                command="voucher-save",
+            )
+            self.record_event(
+                "event_voucher_save_click",
+                save_batch_index=save_batches + 1,
+                excel_rows=[match["item"]["row"] for match in voucher_batch],
+                rows=len(voucher_batch),
+                save_trigger=self.save_trigger,
+            )
             with self.perf.span(
                 "voucher_save_click",
                 rows=len(voucher_batch),
@@ -1202,6 +1618,13 @@ class JABBatchProcessor:
                     raise RuntimeError(
                         f"点击保存失败: Excel行{voucher_batch[0]['item']['row']}"
                     )
+            self.record_transition(
+                "voucher_save_clicked",
+                from_state="voucher_open",
+                to_state="voucher_open",
+                save_batch_index=save_batches + 1,
+                rows=len(voucher_batch),
+            )
 
             self.run_state.set_stage(
                 "voucher_save_verify",
@@ -1216,6 +1639,12 @@ class JABBatchProcessor:
                 verify_result = self.verify_voucher_batch_removed(
                     voucher_batch, before_count
                 )
+            self.record_event(
+                "event_voucher_save_verified",
+                save_batch_index=save_batches + 1,
+                result=verify_result,
+                rows=len(voucher_batch),
+            )
             saved_matches.extend(voucher_batch)
             saved_rows = {match["item"]["row"] for match in voucher_batch}
             batch_status_updates = {
@@ -1832,12 +2261,27 @@ class JABBatchProcessor:
             self.voucher_window_title,
             class_name=self.voucher_window_class,
         ):
+            self.record_event(
+                "event_voucher_window_close_start",
+                excel_rows=[match["item"]["row"] for match in voucher_batch],
+            )
             self.jab.close_window_by_title(
                 close_cfg.get("title", self.voucher_window_title),
                 class_name=close_cfg.get("class_name", self.voucher_window_class),
                 wait=float(close_cfg.get("wait", 0.5)),
             )
+            self.record_transition(
+                "voucher_window_closed",
+                from_state="voucher_open",
+                to_state="pending",
+                excel_rows=[match["item"]["row"] for match in voucher_batch],
+            )
 
+        self.record_event(
+            "event_pending_refresh",
+            key="f5",
+            wait=float(self.batch_cfg.get("pending_refresh_wait", 1.0)),
+        )
         self.jab.press_key(
             "f5", wait=float(self.batch_cfg.get("pending_refresh_wait", 1.0))
         )

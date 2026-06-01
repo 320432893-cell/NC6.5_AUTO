@@ -1,5 +1,5 @@
 {
-    "excel_path": "C:\\Users\\Queclink\\Desktop\\5.28凭证.xlsx",
+    "excel_path": "C:\\Users\\Queclink\\Desktop\\6.1凭证.xlsx",
     "sheet_my": "Sheet1",
     "has_header": true,
     "jab": {
@@ -28,6 +28,7 @@
         "max_batch_size": 50,
         "generated_voucher_col": 22,
         "generated_date_col": 18,
+        "generated_date_value": "2026-05-31",
         "generated_voucher_max": 9999,
         "generated_status": "已生成待回填",
         "save_wait": 0.5,
