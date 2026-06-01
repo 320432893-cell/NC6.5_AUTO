@@ -3,6 +3,12 @@ import re
 import itertools
 from collections import defaultdict
 
+from core.errors import (
+    ContractViolation,
+    JABActionError,
+    JABControlNotFound,
+    TableMatchError,
+)
 from core.logger import log
 from core.models import MatchIssue, VoucherPendingMatch, VoucherSaveMatch
 from core.utils import check_abort
@@ -50,7 +56,7 @@ class NCVoucherWorkflow:
                         f"Excel行{issue['item']['row']} {issue['reason']}"
                         for issue in issues
                     )
-                    raise RuntimeError(f"刷新制单表匹配失败: {detail}")
+                    raise TableMatchError(f"刷新制单表匹配失败: {detail}")
                 if self.should_use_voucher_queue_cache(refreshed_matches):
                     cached_voucher_matches = refreshed_matches
                     self.perf.event(
@@ -93,7 +99,7 @@ class NCVoucherWorkflow:
                     selection_row_indexes,
                     window_title=self.voucher_window_title,
                 ):
-                    raise RuntimeError(f"选中制单表行失败: {selection_row_indexes}")
+                    raise JABActionError(f"选中制单表行失败: {selection_row_indexes}")
 
             self.run_state.set_stage(
                 "voucher_save_click",
@@ -121,7 +127,7 @@ class NCVoucherWorkflow:
                 hotkey_activate_policy=self.hotkey_activate_policy,
             ):
                 if not self.trigger_voucher_save():
-                    raise RuntimeError(
+                    raise JABActionError(
                         f"点击保存失败: Excel行{voucher_batch[0]['item']['row']}"
                     )
             self.record_transition(
@@ -199,7 +205,7 @@ class NCVoucherWorkflow:
             ]
             save_batches += 1
             if pending_source and verify_result in ("empty_window", "window_closed"):
-                raise RuntimeError(
+                raise ContractViolation(
                     "制单窗口已空/关闭但仍有未保存 Excel 行，停止复核: "
                     f"remaining_excel_rows={[m['item']['row'] for m in pending_source]}"
                 )
@@ -348,7 +354,7 @@ class NCVoucherWorkflow:
             rows=sum(table["row_count"] for table in voucher_tables),
         )
         if not voucher_tables:
-            raise RuntimeError("未找到制单窗口表格")
+            raise JABControlNotFound("未找到制单窗口表格")
         return voucher_tables
 
     def match_voucher_table(
@@ -773,7 +779,7 @@ class NCVoucherWorkflow:
 
             time.sleep(0.3)
 
-        raise RuntimeError(
+        raise ContractViolation(
             "制单批次保存后仍可匹配到记录或行数未减少: "
             f"excel_rows={sorted(target_rows)} before={before_count}"
         )
@@ -826,7 +832,9 @@ class NCVoucherWorkflow:
                 still_present.append(item["row"])
 
         if still_present:
-            raise RuntimeError(f"待生成表刷新后仍存在本批记录: Excel行{still_present}")
+            raise ContractViolation(
+                f"待生成表刷新后仍存在本批记录: Excel行{still_present}"
+            )
 
         log.info(
             "待生成表复核通过，本批记录已消失: "
@@ -843,7 +851,7 @@ class NCVoucherWorkflow:
             window_title=self.voucher_window_title,
         )
         if not found:
-            raise RuntimeError(
+            raise ContractViolation(
                 "制单界面未找到当前记录，停止以避免错保存: "
                 f"Excel行{item['row']} amount={item['amount']} partner={item['partner']}"
             )
@@ -863,7 +871,7 @@ class NCVoucherWorkflow:
             window_title=self.voucher_window_title,
         )
         if not found:
-            raise RuntimeError(
+            raise ContractViolation(
                 "保存后未检测到制单界面推进到下一条，停止以避免误标记: "
                 f"下一Excel行{item['row']} amount={item['amount']} partner={item['partner']}"
             )

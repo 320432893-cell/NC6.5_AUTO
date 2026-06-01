@@ -16,6 +16,7 @@ def check_architecture():
     errors = []
     _check_line_counts(errors)
     _check_workflow_import_boundaries(errors)
+    _check_workflow_domain_errors(errors)
     _check_pyautogui_boundary(errors)
     _check_processor_api(errors)
     return errors
@@ -58,6 +59,27 @@ def _check_workflow_import_boundaries(errors):
                     f"{path.relative_to(ROOT)} imports workflow module {module}; "
                     "workflow dependencies should go through the processor wiring"
                 )
+
+
+def _check_workflow_domain_errors(errors):
+    for path in CORE.glob(WORKFLOW_GLOB):
+        tree = _parse(path, errors)
+        if tree is None:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Raise) or node.exc is None:
+                continue
+            if _is_runtime_error_raise(node.exc):
+                errors.append(
+                    f"{path.relative_to(ROOT)}:{node.lineno} raises RuntimeError; "
+                    "use core.errors domain exceptions in workflow modules"
+                )
+
+
+def _is_runtime_error_raise(exc):
+    if isinstance(exc, ast.Call):
+        exc = exc.func
+    return isinstance(exc, ast.Name) and exc.id == "RuntimeError"
 
 
 def _check_pyautogui_boundary(errors):

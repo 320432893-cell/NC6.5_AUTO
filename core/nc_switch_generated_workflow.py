@@ -3,6 +3,7 @@ import sys
 import time
 from pathlib import Path
 
+from core.errors import JABActionError, JABControlNotFound, WorkflowStateError
 from core.logger import log
 
 
@@ -34,7 +35,7 @@ class NCSwitchGeneratedWorkflow:
                 state = self.get_nc_workflow_state()
 
             if state != "parent_ready":
-                raise RuntimeError(
+                raise WorkflowStateError(
                     f"当前不能切换正式单据，必须先回到制单父界面: state={state}"
                 )
 
@@ -75,7 +76,7 @@ class NCSwitchGeneratedWorkflow:
                             timeout=float(open_query.get("timeout", 5)),
                         )
                     if not query_hwnd:
-                        raise RuntimeError("未检测到查询窗口")
+                        raise JABControlNotFound("未检测到查询窗口")
                 self.record_transition(
                     "query_opened",
                     from_state="pending",
@@ -97,7 +98,7 @@ class NCSwitchGeneratedWorkflow:
                             timeout=float(open_query.get("timeout", 5)),
                         )
                     if not query_hwnd:
-                        raise RuntimeError("按快捷键后未检测到查询窗口")
+                        raise JABControlNotFound("按快捷键后未检测到查询窗口")
                 self.record_transition(
                     "query_opened",
                     from_state="pending",
@@ -105,11 +106,11 @@ class NCSwitchGeneratedWorkflow:
                     method="hotkey",
                 )
             elif query_method:
-                raise RuntimeError(f"不支持的 open_query.method: {query_method}")
+                raise WorkflowStateError(f"不支持的 open_query.method: {query_method}")
 
             steps = self.batch_cfg.get("switch_generated_steps", [])
             if not steps:
-                raise RuntimeError(
+                raise WorkflowStateError(
                     "未配置 switch_generated_steps，暂不能自动切换到已生成列表"
                 )
             try:
@@ -149,7 +150,7 @@ class NCSwitchGeneratedWorkflow:
                         timeout=float(open_query.get("timeout", 5)),
                     )
                     if not query_hwnd:
-                        raise RuntimeError("F3 回退后未检测到查询窗口")
+                        raise JABControlNotFound("F3 回退后未检测到查询窗口")
                     with self.perf.span("switch_run_steps_fallback", steps=len(steps)):
                         self.run_switch_generated_steps(
                             open_query,
@@ -278,7 +279,7 @@ class NCSwitchGeneratedWorkflow:
             timeout=float(step.get("guard_timeout", step.get("timeout", 3))),
         )
         if not wait_info:
-            raise RuntimeError(
+            raise JABControlNotFound(
                 f"查询窗口控件未就绪: path={path} name={step.get('name')}"
             )
 
@@ -311,7 +312,9 @@ class NCSwitchGeneratedWorkflow:
                 require_showing=bool(step.get("require_showing", False)),
             )
         if not ok:
-            raise RuntimeError(f"查询窗口步骤失败: path={path} name={step.get('name')}")
+            raise JABActionError(
+                f"查询窗口步骤失败: path={path} name={step.get('name')}"
+            )
 
     def find_query_window(self, open_query, timeout):
         return self.jab.wait_window_by_title(
@@ -333,11 +336,13 @@ class NCSwitchGeneratedWorkflow:
         ):
             thread = self._trigger_query_action_path(open_query)
             if not thread:
-                raise RuntimeError(f"JAB 查询入口未找到: path={open_query.get('path')}")
+                raise JABControlNotFound(
+                    f"JAB 查询入口未找到: path={open_query.get('path')}"
+                )
             return
 
         if not self._do_query_action_path(open_query):
-            raise RuntimeError(f"JAB 查询入口执行失败: path={open_query.get('path')}")
+            raise JABActionError(f"JAB 查询入口执行失败: path={open_query.get('path')}")
 
     def _trigger_query_action_path(self, open_query):
         path = open_query.get("path")
@@ -395,7 +400,7 @@ class NCSwitchGeneratedWorkflow:
     def run_jab_action_subprocess(self, step):
         path = step.get("path")
         if not path:
-            raise RuntimeError("JAB 子进程动作缺少 path")
+            raise JABControlNotFound("JAB 子进程动作缺少 path")
 
         timeout = float(step.get("process_timeout", 1.0))
         action_timeout = float(step.get("timeout", 3.0))

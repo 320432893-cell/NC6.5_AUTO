@@ -1,5 +1,6 @@
 import time
 
+from core.errors import ContractViolation, JABActionError, TableMatchError
 from core.logger import log
 from core.models import (
     ExcelVoucherItem,
@@ -237,7 +238,7 @@ class NCPendingWorkflow:
         )
         with self.perf.span("pending_rows_select", rows=len(rows)):
             if not self.jab.select_table_rows(rows):
-                raise RuntimeError(f"选中 NC 行失败: {rows}")
+                raise JABActionError(f"选中 NC 行失败: {rows}")
         self.record_event(
             "event_pending_rows_selected",
             rows=len(rows),
@@ -248,7 +249,7 @@ class NCPendingWorkflow:
         self.record_event("event_front_generate_click", rows=len(rows), nc_rows=rows)
         with self.perf.span("front_generate_click", rows=len(rows)):
             if not self.jab.do_generate_front():
-                raise RuntimeError("点击 生成 -> 前台生成 失败")
+                raise JABActionError("点击 生成 -> 前台生成 失败")
         self.record_transition(
             "front_generate_clicked",
             from_state="pending",
@@ -292,7 +293,7 @@ class NCPendingWorkflow:
                     f"Excel行{issue['item']['row']} {issue['reason']}"
                     for issue in issues
                 )
-                raise RuntimeError(f"制单表匹配失败: {detail}")
+                raise TableMatchError(f"制单表匹配失败: {detail}")
 
             new_saved, new_batches = (
                 self.processor.voucher_workflow.save_current_voucher_matches(
@@ -302,7 +303,7 @@ class NCPendingWorkflow:
             saved_matches.extend(new_saved)
             saved_rows = {match["item"]["row"] for match in new_saved}
             if max_save_batches and save_batches >= max_save_batches:
-                raise RuntimeError(
+                raise ContractViolation(
                     "已达到 max_batches，但全量生成模式不能中途留下制单窗口，"
                     "请不要在全量生成时使用 max_batches"
                 )
@@ -383,7 +384,7 @@ class NCPendingWorkflow:
                         f"Excel行{issue['item']['row']} {issue['reason']}"
                         for issue in issues
                     )
-                    raise RuntimeError(f"恢复制单表匹配失败: {detail}")
+                    raise TableMatchError(f"恢复制单表匹配失败: {detail}")
                 log.warning(
                     "恢复保存时忽略未进入当前制单窗口的 Excel 行: "
                     f"excel_rows={[issue['item']['row'] for issue in issues]}"

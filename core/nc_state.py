@@ -1,6 +1,7 @@
 import time
 from dataclasses import dataclass
 
+from core.errors import WorkflowStateError
 from core.logger import log
 from core.nc_page_probe import NCPageProbe
 
@@ -70,7 +71,7 @@ class NCStateDetector:
                 break
             time.sleep(self.state_wait_interval)
 
-        raise RuntimeError(
+        raise WorkflowStateError(
             f"NC 页面状态不正确: command={command} expected={expected} "
             f"actual={last_state.name} reason={last_state.reason}"
         )
