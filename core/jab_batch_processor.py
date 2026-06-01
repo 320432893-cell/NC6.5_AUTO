@@ -1247,6 +1247,11 @@ class JABBatchProcessor:
                 "resume_read_voucher_window",
                 excel_rows=[item["row"] for item in pending],
             )
+            self.require_page_state(
+                "voucher_open",
+                pending,
+                command="resume-voucher",
+            )
             tables = self.read_voucher_tables(len(pending))
             matches = [
                 {
@@ -1417,6 +1422,14 @@ class JABBatchProcessor:
                 result=verify_result,
                 rows=len(voucher_batch),
             )
+            self.record_transition(
+                "voucher_save_verified",
+                from_state="voucher_open",
+                to_state=self.voucher_verify_result_state(verify_result),
+                save_batch_index=save_batches + 1,
+                result=verify_result,
+                rows=len(voucher_batch),
+            )
             saved_matches.extend(voucher_batch)
             saved_rows = {match["item"]["row"] for match in voucher_batch}
             batch_status_updates = {
@@ -1537,6 +1550,15 @@ class JABBatchProcessor:
             return False
 
         raise ValueError(f"不支持的 Ctrl+S 激活策略: {self.hotkey_activate_policy!r}")
+
+    def voucher_verify_result_state(self, verify_result):
+        if verify_result is True:
+            return "voucher_open"
+        if verify_result == "empty_window":
+            return "voucher_open_empty"
+        if verify_result == "window_closed":
+            return "pending"
+        return "error"
 
     def should_use_voucher_queue_cache(self, matches):
         if not self.use_voucher_queue_cache:
