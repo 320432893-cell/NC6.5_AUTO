@@ -4,6 +4,7 @@ import itertools
 from collections import defaultdict
 
 from core.logger import log
+from core.models import MatchIssue, VoucherPendingMatch, VoucherSaveMatch
 from core.utils import check_abort
 
 
@@ -20,7 +21,9 @@ class NCVoucherWorkflow:
             return
         setattr(self.processor, name, value)
 
-    def save_current_voucher_matches(self, voucher_matches):
+    def save_current_voucher_matches(
+        self, voucher_matches: list[VoucherSaveMatch]
+    ) -> tuple[list[VoucherSaveMatch], int]:
         pending_source = list(voucher_matches)
         saved_matches = []
         pending_status_updates = {}
@@ -348,7 +351,9 @@ class NCVoucherWorkflow:
             raise RuntimeError("未找到制单窗口表格")
         return voucher_tables
 
-    def match_voucher_table(self, matches, tables=None):
+    def match_voucher_table(
+        self, matches: list[VoucherPendingMatch] | list[VoucherSaveMatch], tables=None
+    ) -> tuple[list[VoucherSaveMatch], list[MatchIssue]]:
         if tables is None:
             voucher_tables = self.read_voucher_tables(len(matches))
         else:
@@ -620,7 +625,7 @@ class NCVoucherWorkflow:
             "fallback_reason": "same_count_order",
         }
 
-    def build_voucher_save_batches(self, matches):
+    def build_voucher_save_batches(self, matches: list[VoucherSaveMatch]):
         if self.save_strategy == "single":
             return [[match] for match in matches]
         if self.save_strategy == "safe_batch_by_pending_row":
@@ -693,10 +698,12 @@ class NCVoucherWorkflow:
             batches.append(current)
         return batches
 
-    def get_voucher_selection_rows(self, voucher_batch):
+    def get_voucher_selection_rows(self, voucher_batch: list[VoucherSaveMatch]):
         return [match["voucher_row"] for match in voucher_batch]
 
-    def verify_voucher_batch_removed(self, voucher_batch, before_count):
+    def verify_voucher_batch_removed(
+        self, voucher_batch: list[VoucherSaveMatch], before_count
+    ):
         expected_removed = len(voucher_batch)
         deadline = time.time() + self.voucher_record_timeout
         target_rows = {match["item"]["row"] for match in voucher_batch}
@@ -771,7 +778,7 @@ class NCVoucherWorkflow:
             f"excel_rows={sorted(target_rows)} before={before_count}"
         )
 
-    def close_and_verify_pending_removed(self, voucher_batch):
+    def close_and_verify_pending_removed(self, voucher_batch: list[VoucherSaveMatch]):
         close_cfg = self.batch_cfg.get("close_voucher_window", {})
         if self.jab.window_exists(
             self.voucher_window_title,
@@ -827,7 +834,7 @@ class NCVoucherWorkflow:
         )
         return True
 
-    def verify_current_voucher_record(self, match):
+    def verify_current_voucher_record(self, match: VoucherSaveMatch):
         item = match["item"]
         found = self.jab.wait_for_record_visible(
             item["amount"],

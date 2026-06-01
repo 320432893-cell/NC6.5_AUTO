@@ -1,6 +1,13 @@
 import time
 
 from core.logger import log
+from core.models import (
+    ExcelVoucherItem,
+    MatchIssue,
+    PendingMatch,
+    VoucherPendingMatch,
+    VoucherSaveMatch,
+)
 from core.utils import check_abort
 
 
@@ -18,7 +25,7 @@ class NCPendingWorkflow:
         limit=None,
         start_row=None,
         end_row=None,
-    ):
+    ) -> list[ExcelVoucherItem]:
         with self.perf.span(
             "excel_load",
             skip_filled=skip_filled,
@@ -253,9 +260,9 @@ class NCPendingWorkflow:
         with self.perf.span("front_generate_wait", wait=self.save_wait):
             time.sleep(self.save_wait)
 
-        pending = list(matches)
+        pending: list[PendingMatch] = list(matches)
         self.require_page_state("voucher_open", pending, command="generate")
-        saved_matches = []
+        saved_matches: list[VoucherSaveMatch] = []
         save_batches = 0
 
         while pending:
@@ -356,7 +363,7 @@ class NCPendingWorkflow:
                 command="resume-voucher",
             )
             tables = self.processor.voucher_workflow.read_voucher_tables(len(pending))
-            matches = [
+            matches: list[VoucherPendingMatch] = [
                 {
                     "item": item,
                     "nc_row": None,
@@ -405,8 +412,8 @@ class NCPendingWorkflow:
             self.run_state.set_stage("resume_done")
             return len(saved_matches)
 
-    def format_issue_updates(self, issues, prefix=""):
-        updates = {}
+    def format_issue_updates(self, issues: list[MatchIssue], prefix=""):
+        updates: dict[int, str] = {}
         for issue in issues:
             reason = issue["reason"]
             if issue.get("rows"):

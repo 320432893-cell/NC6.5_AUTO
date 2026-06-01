@@ -1,4 +1,5 @@
 from core.logger import log
+from core.models import ExcelVoucherItem
 
 
 class NCBackfillWorkflow:
@@ -28,7 +29,7 @@ class NCBackfillWorkflow:
                 start_row=start_row,
                 end_row=end_row,
             )
-            items = [
+            items: list[ExcelVoucherItem] = [
                 item
                 for item in items
                 if not item.get("parse_error")
@@ -66,7 +67,7 @@ class NCBackfillWorkflow:
                 issues=len(issues),
             )
 
-            updates = {}
+            updates: dict[int, int | str] = {}
             for match in matches:
                 raw_voucher = str(match["row_data"].get("voucher_text", "")).strip()
                 voucher = self.normalize_generated_voucher(raw_voucher)
