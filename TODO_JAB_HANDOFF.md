@@ -9,7 +9,8 @@
 - `JABBatchProcessor` 已收敛为装配入口。
 - 主流程已拆成 `nc_pending_workflow`、`nc_voucher_workflow`、`nc_switch_generated_workflow`、`nc_backfill_workflow`、`nc_table_matcher`、`nc_state`。
 - 页面状态守卫已覆盖 `pending`、`generated`、`voucher_open`、`query_open`、`loading`、`error`。
-- 当前没有继续低风险拆分项。后续再动结构，应优先做模型、契约、错误类型，而不是机械拆文件。
+- workflow 已引入领域错误类型，并由架构检查阻止新增裸 `raise RuntimeError(...)`。
+- 当前没有继续低风险拆分项。后续再动结构，应优先做模型和契约，而不是机械拆文件。
 
 ## 待办
 
@@ -27,10 +28,10 @@
    - 优先模型：`ExcelVoucherItem`、`PendingMatch`、`VoucherSaveMatch`、`GeneratedVoucherRow`、`BackfillUpdate`。
    - 目标是减少 `item["row"]`、`row_data["voucher_text"]` 这类 key 写错。
 
-4. 契约和错误类型
-   - 增加统一前置/后置检查。
+4. 契约检查
+   - 继续补统一前置/后置检查。
    - 失败要带 Excel 行、金额、对手方、NC 行、当前窗口。
-   - 建议错误类型：`WorkflowStateError`、`TableMatchError`、`ContractViolation`、`ExcelLockedError`、`JABControlNotFound`。
+   - Excel 写入锁可以后续独立补 `ExcelLockedError`。
 
 5. 审计和复核
    - 每次运行生成 run id。

@@ -7,6 +7,8 @@
 - 新增页面状态识别和状态守卫：`pending`、`generated`、`voucher_open`、`query_open`、`loading`、`error`。
 - 页面状态识别同时检查父页面标签、按钮布局、表格数据特征；制单、查询按阻塞式子窗口处理。
 - 增加状态事件和状态跳转记录。
+- 新增 workflow 领域异常：`WorkflowStateError`、`TableMatchError`、`ContractViolation`、`JABControlNotFound`、`JABActionError`。
+- 架构检查阻止 workflow 模块新增裸 `raise RuntimeError(...)`，避免业务失败原因继续混成一种异常。
 - 将原 `JABBatchProcessor` 拆成：
   - `core/nc_state.py`
   - `core/nc_page_probe.py`
@@ -18,7 +20,7 @@
 - `JABBatchProcessor` 收敛为装配入口，只保留 CLI 任务级方法和共享运行状态。
 - 清理重构过渡期的纯转发 wrapper。
 
-当前结论：没有继续低风险拆分项；后续结构演进优先做 dataclass 模型、契约检查、统一错误类型。
+当前结论：没有继续低风险拆分项；后续结构演进优先做 dataclass 模型和契约检查。
 
 ## 2026-05-28 - 查询切换和保存策略收敛
 

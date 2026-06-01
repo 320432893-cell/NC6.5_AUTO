@@ -28,6 +28,7 @@
 - `core/nc_switch_generated_workflow.py`：切换到已生成/正式单据列表。
 - `core/nc_backfill_workflow.py`：已生成列表凭证号回填。
 - `core/nc_table_matcher.py`：NC 表格按金额、对手方、日期的匹配逻辑。
+- `core/errors.py`：NC workflow 领域异常，区分页面状态、表格匹配、JAB 控件、JAB 动作和流程契约失败。
 - `core/jab_operator.py`：JAB 底层封装，负责读表、选行、按钮动作、F3/F5、关闭窗口、隐藏空白 AWT 小窗。
 - `core/data_handler.py`：Excel 读取、拼接 key 解析、结果写回、拆分 key。
 - `config.json`：Excel 路径、JAB DLL、列位和查询切换配置。
@@ -359,3 +360,10 @@ A: 不能。旧坐标入口和旧 GUI 模块已经删除，后续新功能都应
 ```
 
 该入口包含 JSON 格式、配置语义、ruff、format、compileall、basedpyright、架构边界和 pytest 纯逻辑测试。
+
+当前架构边界：
+
+- `JABBatchProcessor` 只做装配入口和 CLI 任务级方法，不再堆业务细节。
+- `core/nc_*_workflow.py` 之间不能直接互相 import，跨流程协作通过 processor 装配对象。
+- `pyautogui` 只能留在 `core/jab_operator.py` 边界内。
+- workflow 模块不允许新增裸 `raise RuntimeError(...)`，要使用 `core.errors` 中的领域异常。
