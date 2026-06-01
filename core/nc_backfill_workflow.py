@@ -1,6 +1,6 @@
 from core.errors import WorkflowStateError
 from core.logger import log
-from core.models import ExcelVoucherItem
+from core.models import BackfillUpdates, BackfillUpdateValue, ExcelVoucherItem
 
 
 class NCBackfillWorkflow:
@@ -65,10 +65,9 @@ class NCBackfillWorkflow:
                 excel_rows=[item["row"] for item in items],
             )
             self.require_page_state("generated", items, command="backfill")
-            matches, issues = self.table_matcher.match_current_table(
+            matches, issues = self.table_matcher.match_generated_voucher_table(
                 items,
                 voucher_col=self.voucher_col,
-                prefer_generated_date=True,
             )
             self.perf.event(
                 "backfill_match_done",
@@ -77,7 +76,7 @@ class NCBackfillWorkflow:
                 issues=len(issues),
             )
 
-            updates: dict[int, int | str] = {}
+            updates: BackfillUpdates = {}
             for match in matches:
                 raw_voucher = str(match["row_data"].get("voucher_text", "")).strip()
                 voucher = self.normalize_generated_voucher(raw_voucher)
@@ -101,6 +100,7 @@ class NCBackfillWorkflow:
                     issues, prefix="回填"
                 )
             )
+            self.validate_backfill_updates(updates)
             self.run_state.set_stage("backfill_write_excel", rows=len(updates))
             with self.perf.span("backfill_excel_save", rows=len(updates)):
                 self.data_handler.save_jab_results(updates)
@@ -147,3 +147,22 @@ class NCBackfillWorkflow:
         raise WorkflowStateError(
             f"回填前页面状态不正确: state={state.name} reason={state.reason}; {detail}"
         )
+
+    def validate_backfill_updates(self, updates: BackfillUpdates):
+        invalid = {
+            row: value
+            for row, value in updates.items()
+            if not self.is_valid_backfill_update_value(value)
+        }
+        if invalid:
+            raise WorkflowStateError(
+                "回填更新值不符合契约: "
+                f"invalid={invalid} allowed=positive voucher int or non-empty status text"
+            )
+
+    def is_valid_backfill_update_value(self, value: BackfillUpdateValue):
+        if isinstance(value, int):
+            return 1 <= value <= self.generated_voucher_max
+        if isinstance(value, str):
+            return value.strip() != ""
+        return False

@@ -1,7 +1,12 @@
 from collections import defaultdict
 from decimal import Decimal
 
-from core.models import ExcelVoucherItem, MatchIssue, PendingMatch
+from core.models import (
+    ExcelVoucherItem,
+    GeneratedVoucherMatch,
+    MatchIssue,
+    PendingMatch,
+)
 
 
 class NCTableMatcher:
@@ -73,6 +78,18 @@ class NCTableMatcher:
                     }
                 )
 
+        return matches, issues
+
+    def match_generated_voucher_table(
+        self,
+        items: list[ExcelVoucherItem],
+        voucher_col,
+    ) -> tuple[list[GeneratedVoucherMatch], list[MatchIssue]]:
+        matches, issues = self.match_current_table(
+            items,
+            voucher_col=voucher_col,
+            prefer_generated_date=True,
+        )
         return matches, issues
 
     def filter_generated_date_rows(self, rows):

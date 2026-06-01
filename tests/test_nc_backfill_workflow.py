@@ -29,6 +29,8 @@ class FakeProcessor:
         self.required.append((expected, command))
         return NCPageState("generated", "after switch")
 
+    generated_voucher_max = 9999
+
 
 def test_backfill_preflight_allows_generated_page():
     processor = FakeProcessor([NCPageState("generated", "already generated")])
@@ -81,3 +83,17 @@ def test_backfill_preflight_rejects_blocking_or_error_states(state_name):
 
     assert processor.switches == 0
     assert processor.required == []
+
+
+def test_backfill_update_contract_allows_vouchers_and_status_text():
+    workflow = NCBackfillWorkflow(FakeProcessor([]))
+
+    workflow.validate_backfill_updates({2: 123, 3: "回填未找到"})
+
+
+@pytest.mark.parametrize("value", [0, 10000, ""])
+def test_backfill_update_contract_rejects_invalid_values(value):
+    workflow = NCBackfillWorkflow(FakeProcessor([]))
+
+    with pytest.raises(WorkflowStateError, match="回填更新值不符合契约"):
+        workflow.validate_backfill_updates({2: value})
