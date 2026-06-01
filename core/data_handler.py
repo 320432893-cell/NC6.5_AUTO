@@ -3,6 +3,7 @@ import re
 from decimal import Decimal, InvalidOperation
 
 from core.logger import log
+from core.models import ExcelVoucherItem
 
 
 CONCAT_KEY_RE = re.compile(
@@ -22,7 +23,9 @@ class DataHandler:
         self.jab_partner_out_col = batch_cfg.get("partner_out_col", 2)
         self.jab_result_col = batch_cfg.get("result_col", 3)
 
-    def load_jab_batch_data(self, skip_filled=True, skip_any_status=False):
+    def load_jab_batch_data(
+        self, skip_filled=True, skip_any_status=False
+    ) -> list[ExcelVoucherItem]:
         """读取 Sheet1 的 A 列拼接索引或 A/B 拆分列，保持 Excel 行顺序。"""
         wb = openpyxl.load_workbook(self.excel_path)
         ws = wb[self.sheet_my]
@@ -174,7 +177,7 @@ class DataHandler:
             return f"{label}对手方为空"
         return amount, partner, source
 
-    def parse_jab_concat_key(self, value):
+    def parse_jab_concat_key(self, value) -> tuple[Decimal, str]:
         if self._is_blank(value):
             raise ValueError("A列拼接索引为空")
         text = str(value).strip()
@@ -190,7 +193,7 @@ class DataHandler:
         amount = self.parse_amount(amount_text)
         return amount, partner
 
-    def parse_amount(self, value):
+    def parse_amount(self, value) -> Decimal:
         text = str(value).strip().replace(",", "")
         if not text:
             raise ValueError("金额为空")
@@ -244,15 +247,18 @@ class DataHandler:
             "partner_col": self.jab_partner_out_col,
         }
 
-    def save_jab_split_columns(self, items):
-        updates = {
-            item["row"]: (item["amount"], item["partner"])
-            for item in items
-            if not item.get("parse_error")
-            and item.get("amount") is not None
-            and item.get("partner")
-            and item.get("source") == "concat"
-        }
+    def save_jab_split_columns(self, items: list[ExcelVoucherItem]):
+        updates = {}
+        for item in items:
+            amount = item["amount"]
+            partner = item["partner"]
+            if (
+                not item.get("parse_error")
+                and amount is not None
+                and partner
+                and item.get("source") == "concat"
+            ):
+                updates[item["row"]] = (amount, partner)
         if not updates:
             return 0
 

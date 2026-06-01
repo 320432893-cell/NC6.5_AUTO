@@ -1,5 +1,5 @@
 {
-  "include": ["core", "tools"],
+  "include": ["core", "tools", "tests"],
   "exclude": ["**/__pycache__", ".venv", ".venv-local"],
   "venvPath": ".",
   "venv": ".venv",

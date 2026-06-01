@@ -1,6 +1,7 @@
 -r requirements.txt
 
 basedpyright>=1.39.5
+pytest>=8.0.0
 radon>=6.0.1
 ruff>=0.15.13
 vulture>=2.14

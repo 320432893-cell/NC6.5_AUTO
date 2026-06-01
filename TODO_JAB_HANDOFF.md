@@ -57,9 +57,5 @@
 ## 提交前检查
 
 ```bash
-.venv/bin/python -m json.tool config.json
-.venv/bin/ruff check .
-.venv/bin/ruff format --check .
-.venv/bin/python -m compileall -q core tools
-.venv/bin/basedpyright .
+.venv/bin/python tools/check.py
 ```

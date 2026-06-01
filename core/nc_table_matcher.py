@@ -1,6 +1,8 @@
 from collections import defaultdict
 from decimal import Decimal
 
+from core.models import ExcelVoucherItem, MatchIssue, PendingMatch
+
 
 class NCTableMatcher:
     def __init__(self, processor):
@@ -9,7 +11,12 @@ class NCTableMatcher:
     def __getattr__(self, name):
         return getattr(self.processor, name)
 
-    def match_current_table(self, items, voucher_col=None, prefer_generated_date=False):
+    def match_current_table(
+        self,
+        items: list[ExcelVoucherItem],
+        voucher_col=None,
+        prefer_generated_date=False,
+    ) -> tuple[list[PendingMatch], list[MatchIssue]]:
         extra_cols = [self.generated_date_col] if prefer_generated_date else None
         with self.perf.span(
             "pending_snapshot_read",
@@ -82,7 +89,7 @@ class NCTableMatcher:
                 dated_rows.append(row)
         return dated_rows
 
-    def build_increasing_batches(self, matches):
+    def build_increasing_batches(self, matches: list[PendingMatch]):
         batches = []
         current = []
         last_nc_row = None
@@ -90,7 +97,7 @@ class NCTableMatcher:
         for match in matches:
             nc_row = match["nc_row"]
             should_split = current and (
-                nc_row <= last_nc_row
+                (last_nc_row is not None and nc_row <= last_nc_row)
                 or (self.max_batch_size > 0 and len(current) >= self.max_batch_size)
             )
             if should_split:

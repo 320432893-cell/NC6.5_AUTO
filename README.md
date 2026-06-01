@@ -350,14 +350,12 @@ Q: 旧坐标流程还能用吗？
 
 A: 不能。旧坐标入口和旧 GUI 模块已经删除，后续新功能都应走 JAB。
 
-## 静态检查
+## 质量检查
 
-提交前目标检查：
+提交前统一入口：
 
 ```bash
-.venv/bin/python -m json.tool config.json
-.venv/bin/ruff check .
-.venv/bin/ruff format --check .
-.venv/bin/python -m compileall -q core tools
-.venv/bin/basedpyright .
+.venv/bin/python tools/check.py
 ```
+
+该入口包含 JSON 格式、配置语义、ruff、format、compileall、basedpyright、架构边界和 pytest 纯逻辑测试。
