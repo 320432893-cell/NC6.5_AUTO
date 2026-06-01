@@ -20,3 +20,7 @@ class JABControlNotFound(NCWorkflowError):
 
 class JABActionError(NCWorkflowError):
     """Raised when a JAB action returns failure."""
+
+
+class ExcelLockedError(NCWorkflowError):
+    """Raised when Excel output cannot be written because the workbook is locked."""

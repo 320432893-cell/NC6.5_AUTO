@@ -3,6 +3,7 @@ from decimal import Decimal
 import pytest
 
 from core.data_handler import DataHandler
+from core.errors import ExcelLockedError
 
 
 @pytest.fixture
@@ -48,3 +49,21 @@ def test_looks_like_voucher(handler):
     assert handler._looks_like_voucher("00123")
     assert not handler._looks_like_voucher("已生成待回填")
     assert not handler._looks_like_voucher(0)
+
+
+def test_save_workbook_wraps_permission_error(handler):
+    class LockedWorkbook:
+        closed = False
+
+        def save(self, path):
+            raise PermissionError(path)
+
+        def close(self):
+            self.closed = True
+
+    wb = LockedWorkbook()
+
+    with pytest.raises(ExcelLockedError, match="Excel 文件无法写入"):
+        handler._save_workbook(wb, "写入测试")
+
+    assert wb.closed

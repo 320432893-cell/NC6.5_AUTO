@@ -2,6 +2,7 @@ import openpyxl
 import re
 from decimal import Decimal, InvalidOperation
 
+from core.errors import ExcelLockedError
 from core.logger import log
 from core.models import ExcelVoucherItem
 
@@ -237,8 +238,7 @@ class DataHandler:
             updates += 1
             log.info(f"行{row} 拆分索引: amount={amount} partner={partner}")
 
-        wb.save(self.excel_path)
-        wb.close()
+        self._save_workbook(wb, "拆分金额/对手方列")
         log.info(f"JAB 拼接索引拆分完成: updates={updates}, errors={len(errors)}")
         return {
             "updates": updates,
@@ -274,8 +274,7 @@ class DataHandler:
             ws.cell(row=row, column=self.jab_partner_out_col, value=partner)
             log.info(f"行{row} 写入拆分列: amount={amount} partner={partner}")
 
-        wb.save(self.excel_path)
-        wb.close()
+        self._save_workbook(wb, "自动拆分金额/对手方列")
         log.info(f"JAB 自动拆分列写入完成: updates={len(updates)}")
         return len(updates)
 
@@ -290,8 +289,18 @@ class DataHandler:
             ws.cell(row=row, column=self.jab_result_col, value=value)
             log.info(f"行{row} 写入结果: col={self.jab_result_col} value={value}")
 
-        wb.save(self.excel_path)
-        wb.close()
+        self._save_workbook(wb, "写入凭证状态/凭证号")
+
+    def _save_workbook(self, wb, operation):
+        try:
+            wb.save(self.excel_path)
+        except PermissionError as e:
+            raise ExcelLockedError(
+                f"Excel 文件无法写入，可能正被 WPS/Excel 打开: "
+                f"operation={operation} path={self.excel_path}"
+            ) from e
+        finally:
+            wb.close()
 
     def _has_cell_value(self, value):
         return value is not None and str(value).strip() != ""
