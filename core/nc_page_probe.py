@@ -25,9 +25,7 @@ class NCPageProbe:
         tables = self.jab.read_all_table_cells(max_rows=max_rows, max_cols=max_cols)
 
         voucher_window = self.batch_cfg.get("voucher_window_title", "制单")
-        query_title = self.batch_cfg.get("open_query", {}).get(
-            "dialog_title", "查询"
-        )
+        query_title = self.batch_cfg.get("open_query", {}).get("dialog_title", "查询")
         blockers = [
             window
             for window in windows
@@ -38,13 +36,9 @@ class NCPageProbe:
 
         return {
             "blocking_child_windows": blockers,
-            "parent_markers": [
-                item for item in controls if item["name"] == "单据生成"
-            ],
+            "parent_markers": [item for item in controls if item["name"] == "单据生成"],
             "watched_controls": controls,
-            "table_signatures": [
-                self.describe_table(table) for table in tables
-            ],
+            "table_signatures": [self.describe_table(table) for table in tables],
         }
 
     def collect_java_windows(self):
@@ -144,8 +138,7 @@ class NCPageProbe:
                         "description": desc,
                         "role": role,
                         "states": states,
-                        "showing": "visible" in states_l
-                        and "showing" in states_l,
+                        "showing": "visible" in states_l and "showing" in states_l,
                         "bounds": [info.x, info.y, info.width, info.height],
                     }
                 )
@@ -349,9 +342,7 @@ def describe_signature_table(
                     row["cells"][amount_col] if amount_col < len(row["cells"]) else ""
                 ),
                 "partner": jab.normalize_text(
-                    row["cells"][partner_col]
-                    if partner_col < len(row["cells"])
-                    else ""
+                    row["cells"][partner_col] if partner_col < len(row["cells"]) else ""
                 ),
             }
             for row in table.get("rows", [])

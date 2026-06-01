@@ -573,9 +573,7 @@ class JABBatchProcessor:
                 rows=state.table.get("row_count", 0) if state.table else 0,
             )
             rows = state.table.get("row_count", 0) if state.table else 0
-            with_voucher = (
-                state.table.get("voucher_values", []) if state.table else []
-            )
+            with_voucher = state.table.get("voucher_values", []) if state.table else []
             log.info(
                 "已切换到已生成列表: "
                 f"rows={rows} sample_voucher_count={len(with_voucher)}"
