@@ -128,11 +128,18 @@ class JABBatchProcessor:
     def generate_and_save(self, *args, **kwargs):
         return self.pending_workflow.generate_and_save(*args, **kwargs)
 
-    def backfill_generated_vouchers(self, limit=None, start_row=None, end_row=None):
+    def backfill_generated_vouchers(
+        self,
+        limit=None,
+        start_row=None,
+        end_row=None,
+        auto_switch=True,
+    ):
         return self.backfill_workflow.backfill_generated_vouchers(
             limit=limit,
             start_row=start_row,
             end_row=end_row,
+            auto_switch=auto_switch,
         )
 
     def switch_to_generated_list(self, *args, **kwargs):

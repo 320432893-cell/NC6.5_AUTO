@@ -1,0 +1,83 @@
+from core.errors import WorkflowStateError
+from core.nc_backfill_workflow import NCBackfillWorkflow
+from core.nc_state import NCPageState
+
+import pytest
+
+
+class FakeProcessor:
+    def __init__(self, states):
+        self.states = list(states)
+        self.events = []
+        self.transitions = []
+        self.switches = 0
+        self.required = []
+
+    def detect_page_state(self, items=None):
+        return self.states.pop(0)
+
+    def record_event(self, name, **kwargs):
+        self.events.append((name, kwargs))
+
+    def record_transition(self, event, from_state=None, to_state=None, **kwargs):
+        self.transitions.append((event, from_state, to_state, kwargs))
+
+    def switch_to_generated_list(self):
+        self.switches += 1
+
+    def require_page_state(self, expected, items=None, command=""):
+        self.required.append((expected, command))
+        return NCPageState("generated", "after switch")
+
+
+def test_backfill_preflight_allows_generated_page():
+    processor = FakeProcessor([NCPageState("generated", "already generated")])
+    workflow = NCBackfillWorkflow(processor)
+
+    state = workflow.ensure_generated_page_for_backfill([{"row": 2}])
+
+    assert state.name == "generated"
+    assert processor.switches == 0
+    assert processor.required == []
+
+
+def test_backfill_preflight_auto_switches_from_pending():
+    processor = FakeProcessor([NCPageState("pending", "待生成页")])
+    workflow = NCBackfillWorkflow(processor)
+
+    state = workflow.ensure_generated_page_for_backfill([{"row": 2}])
+
+    assert state.name == "generated"
+    assert processor.switches == 1
+    assert processor.required == [("generated", "backfill")]
+    assert processor.transitions == [
+        ("backfill_auto_switch_generated", "pending", "generated", {"rows": 1})
+    ]
+
+
+def test_backfill_preflight_rejects_pending_without_auto_switch():
+    processor = FakeProcessor([NCPageState("pending", "待生成页")])
+    workflow = NCBackfillWorkflow(processor)
+
+    with pytest.raises(WorkflowStateError, match="未启用自动切换"):
+        workflow.ensure_generated_page_for_backfill(
+            [{"row": 2}],
+            auto_switch=False,
+        )
+
+    assert processor.switches == 0
+    assert processor.required == []
+
+
+@pytest.mark.parametrize(
+    "state_name", ["voucher_open", "query_open", "loading", "error"]
+)
+def test_backfill_preflight_rejects_blocking_or_error_states(state_name):
+    processor = FakeProcessor([NCPageState(state_name, "blocked")])
+    workflow = NCBackfillWorkflow(processor)
+
+    with pytest.raises(WorkflowStateError, match="不能按已生成表列位读取"):
+        workflow.ensure_generated_page_for_backfill([{"row": 2}])
+
+    assert processor.switches == 0
+    assert processor.required == []

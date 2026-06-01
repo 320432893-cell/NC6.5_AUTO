@@ -108,6 +108,12 @@ cd /mnt/h/python脚本/.venv/nc_auto_v2
 /mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/jab_batch.py backfill
 ```
 
+只校验当前页面，不从待生成页自动切换：
+
+```bash
+/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/jab_batch.py backfill --no-backfill-auto-switch
+```
+
 拆分 Excel A 列拼接 key：
 
 ```bash
@@ -261,7 +267,12 @@ JAB 查询入口现状：
 
 ### 回填
 
-`backfill` 从已生成表回填凭证号到 Excel C 列。当前假设界面已经在已生成/正式单据列表；不确定时先跑 `switch-generated`。
+`backfill` 从已生成表回填凭证号到 Excel C 列。默认会先识别页面状态：
+
+- 已在 `generated`：直接回填。
+- 当前是 `pending`：先自动执行 `switch-generated`，再回填。
+- 当前是 `voucher_open`、`query_open`、`loading`、`error`：停止并报告状态，避免按错误表格列位读取。
+- 如需旧的只校验行为，使用 `--no-backfill-auto-switch`。
 
 逻辑：
 

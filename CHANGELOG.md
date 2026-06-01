@@ -10,6 +10,7 @@
 - 新增 workflow 领域异常：`WorkflowStateError`、`TableMatchError`、`ContractViolation`、`JABControlNotFound`、`JABActionError`。
 - 架构检查阻止 workflow 模块新增裸 `raise RuntimeError(...)`，避免业务失败原因继续混成一种异常。
 - 新增 `ExcelLockedError`，Excel 拆分列、生成状态写入、凭证号回填写入遇到文件占用时统一报清楚。
+- `backfill` 默认会从 `pending` 自动切到 `generated`；遇到制单、查询、加载、异常状态会停止，不再直接读表。
 - 将原 `JABBatchProcessor` 拆成：
   - `core/nc_state.py`
   - `core/nc_page_probe.py`

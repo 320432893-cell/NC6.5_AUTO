@@ -1,3 +1,4 @@
+from core.errors import WorkflowStateError
 from core.logger import log
 from core.models import ExcelVoucherItem
 
@@ -9,18 +10,26 @@ class NCBackfillWorkflow:
     def __getattr__(self, name):
         return getattr(self.processor, name)
 
-    def backfill_generated_vouchers(self, limit=None, start_row=None, end_row=None):
+    def backfill_generated_vouchers(
+        self,
+        limit=None,
+        start_row=None,
+        end_row=None,
+        auto_switch=True,
+    ):
         with self.perf.span(
             "backfill_total",
             limit=limit,
             start_row=start_row,
             end_row=end_row,
+            auto_switch=auto_switch,
         ):
             self.run_state.set_stage(
                 "backfill_load_excel",
                 limit=limit,
                 start_row=start_row,
                 end_row=end_row,
+                auto_switch=auto_switch,
             )
             items = self.processor.pending_workflow.load_pending_items(
                 skip_filled=False,
@@ -50,6 +59,7 @@ class NCBackfillWorkflow:
                 self.run_state.set_stage("backfill_done")
                 log.info("JAB 回填完成: 没有待回填行")
                 return {}
+            self.ensure_generated_page_for_backfill(items, auto_switch=auto_switch)
             self.run_state.set_stage(
                 "backfill_match_generated_table",
                 excel_rows=[item["row"] for item in items],
@@ -109,3 +119,31 @@ class NCBackfillWorkflow:
             self.run_state.set_stage("backfill_done")
             log.info(f"JAB 回填完成: vouchers={len(matches)}, issues={len(issues)}")
             return updates
+
+    def ensure_generated_page_for_backfill(self, items, auto_switch=True):
+        state = self.detect_page_state(items)
+        self.record_event(
+            "backfill_preflight_state",
+            state=state.name,
+            reason=state.reason,
+            auto_switch=auto_switch,
+        )
+        if state.name == "generated":
+            return state
+        if state.name == "pending" and auto_switch:
+            self.record_transition(
+                "backfill_auto_switch_generated",
+                from_state="pending",
+                to_state="generated",
+                rows=len(items),
+            )
+            self.switch_to_generated_list()
+            return self.require_page_state("generated", items, command="backfill")
+
+        if state.name == "pending":
+            detail = "当前在待生成页，未启用自动切换"
+        else:
+            detail = "当前页面不适合回填，不能按已生成表列位读取"
+        raise WorkflowStateError(
+            f"回填前页面状态不正确: state={state.name} reason={state.reason}; {detail}"
+        )

@@ -110,6 +110,11 @@ def build_parser():
         default=None,
         help="Ctrl+S 保存前窗口处理：always=每张激活；first=仅首张激活；foreground_guard=只校验前台制单",
     )
+    parser.add_argument(
+        "--no-backfill-auto-switch",
+        action="store_true",
+        help="backfill 时不从待生成页自动切到已生成列表，只做状态校验",
+    )
     return parser
 
 
@@ -192,6 +197,7 @@ def main():
                 limit=args.limit,
                 start_row=args.start_row,
                 end_row=args.end_row,
+                auto_switch=not args.no_backfill_auto_switch,
             )
             print(f"回填完成: {len(updates)} 行")
             return
