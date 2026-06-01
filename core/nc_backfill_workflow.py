@@ -1,6 +1,11 @@
 from core.errors import WorkflowStateError
 from core.logger import log
-from core.models import BackfillUpdates, BackfillUpdateValue, ExcelVoucherItem
+from core.models import (
+    BackfillAuditRecord,
+    BackfillUpdates,
+    BackfillUpdateValue,
+    ExcelVoucherItem,
+)
 
 
 class NCBackfillWorkflow:
@@ -77,11 +82,21 @@ class NCBackfillWorkflow:
             )
 
             updates: BackfillUpdates = {}
+            audit_records: list[BackfillAuditRecord] = []
             for match in matches:
                 raw_voucher = str(match["row_data"].get("voucher_text", "")).strip()
                 voucher = self.normalize_generated_voucher(raw_voucher)
                 if voucher is not None:
                     updates[match["item"]["row"]] = voucher
+                    audit_records.append(
+                        self.build_backfill_audit_record(
+                            match["item"],
+                            update_value=voucher,
+                            status="matched",
+                            generated_row=match["row_data"].get("row_index"),
+                            raw_voucher=raw_voucher,
+                        )
+                    )
                     self.perf.event(
                         "backfill_voucher_match",
                         excel_row=match["item"]["row"],
@@ -91,15 +106,41 @@ class NCBackfillWorkflow:
                         partner=match["item"]["partner"],
                     )
                 elif raw_voucher:
-                    updates[match["item"]["row"]] = f"凭证号异常-{raw_voucher}"
+                    update_value = f"凭证号异常-{raw_voucher}"
+                    updates[match["item"]["row"]] = update_value
+                    audit_records.append(
+                        self.build_backfill_audit_record(
+                            match["item"],
+                            update_value=update_value,
+                            status="invalid_voucher",
+                            generated_row=match["row_data"].get("row_index"),
+                            raw_voucher=raw_voucher,
+                        )
+                    )
                 else:
-                    updates[match["item"]["row"]] = "已生成未取到凭证号"
+                    update_value = "已生成未取到凭证号"
+                    updates[match["item"]["row"]] = update_value
+                    audit_records.append(
+                        self.build_backfill_audit_record(
+                            match["item"],
+                            update_value=update_value,
+                            status="missing_voucher",
+                            generated_row=match["row_data"].get("row_index"),
+                            raw_voucher=raw_voucher,
+                        )
+                    )
 
-            updates.update(
-                self.processor.pending_workflow.format_issue_updates(
-                    issues, prefix="回填"
-                )
+            issue_updates = self.processor.pending_workflow.format_issue_updates(
+                issues, prefix="回填"
             )
+            updates.update(issue_updates)
+            audit_records.extend(
+                self.build_issue_audit_record(
+                    issue, issue_updates[issue["item"]["row"]]
+                )
+                for issue in issues
+            )
+            self.record_backfill_audit(audit_records)
             self.validate_backfill_updates(updates)
             self.run_state.set_stage("backfill_write_excel", rows=len(updates))
             with self.perf.span("backfill_excel_save", rows=len(updates)):
@@ -166,3 +207,51 @@ class NCBackfillWorkflow:
         if isinstance(value, str):
             return value.strip() != ""
         return False
+
+    def build_backfill_audit_record(
+        self,
+        item: ExcelVoucherItem,
+        update_value: BackfillUpdateValue,
+        status: str,
+        generated_row=None,
+        raw_voucher="",
+    ) -> BackfillAuditRecord:
+        record: BackfillAuditRecord = {
+            "excel_row": item["row"],
+            "amount": str(item["amount"]),
+            "partner": item["partner"],
+            "status": status,
+            "update_value": update_value,
+        }
+        if generated_row is not None:
+            record["generated_row"] = int(generated_row)
+        if raw_voucher:
+            record["raw_voucher"] = raw_voucher
+        return record
+
+    def build_issue_audit_record(
+        self,
+        issue,
+        update_value: BackfillUpdateValue,
+    ) -> BackfillAuditRecord:
+        record = self.build_backfill_audit_record(
+            issue["item"],
+            update_value=update_value,
+            status="issue",
+        )
+        record["issue_reason"] = issue["reason"]
+        record["nc_rows"] = issue["rows"]
+        return record
+
+    def record_backfill_audit(self, records: list[BackfillAuditRecord]):
+        counts = self.count_backfill_audit(records)
+        payload = {"records": records, **counts}
+        self.run_state.event("backfill_audit", **payload)
+        self.perf.event("backfill_audit", **payload)
+
+    def count_backfill_audit(self, records: list[BackfillAuditRecord]):
+        matched = sum(1 for record in records if record["status"] == "matched")
+        return {
+            "matched": matched,
+            "issues": len(records) - matched,
+        }

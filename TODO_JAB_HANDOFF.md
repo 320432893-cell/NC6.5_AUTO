@@ -12,23 +12,19 @@
 - workflow 已引入领域错误类型，并由架构检查阻止新增裸 `raise RuntimeError(...)`。
 - Excel 写入锁已包装为 `ExcelLockedError`，覆盖拆分 A/B、写生成状态和回填凭证号。
 - `backfill` 默认会从 `pending` 自动切到 `generated`；阻塞/异常状态会停止，避免按错误表格列位读取。
+- `backfill` 已记录结构化审计事件 `backfill_audit`，包含 Excel 行、金额、对手方、NC 行、凭证号和失败状态。
 - 当前没有继续低风险拆分项。后续再动结构，应优先做模型和契约，而不是机械拆文件。
 
 ## 待办
 
 1. 数据模型
-   - 用 dataclass 替代关键 dict。
-   - 优先模型：`ExcelVoucherItem`、`PendingMatch`、`VoucherSaveMatch`、`GeneratedVoucherRow`、`BackfillUpdate`。
-   - 目标是减少 `item["row"]`、`row_data["voucher_text"]` 这类 key 写错。
+   - 继续把关键 TypedDict 收口为 dataclass。
+   - 优先模型：`ExcelVoucherItem`、`VoucherSaveMatch`。
+   - 已覆盖：`GeneratedVoucherMatch`、`BackfillUpdates`、`BackfillAuditRecord`。
 
 2. 契约检查
    - 继续补统一前置/后置检查。
    - 失败要带 Excel 行、金额、对手方、NC 行、当前窗口。
-
-3. 审计和复核
-   - 每次运行生成 run id。
-   - 记录 Excel 行、金额、对手方、待生成 NC 行、制单行、凭证号、状态。
-   - 回填后输出成功、未找到、重复、凭证号异常。
 
 ## 保留坑点
 

@@ -62,3 +62,15 @@ class MatchIssue(TypedDict):
 
 BackfillUpdateValue = int | str
 BackfillUpdates = dict[int, BackfillUpdateValue]
+
+
+class BackfillAuditRecord(TypedDict):
+    excel_row: int
+    amount: str
+    partner: str
+    status: str
+    update_value: BackfillUpdateValue
+    generated_row: NotRequired[int]
+    raw_voucher: NotRequired[str]
+    issue_reason: NotRequired[str]
+    nc_rows: NotRequired[list[int]]

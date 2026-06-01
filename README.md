@@ -285,6 +285,8 @@ JAB 查询入口现状：
 7. 校验 `1-9999`。
 8. 写回 Excel C 列。
 
+回填会在 `logs/run_state.json` 记录 `backfill_audit` 事件；开启 `--perf` 时，也会写入性能 JSONL。审计记录包含 Excel 行、金额、对手方、NC 已生成表行、原始凭证号、写回值和失败状态。
+
 ## 制单保存策略
 
 当前正式主线是 `single + jab_button + use_voucher_queue_cache`：

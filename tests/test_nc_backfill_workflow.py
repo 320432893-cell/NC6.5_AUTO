@@ -1,4 +1,5 @@
 from core.errors import WorkflowStateError
+from core.models import ExcelVoucherItem
 from core.nc_backfill_workflow import NCBackfillWorkflow
 from core.nc_state import NCPageState
 
@@ -97,3 +98,71 @@ def test_backfill_update_contract_rejects_invalid_values(value):
 
     with pytest.raises(WorkflowStateError, match="回填更新值不符合契约"):
         workflow.validate_backfill_updates({2: value})
+
+
+def test_build_backfill_audit_record():
+    workflow = NCBackfillWorkflow(FakeProcessor([]))
+    item: ExcelVoucherItem = {
+        "row": 2,
+        "raw_key": "",
+        "raw_amount": "",
+        "raw_partner": "",
+        "amount": None,
+        "partner": "深圳公司",
+        "voucher": "已生成待回填",
+        "source": "split_ab",
+        "parse_error": "",
+    }
+
+    record = workflow.build_backfill_audit_record(
+        item,
+        update_value=123,
+        status="matched",
+        generated_row=5,
+        raw_voucher="000123",
+    )
+
+    assert record == {
+        "excel_row": 2,
+        "amount": "None",
+        "partner": "深圳公司",
+        "status": "matched",
+        "update_value": 123,
+        "generated_row": 5,
+        "raw_voucher": "000123",
+    }
+
+
+def test_build_issue_audit_record_and_counts():
+    workflow = NCBackfillWorkflow(FakeProcessor([]))
+    item: ExcelVoucherItem = {
+        "row": 3,
+        "raw_key": "",
+        "raw_amount": "",
+        "raw_partner": "",
+        "amount": None,
+        "partner": "上海公司",
+        "voucher": "已生成待回填",
+        "source": "split_ab",
+        "parse_error": "",
+    }
+
+    issue_record = workflow.build_issue_audit_record(
+        {"item": item, "reason": "未找到", "rows": []},
+        update_value="回填未找到",
+    )
+
+    assert issue_record["status"] == "issue"
+    assert issue_record.get("issue_reason") == "未找到"
+    assert workflow.count_backfill_audit(
+        [
+            {
+                "excel_row": 2,
+                "amount": "1",
+                "partner": "A",
+                "status": "matched",
+                "update_value": 1,
+            },
+            issue_record,
+        ]
+    ) == {"matched": 1, "issues": 1}
