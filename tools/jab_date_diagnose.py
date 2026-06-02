@@ -453,6 +453,7 @@ def list_python_probe_processes():
             check=False,
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=3,
         )
     except Exception as exc:

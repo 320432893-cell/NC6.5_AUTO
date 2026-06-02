@@ -102,6 +102,12 @@ def _validate_receipt_entry(receipt_cfg, errors):
         return
 
     _require(receipt_cfg, "state_label", str, errors, prefix="receipt_entry")
+    excel_cfg = receipt_cfg.get("excel")
+    if excel_cfg is not None:
+        _validate_receipt_excel(excel_cfg, errors)
+    query_cfg = receipt_cfg.get("query")
+    if query_cfg is not None:
+        _validate_receipt_query(query_cfg, errors)
     organizations = _require(
         receipt_cfg,
         "finance_organizations",
@@ -167,6 +173,62 @@ def _validate_receipt_entry(receipt_cfg, errors):
                     f"{org_code!r}/{account_label!r}/{account_no!r}"
                 )
             account_keys.add(key)
+
+
+def _validate_receipt_excel(excel_cfg, errors):
+    if not isinstance(excel_cfg, dict):
+        errors.append("receipt_entry.excel must be an object")
+        return
+
+    for key in (
+        "path",
+        "sheet_name",
+        "date_column",
+        "payer_name_column",
+        "raw_amount_column",
+        "bank_column",
+        "organization_column",
+        "nc_done_column",
+    ):
+        _require_non_empty_str(excel_cfg, key, errors, prefix="receipt_entry.excel")
+    _positive_int(excel_cfg, "header_row", errors, prefix="receipt_entry.excel")
+    _iso_date(excel_cfg, "start_date", errors, prefix="receipt_entry.excel")
+
+
+def _validate_receipt_query(query_cfg, errors):
+    if not isinstance(query_cfg, dict):
+        errors.append("receipt_entry.query must be an object")
+        return
+
+    for key in (
+        "date_from",
+        "date_to",
+        "finance_org_field",
+        "finance_org_operator",
+        "document_date_field",
+        "document_date_operator",
+    ):
+        _require_non_empty_str(query_cfg, key, errors, prefix="receipt_entry.query")
+    if query_cfg.get("date_from") != "{today}":
+        _iso_date(query_cfg, "date_from", errors, prefix="receipt_entry.query")
+    if query_cfg.get("date_to") != "{today}":
+        _iso_date(query_cfg, "date_to", errors, prefix="receipt_entry.query")
+
+    result_columns = _require(
+        query_cfg,
+        "result_columns",
+        dict,
+        errors,
+        prefix="receipt_entry.query",
+    )
+    if isinstance(result_columns, dict):
+        for key in ("document_date", "original_amount", "customer"):
+            _require_non_empty_str(
+                result_columns,
+                key,
+                errors,
+                prefix="receipt_entry.query.result_columns",
+            )
 
 
 def _require(mapping, key, expected_type, errors, prefix=""):

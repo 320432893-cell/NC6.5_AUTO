@@ -59,6 +59,31 @@ def test_validate_receipt_entry_accepts_account_mapping():
     config = base_config()
     config["receipt_entry"] = {
         "state_label": "收款单录入",
+        "excel": {
+            "path": "payments.xlsx",
+            "sheet_name": "💸Payments来款通知",
+            "header_row": 1,
+            "start_date": "2026-01-01",
+            "date_column": "到款日期",
+            "payer_name_column": "🟪银行来款名",
+            "raw_amount_column": "🟪原始金额",
+            "bank_column": "银行",
+            "organization_column": "主体名称",
+            "nc_done_column": "是否NC已做过",
+        },
+        "query": {
+            "date_from": "2026-01-01",
+            "date_to": "{today}",
+            "finance_org_field": "收款财务组织",
+            "finance_org_operator": "等于",
+            "document_date_field": "单据日期",
+            "document_date_operator": "介于",
+            "result_columns": {
+                "document_date": "单据日期",
+                "original_amount": "原币金额",
+                "customer": "客户",
+            },
+        },
         "finance_organizations": [
             {
                 "code": "A001",
