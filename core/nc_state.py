@@ -214,7 +214,7 @@ class NCStateDetector:
         )
 
     def table_match_ratio(self, rows, items):
-        parsed = [item for item in items if not item.get("parse_error")]
+        parsed = [item for item in items if not item.parse_error]
         if not parsed:
             return 0.0
         index = {
@@ -227,8 +227,8 @@ class NCStateDetector:
         matched = 0
         for item in parsed:
             key = (
-                self._as_decimal(item["amount"]),
-                self.jab.normalize_text(item["partner"]),
+                self._as_decimal(item.amount),
+                self.jab.normalize_text(item.partner),
             )
             if key in index:
                 matched += 1

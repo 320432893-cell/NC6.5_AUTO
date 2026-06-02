@@ -40,9 +40,9 @@ class NCPendingWorkflow:
                 skip_any_status=skip_any_status,
             )
         if start_row is not None:
-            items = [item for item in items if item["row"] >= start_row]
+            items = [item for item in items if item.row >= start_row]
         if end_row is not None:
-            items = [item for item in items if item["row"] <= end_row]
+            items = [item for item in items if item.row <= end_row]
         if limit:
             items = items[:limit]
         self.perf.event(
@@ -76,8 +76,8 @@ class NCPendingWorkflow:
             start_row=start_row,
             end_row=end_row,
         )
-        parsed_items = [item for item in items if not item.get("parse_error")]
-        parse_errors = [item for item in items if item.get("parse_error")]
+        parsed_items = [item for item in items if not item.parse_error]
+        parse_errors = [item for item in items if item.parse_error]
 
         self.require_page_state("pending", parsed_items, command="plan")
         self.run_state.set_stage("plan_match_pending_table")
@@ -128,8 +128,8 @@ class NCPendingWorkflow:
                 start_row=start_row,
                 end_row=end_row,
             )
-            pending = [item for item in items if not item.get("parse_error")]
-            parse_errors = [item for item in items if item.get("parse_error")]
+            pending = [item for item in items if not item.parse_error]
+            parse_errors = [item for item in items if item.parse_error]
             with self.perf.span("excel_save_split_columns", rows=len(pending)):
                 self.data_handler.save_jab_split_columns(pending)
             self.perf.event(
@@ -146,12 +146,12 @@ class NCPendingWorkflow:
             if parse_errors:
                 self.run_state.set_stage(
                     "generate_write_parse_errors",
-                    excel_rows=[item["row"] for item in parse_errors],
+                    excel_rows=[item.row for item in parse_errors],
                 )
                 with self.perf.span("excel_save_parse_errors", rows=len(parse_errors)):
                     self.data_handler.save_jab_results(
                         {
-                            item["row"]: f"格式错误-{item['parse_error']}"
+                            item.row: f"格式错误-{item.parse_error}"
                             for item in parse_errors
                         }
                     )
@@ -165,7 +165,7 @@ class NCPendingWorkflow:
                 self.require_page_state("pending", pending, command="generate")
                 self.run_state.set_stage(
                     "generate_match_pending_table",
-                    excel_rows=[item["row"] for item in pending],
+                    excel_rows=[item.row for item in pending],
                 )
                 matches, issues = self.table_matcher.match_current_table(pending)
                 self.perf.event(
@@ -184,7 +184,7 @@ class NCPendingWorkflow:
                     )
                     log.info(
                         "开始执行 JAB 全量生成: "
-                        f"size={len(matches)} excel_rows={[m['item']['row'] for m in matches]} "
+                        f"size={len(matches)} excel_rows={[m['item'].row for m in matches]} "
                         f"nc_rows={[m['nc_row'] for m in matches]}"
                     )
                     saved_matches, total_batches = self.process_full_selection(
@@ -221,19 +221,19 @@ class NCPendingWorkflow:
         rows = [match["nc_row"] for match in matches]
         self.run_state.set_stage(
             "pending_rows_select",
-            excel_rows=[match["item"]["row"] for match in matches],
+            excel_rows=[match["item"].row for match in matches],
             nc_rows=rows,
         )
         self.perf.event(
             "full_selection_start",
             matches=len(matches),
-            excel_rows=[match["item"]["row"] for match in matches],
+            excel_rows=[match["item"].row for match in matches],
             nc_rows=rows,
         )
         self.record_event(
             "event_pending_rows_select_start",
             rows=len(rows),
-            excel_rows=[match["item"]["row"] for match in matches],
+            excel_rows=[match["item"].row for match in matches],
             nc_rows=rows,
         )
         with self.perf.span("pending_rows_select", rows=len(rows)):
@@ -270,7 +270,7 @@ class NCPendingWorkflow:
             check_abort()
             self.run_state.set_stage(
                 "voucher_match",
-                pending_excel_rows=[match["item"]["row"] for match in pending],
+                pending_excel_rows=[match["item"].row for match in pending],
                 save_batch_index=save_batches + 1,
             )
             with self.perf.span(
@@ -290,8 +290,7 @@ class NCPendingWorkflow:
             )
             if issues:
                 detail = "; ".join(
-                    f"Excel行{issue['item']['row']} {issue['reason']}"
-                    for issue in issues
+                    f"Excel行{issue['item'].row} {issue['reason']}" for issue in issues
                 )
                 raise TableMatchError(f"制单表匹配失败: {detail}")
 
@@ -301,14 +300,14 @@ class NCPendingWorkflow:
                 )
             )
             saved_matches.extend(new_saved)
-            saved_rows = {match["item"]["row"] for match in new_saved}
+            saved_rows = {match["item"].row for match in new_saved}
             if max_save_batches and save_batches >= max_save_batches:
                 raise ContractViolation(
                     "已达到 max_batches，但全量生成模式不能中途留下制单窗口，"
                     "请不要在全量生成时使用 max_batches"
                 )
             pending = [
-                match for match in pending if match["item"]["row"] not in saved_rows
+                match for match in pending if match["item"].row not in saved_rows
             ]
             save_batches += new_batches
             if pending:
@@ -321,7 +320,7 @@ class NCPendingWorkflow:
 
         self.run_state.set_stage(
             "pending_final_verify",
-            saved_excel_rows=[match["item"]["row"] for match in saved_matches],
+            saved_excel_rows=[match["item"].row for match in saved_matches],
         )
         with self.perf.span("pending_final_verify", rows=len(saved_matches)):
             self.processor.voucher_workflow.close_and_verify_pending_removed(
@@ -349,14 +348,14 @@ class NCPendingWorkflow:
                 start_row=start_row,
                 end_row=end_row,
             )
-            pending = [item for item in items if not item.get("parse_error")]
+            pending = [item for item in items if not item.parse_error]
             if not pending:
                 log.info("当前没有可用于恢复保存的 Excel 行")
                 return 0
 
             self.run_state.set_stage(
                 "resume_read_voucher_window",
-                excel_rows=[item["row"] for item in pending],
+                excel_rows=[item.row for item in pending],
             )
             self.require_page_state(
                 "voucher_open",
@@ -381,13 +380,13 @@ class NCPendingWorkflow:
                 table_rows = sum(table["row_count"] for table in tables)
                 if len(voucher_matches) != table_rows:
                     detail = "; ".join(
-                        f"Excel行{issue['item']['row']} {issue['reason']}"
+                        f"Excel行{issue['item'].row} {issue['reason']}"
                         for issue in issues
                     )
                     raise TableMatchError(f"恢复制单表匹配失败: {detail}")
                 log.warning(
                     "恢复保存时忽略未进入当前制单窗口的 Excel 行: "
-                    f"excel_rows={[issue['item']['row'] for issue in issues]}"
+                    f"excel_rows={[issue['item'].row for issue in issues]}"
                 )
 
             saved_matches, save_batches = (
@@ -397,7 +396,7 @@ class NCPendingWorkflow:
             )
             self.run_state.set_stage(
                 "resume_pending_final_verify",
-                saved_excel_rows=[match["item"]["row"] for match in saved_matches],
+                saved_excel_rows=[match["item"].row for match in saved_matches],
             )
             with self.perf.span("resume_pending_final_verify", rows=len(saved_matches)):
                 self.processor.voucher_workflow.close_and_verify_pending_removed(
@@ -419,7 +418,7 @@ class NCPendingWorkflow:
             reason = issue["reason"]
             if issue.get("rows"):
                 reason = f"{reason}-NC行{','.join(str(r) for r in issue['rows'][:5])}"
-            updates[issue["item"]["row"]] = f"{prefix}{reason}"
+            updates[issue["item"].row] = f"{prefix}{reason}"
         return updates
 
     def _log_plan(self, items, parse_errors, matches, issues, batches):
@@ -429,16 +428,16 @@ class NCPendingWorkflow:
             f"matched={len(matches)} issues={len(issues)} batches={len(batches)}"
         )
         for issue in parse_errors:
-            log.warning(f"Excel行{issue['row']} 格式错误: {issue.get('parse_error')}")
+            log.warning(f"Excel行{issue.row} 格式错误: {issue.parse_error}")
         for issue in issues:
             log.warning(
-                f"Excel行{issue['item']['row']} {issue['reason']}: "
-                f"amount={issue['item']['amount']} partner={issue['item']['partner']} "
+                f"Excel行{issue['item'].row} {issue['reason']}: "
+                f"amount={issue['item'].amount} partner={issue['item'].partner} "
                 f"nc_rows={issue.get('rows', [])}"
             )
         for index, batch in enumerate(batches, start=1):
             log.info(
                 f"批次{index}: size={len(batch)} "
-                f"excel_rows={[m['item']['row'] for m in batch]} "
+                f"excel_rows={[m['item'].row for m in batch]} "
                 f"nc_rows={[m['nc_row'] for m in batch]}"
             )

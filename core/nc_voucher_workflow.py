@@ -2,6 +2,7 @@ import time
 import re
 import itertools
 from collections import defaultdict
+from dataclasses import replace
 
 from core.errors import (
     ContractViolation,
@@ -53,7 +54,7 @@ class NCVoucherWorkflow:
                 )
                 if issues:
                     detail = "; ".join(
-                        f"Excel行{issue['item']['row']} {issue['reason']}"
+                        f"Excel行{issue['item'].row} {issue['reason']}"
                         for issue in issues
                     )
                     raise TableMatchError(f"刷新制单表匹配失败: {detail}")
@@ -74,14 +75,14 @@ class NCVoucherWorkflow:
             self.run_state.set_stage(
                 "voucher_rows_select",
                 save_batch_index=save_batches + 1,
-                excel_rows=[match["item"]["row"] for match in voucher_batch],
+                excel_rows=[match["item"].row for match in voucher_batch],
                 voucher_rows=row_indexes,
                 select_rows=selection_row_indexes,
                 strategy=self.save_strategy,
             )
             log.info(
                 "保存制单批次: "
-                f"size={len(voucher_batch)} excel_rows={[m['item']['row'] for m in voucher_batch]} "
+                f"size={len(voucher_batch)} excel_rows={[m['item'].row for m in voucher_batch]} "
                 f"voucher_rows={row_indexes} select_rows={selection_row_indexes} "
                 f"strategy={self.save_strategy} before_count={before_count}"
             )
@@ -104,7 +105,7 @@ class NCVoucherWorkflow:
             self.run_state.set_stage(
                 "voucher_save_click",
                 save_batch_index=save_batches + 1,
-                excel_rows=[match["item"]["row"] for match in voucher_batch],
+                excel_rows=[match["item"].row for match in voucher_batch],
             )
             self.require_page_state(
                 "voucher_open",
@@ -114,21 +115,21 @@ class NCVoucherWorkflow:
             self.record_event(
                 "event_voucher_save_click",
                 save_batch_index=save_batches + 1,
-                excel_rows=[match["item"]["row"] for match in voucher_batch],
+                excel_rows=[match["item"].row for match in voucher_batch],
                 rows=len(voucher_batch),
                 save_trigger=self.save_trigger,
             )
             with self.perf.span(
                 "voucher_save_click",
                 rows=len(voucher_batch),
-                excel_rows=[match["item"]["row"] for match in voucher_batch],
+                excel_rows=[match["item"].row for match in voucher_batch],
                 save_batch_index=save_batches + 1,
                 save_trigger=self.save_trigger,
                 hotkey_activate_policy=self.hotkey_activate_policy,
             ):
                 if not self.trigger_voucher_save():
                     raise JABActionError(
-                        f"点击保存失败: Excel行{voucher_batch[0]['item']['row']}"
+                        f"点击保存失败: Excel行{voucher_batch[0]['item'].row}"
                     )
             self.record_transition(
                 "voucher_save_clicked",
@@ -141,7 +142,7 @@ class NCVoucherWorkflow:
             self.run_state.set_stage(
                 "voucher_save_verify",
                 save_batch_index=save_batches + 1,
-                excel_rows=[match["item"]["row"] for match in voucher_batch],
+                excel_rows=[match["item"].row for match in voucher_batch],
             )
             with self.perf.span(
                 "voucher_save_verify",
@@ -166,15 +167,15 @@ class NCVoucherWorkflow:
                 rows=len(voucher_batch),
             )
             saved_matches.extend(voucher_batch)
-            saved_rows = {match["item"]["row"] for match in voucher_batch}
+            saved_rows = {match["item"].row for match in voucher_batch}
             batch_status_updates = {
-                match["item"]["row"]: self.generated_status for match in voucher_batch
+                match["item"].row: self.generated_status for match in voucher_batch
             }
             pending_status_updates.update(batch_status_updates)
             self.run_state.event(
                 "voucher_batch_saved",
                 save_batch_index=save_batches + 1,
-                excel_rows=[match["item"]["row"] for match in voucher_batch],
+                excel_rows=[match["item"].row for match in voucher_batch],
                 pending_excel_status_updates=sorted(pending_status_updates),
             )
             if self.write_generated_status_each_save:
@@ -186,7 +187,7 @@ class NCVoucherWorkflow:
                     self.run_state.set_stage(
                         "excel_save_generated_status",
                         save_batch_index=save_batches + 1,
-                        excel_rows=[match["item"]["row"] for match in voucher_batch],
+                        excel_rows=[match["item"].row for match in voucher_batch],
                     )
                     self.data_handler.save_jab_results(batch_status_updates)
                 pending_status_updates = {}
@@ -196,18 +197,16 @@ class NCVoucherWorkflow:
                     pending_rows=sorted(pending_status_updates),
                 )
             pending = [
-                match for match in pending if match["item"]["row"] not in saved_rows
+                match for match in pending if match["item"].row not in saved_rows
             ]
             pending_source = [
-                match
-                for match in pending_source
-                if match["item"]["row"] not in saved_rows
+                match for match in pending_source if match["item"].row not in saved_rows
             ]
             save_batches += 1
             if pending_source and verify_result in ("empty_window", "window_closed"):
                 raise ContractViolation(
                     "制单窗口已空/关闭但仍有未保存 Excel 行，停止复核: "
-                    f"remaining_excel_rows={[m['item']['row'] for m in pending_source]}"
+                    f"remaining_excel_rows={[m['item'].row for m in pending_source]}"
                 )
             if cached_voucher_matches is not None:
                 cached_voucher_matches = self.advance_voucher_queue_cache(
@@ -313,20 +312,20 @@ class NCVoucherWorkflow:
         deleted_rows = [
             match["voucher_row"]
             for match in cached_matches
-            if match["item"]["row"] in saved_rows
+            if match["item"].row in saved_rows
         ]
         advanced = []
         for match in cached_matches:
-            if match["item"]["row"] in saved_rows:
+            if match["item"].row in saved_rows:
                 continue
             next_row = match["voucher_row"]
             next_row -= sum(1 for deleted_row in deleted_rows if next_row > deleted_row)
             advanced.append(
-                {
-                    **match,
-                    "voucher_row": next_row,
-                    "table_rows": match["table_rows"] - len(deleted_rows),
-                }
+                replace(
+                    match,
+                    voucher_row=next_row,
+                    table_rows=match["table_rows"] - len(deleted_rows),
+                )
             )
         if advanced and any(match["voucher_row"] < 0 for match in advanced):
             log.warning("制单表队列缓存行号异常，停止使用缓存")
@@ -391,11 +390,9 @@ class NCVoucherWorkflow:
         partner_index = defaultdict(list)
         for record in row_records:
             for match in matches:
-                partner_key = self.normalize_partner_match_text(
-                    match["item"]["partner"]
-                )
+                partner_key = self.normalize_partner_match_text(match["item"].partner)
                 if partner_key and partner_key in record["partner_key_text"]:
-                    partner_index[match["item"]["row"]].append(
+                    partner_index[match["item"].row].append(
                         {
                             "table": record["table"],
                             "row": record["row"],
@@ -405,11 +402,11 @@ class NCVoucherWorkflow:
                     )
                 if (
                     record["amount"]
-                    == self.table_matcher._as_decimal(match["item"]["amount"])
+                    == self.table_matcher._as_decimal(match["item"].amount)
                     and partner_key
                     and partner_key in record["partner_key_text"]
                 ):
-                    index[match["item"]["row"]].append(
+                    index[match["item"].row].append(
                         {
                             "table": record["table"],
                             "row": record["row"],
@@ -423,24 +420,24 @@ class NCVoucherWorkflow:
         assigned_rows = set()
         rate_group_matches = self.find_partner_rate_group_matches(matches, row_records)
         for ordinal, match in enumerate(matches):
-            rows = index.get(match["item"]["row"], [])
+            rows = index.get(match["item"].row, [])
             if len(rows) == 1:
                 found = rows[0]
                 self._append_voucher_match(voucher_matches, match, found, assigned_rows)
                 continue
 
-            partner_rows = partner_index.get(match["item"]["row"], [])
+            partner_rows = partner_index.get(match["item"].row, [])
             if len(partner_rows) == 1:
                 found = partner_rows[0]
                 self._append_voucher_match(voucher_matches, match, found, assigned_rows)
                 log.warning(
                     "制单表金额与 Excel 不一致，按唯一对手方匹配: "
-                    f"Excel行{match['item']['row']} expected_amount={match['item']['amount']} "
+                    f"Excel行{match['item'].row} expected_amount={match['item'].amount} "
                     f"voucher_amount={found['amount']} voucher_row={found['row']['row_index']}"
                 )
                 continue
 
-            rate_group_match = rate_group_matches.get(match["item"]["row"])
+            rate_group_match = rate_group_matches.get(match["item"].row)
             if rate_group_match:
                 self._append_voucher_match(
                     voucher_matches,
@@ -450,7 +447,7 @@ class NCVoucherWorkflow:
                 )
                 log.warning(
                     "制单表金额与 Excel 不一致，按归一化对手方+汇率一致性匹配: "
-                    f"Excel行{match['item']['row']} expected_amount={match['item']['amount']} "
+                    f"Excel行{match['item'].row} expected_amount={match['item'].amount} "
                     f"voucher_amount={rate_group_match['amount']} "
                     f"voucher_row={rate_group_match['row']['row_index']}"
                 )
@@ -472,7 +469,7 @@ class NCVoucherWorkflow:
                 )
                 log.warning(
                     "制单表金额不一致，按本批顺序+对手方匹配: "
-                    f"Excel行{match['item']['row']} expected_amount={match['item']['amount']} "
+                    f"Excel行{match['item'].row} expected_amount={match['item'].amount} "
                     f"voucher_amount={fallback['amount']} voucher_row={fallback['row']['row_index']}"
                 )
             else:
@@ -495,13 +492,17 @@ class NCVoucherWorkflow:
             return
         assigned_rows.add(row_key)
         voucher_matches.append(
-            {
-                **match,
-                "table_index": found["table"]["table_index"],
-                "table_rows": found["table"]["row_count"],
-                "voucher_row": found["row"]["row_index"],
-                "voucher_cells": found["row"]["cells"],
-            }
+            VoucherSaveMatch(
+                item=match["item"],
+                nc_row=match.get("nc_row"),
+                row_data=match["row_data"],
+                table_index=found["table"]["table_index"],
+                table_rows=found["table"]["row_count"],
+                voucher_row=found["row"]["row_index"],
+                voucher_cells=found["row"]["cells"],
+                match_mode=match.get("match_mode", ""),
+                fallback_reason=found.get("fallback_reason", ""),
+            )
         )
 
     def find_voucher_order_fallback(self, match, ordinal, matches, row_records):
@@ -511,7 +512,7 @@ class NCVoucherWorkflow:
         row count as the current batch and the row at the same ordinal contains
         the expected partner name.
         """
-        partner = self.jab.normalize_text(match["item"]["partner"])
+        partner = self.jab.normalize_text(match["item"].partner)
         if not partner:
             return None
 
@@ -540,7 +541,7 @@ class NCVoucherWorkflow:
         by_partner = defaultdict(list)
         records_by_partner = defaultdict(list)
         for match in matches:
-            partner_key = self.normalize_partner_match_text(match["item"]["partner"])
+            partner_key = self.normalize_partner_match_text(match["item"].partner)
             if partner_key:
                 by_partner[partner_key].append(match)
         for record in row_records:
@@ -564,7 +565,7 @@ class NCVoucherWorkflow:
             if not assignment:
                 continue
             for match, record in assignment:
-                result[match["item"]["row"]] = {
+                result[match["item"].row] = {
                     "table": record["table"],
                     "row": record["row"],
                     "amount": record["amount"],
@@ -579,7 +580,7 @@ class NCVoucherWorkflow:
             rates = []
             valid = True
             for match, record in zip(matches, permutation):
-                excel_amount = self.table_matcher._as_decimal(match["item"]["amount"])
+                excel_amount = self.table_matcher._as_decimal(match["item"].amount)
                 if not excel_amount:
                     valid = False
                     break
@@ -672,7 +673,7 @@ class NCVoucherWorkflow:
         self.perf.event(
             "safe_pending_row_batches",
             batch_sizes=[len(batch) for batch in batches],
-            excel_rows=[[match["item"]["row"] for match in batch] for batch in batches],
+            excel_rows=[[match["item"].row for match in batch] for batch in batches],
             nc_rows=[[match.get("nc_row") for match in batch] for batch in batches],
             voucher_rows=[
                 [match["voucher_row"] for match in batch] for batch in batches
@@ -712,7 +713,7 @@ class NCVoucherWorkflow:
     ):
         expected_removed = len(voucher_batch)
         deadline = time.time() + self.voucher_record_timeout
-        target_rows = {match["item"]["row"] for match in voucher_batch}
+        target_rows = {match["item"].row for match in voucher_batch}
 
         while time.time() < deadline:
             check_abort()
@@ -768,7 +769,7 @@ class NCVoucherWorkflow:
                 voucher_batch,
                 tables=voucher_tables,
             )
-            remaining_rows = {match["item"]["row"] for match in remaining_matches}
+            remaining_rows = {match["item"].row for match in remaining_matches}
 
             if not remaining_rows and min_count <= before_count - expected_removed:
                 log.info(
@@ -792,7 +793,7 @@ class NCVoucherWorkflow:
         ):
             self.record_event(
                 "event_voucher_window_close_start",
-                excel_rows=[match["item"]["row"] for match in voucher_batch],
+                excel_rows=[match["item"].row for match in voucher_batch],
             )
             self.jab.close_window_by_title(
                 close_cfg.get("title", self.voucher_window_title),
@@ -803,7 +804,7 @@ class NCVoucherWorkflow:
                 "voucher_window_closed",
                 from_state="voucher_open",
                 to_state="pending",
-                excel_rows=[match["item"]["row"] for match in voucher_batch],
+                excel_rows=[match["item"].row for match in voucher_batch],
             )
 
         self.record_event(
@@ -825,11 +826,11 @@ class NCVoucherWorkflow:
         for match in voucher_batch:
             item = match["item"]
             key = (
-                self.table_matcher._as_decimal(item["amount"]),
-                self.jab.normalize_text(item["partner"]),
+                self.table_matcher._as_decimal(item.amount),
+                self.jab.normalize_text(item.partner),
             )
             if index.get(key):
-                still_present.append(item["row"])
+                still_present.append(item.row)
 
         if still_present:
             raise ContractViolation(
@@ -838,26 +839,26 @@ class NCVoucherWorkflow:
 
         log.info(
             "待生成表复核通过，本批记录已消失: "
-            f"excel_rows={[match['item']['row'] for match in voucher_batch]}"
+            f"excel_rows={[match['item'].row for match in voucher_batch]}"
         )
         return True
 
     def verify_current_voucher_record(self, match: VoucherSaveMatch):
         item = match["item"]
         found = self.jab.wait_for_record_visible(
-            item["amount"],
-            item["partner"],
+            item.amount,
+            item.partner,
             timeout=self.voucher_record_timeout,
             window_title=self.voucher_window_title,
         )
         if not found:
             raise ContractViolation(
                 "制单界面未找到当前记录，停止以避免错保存: "
-                f"Excel行{item['row']} amount={item['amount']} partner={item['partner']}"
+                f"Excel行{item.row} amount={item.amount} partner={item.partner}"
             )
         log.debug(
             "制单当前记录验证通过: "
-            f"Excel行{item['row']} table={found['table_index']} row={found['row_index']} "
+            f"Excel行{item.row} table={found['table_index']} row={found['row_index']} "
             f"selected={found['selected']}"
         )
         return found
@@ -865,19 +866,19 @@ class NCVoucherWorkflow:
     def wait_for_next_voucher_record(self, next_match):
         item = next_match["item"]
         found = self.jab.wait_for_record_visible(
-            item["amount"],
-            item["partner"],
+            item.amount,
+            item.partner,
             timeout=self.voucher_record_timeout,
             window_title=self.voucher_window_title,
         )
         if not found:
             raise ContractViolation(
                 "保存后未检测到制单界面推进到下一条，停止以避免误标记: "
-                f"下一Excel行{item['row']} amount={item['amount']} partner={item['partner']}"
+                f"下一Excel行{item.row} amount={item.amount} partner={item.partner}"
             )
         log.info(
             "保存后已推进到下一条: "
-            f"Excel行{item['row']} table={found['table_index']} row={found['row_index']} "
+            f"Excel行{item.row} table={found['table_index']} row={found['row_index']} "
             f"selected={found['selected']}"
         )
         return found

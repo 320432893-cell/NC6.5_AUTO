@@ -52,7 +52,8 @@ class VoucherPendingMatch(TypedDict):
     row_data: TableSnapshotRow
 
 
-class VoucherSaveMatch(TypedDict):
+@dataclass(frozen=True)
+class VoucherSaveMatch:
     item: ExcelVoucherItem
     nc_row: int | None
     row_data: TableSnapshotRow
@@ -60,8 +61,16 @@ class VoucherSaveMatch(TypedDict):
     table_rows: int
     voucher_row: int
     voucher_cells: list[str]
-    match_mode: NotRequired[str]
-    fallback_reason: NotRequired[str]
+    match_mode: str = ""
+    fallback_reason: str = ""
+
+    def __getitem__(self, key: str) -> Any:
+        if not hasattr(self, key):
+            raise KeyError(key)
+        return getattr(self, key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
 
 
 class MatchIssue(TypedDict):

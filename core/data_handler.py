@@ -250,15 +250,15 @@ class DataHandler:
     def save_jab_split_columns(self, items: list[ExcelVoucherItem]):
         updates = {}
         for item in items:
-            amount = item["amount"]
-            partner = item["partner"]
+            amount = item.amount
+            partner = item.partner
             if (
-                not item.get("parse_error")
+                not item.parse_error
                 and amount is not None
                 and partner
-                and item.get("source") == "concat"
+                and item.source == "concat"
             ):
-                updates[item["row"]] = (amount, partner)
+                updates[item.row] = (amount, partner)
         if not updates:
             return 0
 

@@ -50,8 +50,8 @@ class NCTableMatcher:
         issues = []
         for item in items:
             key = (
-                self._as_decimal(item["amount"]),
-                self.jab.normalize_text(item["partner"]),
+                self._as_decimal(item.amount),
+                self.jab.normalize_text(item.partner),
             )
             rows = index.get(key, [])
             if len(rows) > 1 and prefer_generated_date:

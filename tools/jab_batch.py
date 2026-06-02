@@ -237,12 +237,12 @@ def print_summary(result):
     if issues or parse_errors:
         print("\n问题行:")
         for item in parse_errors[:20]:
-            print(f"- Excel行{item['row']}: 格式错误 {item.get('parse_error')}")
+            print(f"- Excel行{item.row}: 格式错误 {item.parse_error}")
         for issue in issues[:20]:
             rows = issue.get("rows", [])
             print(
-                f"- Excel行{issue['item']['row']}: {issue['reason']} "
-                f"amount={issue['item']['amount']} partner={issue['item']['partner']} "
+                f"- Excel行{issue['item'].row}: {issue['reason']} "
+                f"amount={issue['item'].amount} partner={issue['item'].partner} "
                 f"nc_rows={rows}"
             )
         if len(issues) + len(parse_errors) > 20:
@@ -253,7 +253,7 @@ def print_summary(result):
         for index, batch in enumerate(batches[:20], start=1):
             print(
                 f"- 批次{index}: {len(batch)}条 "
-                f"Excel行={[m['item']['row'] for m in batch]} "
+                f"Excel行={[m['item'].row for m in batch]} "
                 f"NC行={[m['nc_row'] for m in batch]}"
             )
         if len(batches) > 20:
