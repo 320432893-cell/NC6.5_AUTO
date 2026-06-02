@@ -84,6 +84,11 @@ def test_validate_receipt_entry_accepts_account_mapping():
                 "customer": "客户",
             },
         },
+        "candidate_check": {
+            "recent_months": 2,
+            "from_date": None,
+            "only_blank_status": True,
+        },
         "finance_organizations": [
             {
                 "code": "A001",

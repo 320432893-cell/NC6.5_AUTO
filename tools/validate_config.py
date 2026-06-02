@@ -108,6 +108,9 @@ def _validate_receipt_entry(receipt_cfg, errors):
     query_cfg = receipt_cfg.get("query")
     if query_cfg is not None:
         _validate_receipt_query(query_cfg, errors)
+    candidate_cfg = receipt_cfg.get("candidate_check")
+    if candidate_cfg is not None:
+        _validate_receipt_candidate_check(candidate_cfg, errors)
     organizations = _require(
         receipt_cfg,
         "finance_organizations",
@@ -229,6 +232,26 @@ def _validate_receipt_query(query_cfg, errors):
                 errors,
                 prefix="receipt_entry.query.result_columns",
             )
+
+
+def _validate_receipt_candidate_check(candidate_cfg, errors):
+    if not isinstance(candidate_cfg, dict):
+        errors.append("receipt_entry.candidate_check must be an object")
+        return
+
+    _non_negative_int(
+        candidate_cfg,
+        "recent_months",
+        errors,
+        prefix="receipt_entry.candidate_check",
+    )
+    if candidate_cfg.get("from_date") not in (None, ""):
+        _iso_date(
+            candidate_cfg, "from_date", errors, prefix="receipt_entry.candidate_check"
+        )
+    value = candidate_cfg.get("only_blank_status")
+    if not isinstance(value, bool):
+        errors.append("receipt_entry.candidate_check.only_blank_status must be bool")
 
 
 def _require(mapping, key, expected_type, errors, prefix=""):

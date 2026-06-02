@@ -37,6 +37,7 @@ class ReceiptExcelRow:
     organization_code: str
     organization_name: str
     organization_short_name: str
+    nc_done_status: str
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,7 @@ class ReceiptEntryConfig:
         receipt_cfg = config.get("receipt_entry") or {}
         self.receipt_cfg = receipt_cfg
         self.excel_cfg = receipt_cfg.get("excel") or {}
+        self.candidate_cfg = receipt_cfg.get("candidate_check") or {}
         self.organizations = {
             item["code"]: ReceiptOrganization(
                 code=item["code"],
@@ -117,6 +119,27 @@ class ReceiptEntryConfig:
     def nc_done_column(self):
         return self.excel_cfg.get("nc_done_column", "是否NC已做过")
 
+    @property
+    def candidate_recent_months(self):
+        return int(self.candidate_cfg.get("recent_months", 2))
+
+    @property
+    def candidate_from_date(self):
+        value = self.candidate_cfg.get("from_date")
+        if value in (None, ""):
+            return None
+        return parse_date(value)
+
+    @property
+    def candidate_only_blank_status(self):
+        return bool(self.candidate_cfg.get("only_blank_status", True))
+
+    def candidate_start_date(self, today=None):
+        explicit = self.candidate_from_date
+        if explicit:
+            return explicit
+        return subtract_months(today or date.today(), self.candidate_recent_months)
+
     def organization_for_bank(self, bank):
         account = self.accounts_by_label.get(normalize_lookup_key(bank))
         if not account:
@@ -132,17 +155,17 @@ class ReceiptEntryWorkbook:
             raise WorkflowStateError("receipt_entry.excel.path is required")
         self.excel_path = str(workbook_path)
 
-    def preview_rows(self):
+    def preview_rows(self, today=None):
         wb = openpyxl.load_workbook(self.excel_path, read_only=False, data_only=True)
         try:
             ws = wb[self.config.sheet_name]
             columns = self._read_header(ws)
             rows, issues = self._load_rows(ws, columns)
-            return rows, issues
+            return rows, self.select_candidate_rows(rows, today=today), issues
         finally:
             wb.close()
 
-    def ensure_output_columns_and_subjects(self):
+    def ensure_output_columns_and_subjects(self, today=None):
         wb = openpyxl.load_workbook(self.excel_path, read_only=False)
         try:
             ws = wb[self.config.sheet_name]
@@ -154,12 +177,23 @@ class ReceiptEntryWorkbook:
             for row in rows:
                 ws.cell(row=row.row, column=org_col, value=row.organization_name)
             self._save_workbook(wb, "写入收款单主体预处理列")
-            return rows, issues
+            return rows, self.select_candidate_rows(rows, today=today), issues
         except PermissionError as exc:
             wb.close()
             raise ExcelLockedError(
                 f"Excel 文件无法写入，可能正被 WPS/Excel 打开: path={self.excel_path}"
             ) from exc
+
+    def select_candidate_rows(self, rows, today=None):
+        candidate_start = self.config.candidate_start_date(today=today)
+        candidates = []
+        for row in rows:
+            if row.receipt_date < candidate_start:
+                continue
+            if self.config.candidate_only_blank_status and row.nc_done_status:
+                continue
+            candidates.append(row)
+        return candidates
 
     def _load_rows(self, ws, columns):
         required = [
@@ -193,6 +227,11 @@ class ReceiptEntryWorkbook:
             raw_amount = ws.cell(
                 row_index, columns[self.config.raw_amount_column]
             ).value
+            nc_done_status = read_optional_cell(
+                ws,
+                row_index,
+                columns.get(self.config.nc_done_column),
+            )
             organization = self.config.organization_for_bank(bank)
             if not organization:
                 issues.append(ReceiptMatchIssue(row_index, f"银行未配置: {bank!r}", []))
@@ -216,6 +255,7 @@ class ReceiptEntryWorkbook:
                     organization_code=organization.code,
                     organization_name=organization.name,
                     organization_short_name=organization.short_name,
+                    nc_done_status=nc_done_status,
                 )
             )
         return rows, issues
@@ -303,6 +343,31 @@ def parse_amount(value):
         return Decimal(text).quantize(Decimal("0.01"))
     except (InvalidOperation, ValueError) as exc:
         raise ValueError(f"原始金额格式无法识别: {value!r}") from exc
+
+
+def read_optional_cell(ws, row, column):
+    if not column:
+        return ""
+    value = ws.cell(row, column).value
+    return "" if value is None else str(value).strip()
+
+
+def subtract_months(value, months):
+    if months < 0:
+        raise ValueError(f"recent_months must be non-negative, got {months!r}")
+    month_index = value.month - 1 - months
+    year = value.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(value.day, days_in_month(year, month))
+    return date(year, month, day)
+
+
+def days_in_month(year, month):
+    if month == 12:
+        next_month = date(year + 1, 1, 1)
+    else:
+        next_month = date(year, month + 1, 1)
+    return (next_month - date(year, month, 1)).days
 
 
 def normalize_lookup_key(value):

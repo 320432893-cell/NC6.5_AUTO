@@ -147,6 +147,11 @@
                 "customer": "客户"
             }
         },
+        "candidate_check": {
+            "recent_months": 2,
+            "from_date": null,
+            "only_blank_status": true
+        },
         "finance_organizations": [
             {
                 "code": "A001",
