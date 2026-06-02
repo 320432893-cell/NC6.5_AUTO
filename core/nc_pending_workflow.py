@@ -184,8 +184,8 @@ class NCPendingWorkflow:
                     )
                     log.info(
                         "开始执行 JAB 全量生成: "
-                        f"size={len(matches)} excel_rows={[m['item'].row for m in matches]} "
-                        f"nc_rows={[m['nc_row'] for m in matches]}"
+                        f"size={len(matches)} excel_rows={[m.item.row for m in matches]} "
+                        f"nc_rows={[m.nc_row for m in matches]}"
                     )
                     saved_matches, total_batches = self.process_full_selection(
                         matches,
@@ -218,22 +218,22 @@ class NCPendingWorkflow:
             return total_saved
 
     def process_full_selection(self, matches, max_save_batches=None):
-        rows = [match["nc_row"] for match in matches]
+        rows = [match.nc_row for match in matches]
         self.run_state.set_stage(
             "pending_rows_select",
-            excel_rows=[match["item"].row for match in matches],
+            excel_rows=[match.item.row for match in matches],
             nc_rows=rows,
         )
         self.perf.event(
             "full_selection_start",
             matches=len(matches),
-            excel_rows=[match["item"].row for match in matches],
+            excel_rows=[match.item.row for match in matches],
             nc_rows=rows,
         )
         self.record_event(
             "event_pending_rows_select_start",
             rows=len(rows),
-            excel_rows=[match["item"].row for match in matches],
+            excel_rows=[match.item.row for match in matches],
             nc_rows=rows,
         )
         with self.perf.span("pending_rows_select", rows=len(rows)):
@@ -270,7 +270,7 @@ class NCPendingWorkflow:
             check_abort()
             self.run_state.set_stage(
                 "voucher_match",
-                pending_excel_rows=[match["item"].row for match in pending],
+                pending_excel_rows=[match.item.row for match in pending],
                 save_batch_index=save_batches + 1,
             )
             with self.perf.span(
@@ -290,7 +290,7 @@ class NCPendingWorkflow:
             )
             if issues:
                 detail = "; ".join(
-                    f"Excel行{issue['item'].row} {issue['reason']}" for issue in issues
+                    f"Excel行{issue.item.row} {issue.reason}" for issue in issues
                 )
                 raise TableMatchError(f"制单表匹配失败: {detail}")
 
@@ -300,15 +300,13 @@ class NCPendingWorkflow:
                 )
             )
             saved_matches.extend(new_saved)
-            saved_rows = {match["item"].row for match in new_saved}
+            saved_rows = {match.item.row for match in new_saved}
             if max_save_batches and save_batches >= max_save_batches:
                 raise ContractViolation(
                     "已达到 max_batches，但全量生成模式不能中途留下制单窗口，"
                     "请不要在全量生成时使用 max_batches"
                 )
-            pending = [
-                match for match in pending if match["item"].row not in saved_rows
-            ]
+            pending = [match for match in pending if match.item.row not in saved_rows]
             save_batches += new_batches
             if pending:
                 with self.perf.span(
@@ -320,7 +318,7 @@ class NCPendingWorkflow:
 
         self.run_state.set_stage(
             "pending_final_verify",
-            saved_excel_rows=[match["item"].row for match in saved_matches],
+            saved_excel_rows=[match.item.row for match in saved_matches],
         )
         with self.perf.span("pending_final_verify", rows=len(saved_matches)):
             self.processor.voucher_workflow.close_and_verify_pending_removed(
@@ -380,13 +378,12 @@ class NCPendingWorkflow:
                 table_rows = sum(table["row_count"] for table in tables)
                 if len(voucher_matches) != table_rows:
                     detail = "; ".join(
-                        f"Excel行{issue['item'].row} {issue['reason']}"
-                        for issue in issues
+                        f"Excel行{issue.item.row} {issue.reason}" for issue in issues
                     )
                     raise TableMatchError(f"恢复制单表匹配失败: {detail}")
                 log.warning(
                     "恢复保存时忽略未进入当前制单窗口的 Excel 行: "
-                    f"excel_rows={[issue['item'].row for issue in issues]}"
+                    f"excel_rows={[issue.item.row for issue in issues]}"
                 )
 
             saved_matches, save_batches = (
@@ -396,7 +393,7 @@ class NCPendingWorkflow:
             )
             self.run_state.set_stage(
                 "resume_pending_final_verify",
-                saved_excel_rows=[match["item"].row for match in saved_matches],
+                saved_excel_rows=[match.item.row for match in saved_matches],
             )
             with self.perf.span("resume_pending_final_verify", rows=len(saved_matches)):
                 self.processor.voucher_workflow.close_and_verify_pending_removed(
@@ -415,10 +412,10 @@ class NCPendingWorkflow:
     def format_issue_updates(self, issues: list[MatchIssue], prefix=""):
         updates: dict[int, str] = {}
         for issue in issues:
-            reason = issue["reason"]
-            if issue.get("rows"):
-                reason = f"{reason}-NC行{','.join(str(r) for r in issue['rows'][:5])}"
-            updates[issue["item"].row] = f"{prefix}{reason}"
+            reason = issue.reason
+            if issue.rows:
+                reason = f"{reason}-NC行{','.join(str(r) for r in issue.rows[:5])}"
+            updates[issue.item.row] = f"{prefix}{reason}"
         return updates
 
     def _log_plan(self, items, parse_errors, matches, issues, batches):
@@ -431,13 +428,13 @@ class NCPendingWorkflow:
             log.warning(f"Excel行{issue.row} 格式错误: {issue.parse_error}")
         for issue in issues:
             log.warning(
-                f"Excel行{issue['item'].row} {issue['reason']}: "
-                f"amount={issue['item'].amount} partner={issue['item'].partner} "
-                f"nc_rows={issue.get('rows', [])}"
+                f"Excel行{issue.item.row} {issue.reason}: "
+                f"amount={issue.item.amount} partner={issue.item.partner} "
+                f"nc_rows={issue.rows}"
             )
         for index, batch in enumerate(batches, start=1):
             log.info(
                 f"批次{index}: size={len(batch)} "
-                f"excel_rows={[m['item'].row for m in batch]} "
-                f"nc_rows={[m['nc_row'] for m in batch]}"
+                f"excel_rows={[m.item.row for m in batch]} "
+                f"nc_rows={[m.nc_row for m in batch]}"
             )

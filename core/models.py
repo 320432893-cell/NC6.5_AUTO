@@ -17,14 +17,6 @@ class ExcelVoucherItem:
     source: str
     parse_error: str
 
-    def __getitem__(self, key: str) -> Any:
-        if not hasattr(self, key):
-            raise KeyError(key)
-        return getattr(self, key)
-
-    def get(self, key: str, default: Any = None) -> Any:
-        return getattr(self, key, default)
-
     def validate_for_processing(self, context: str = "") -> None:
         if self.parse_error:
             return
@@ -62,14 +54,6 @@ class PendingMatch:
     nc_row: int
     row_data: TableSnapshotRow
 
-    def __getitem__(self, key: str) -> Any:
-        if not hasattr(self, key):
-            raise KeyError(key)
-        return getattr(self, key)
-
-    def get(self, key: str, default: Any = None) -> Any:
-        return getattr(self, key, default)
-
 
 @dataclass(frozen=True)
 class GeneratedVoucherMatch:
@@ -77,28 +61,12 @@ class GeneratedVoucherMatch:
     nc_row: int
     row_data: TableSnapshotRow
 
-    def __getitem__(self, key: str) -> Any:
-        if not hasattr(self, key):
-            raise KeyError(key)
-        return getattr(self, key)
-
-    def get(self, key: str, default: Any = None) -> Any:
-        return getattr(self, key, default)
-
 
 @dataclass(frozen=True)
 class VoucherPendingMatch:
     item: ExcelVoucherItem
     nc_row: int | None
     row_data: TableSnapshotRow
-
-    def __getitem__(self, key: str) -> Any:
-        if not hasattr(self, key):
-            raise KeyError(key)
-        return getattr(self, key)
-
-    def get(self, key: str, default: Any = None) -> Any:
-        return getattr(self, key, default)
 
 
 @dataclass(frozen=True)
@@ -112,14 +80,6 @@ class VoucherSaveMatch:
     voucher_cells: list[str]
     match_mode: str = ""
     fallback_reason: str = ""
-
-    def __getitem__(self, key: str) -> Any:
-        if not hasattr(self, key):
-            raise KeyError(key)
-        return getattr(self, key)
-
-    def get(self, key: str, default: Any = None) -> Any:
-        return getattr(self, key, default)
 
     def validate_for_save(self, context: str = "") -> None:
         errors = []
@@ -149,14 +109,6 @@ class MatchIssue:
     item: ExcelVoucherItem
     reason: str
     rows: list[int]
-
-    def __getitem__(self, key: str) -> Any:
-        if not hasattr(self, key):
-            raise KeyError(key)
-        return getattr(self, key)
-
-    def get(self, key: str, default: Any = None) -> Any:
-        return getattr(self, key, default)
 
 
 BackfillUpdateValue = int | str

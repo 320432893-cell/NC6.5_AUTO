@@ -120,7 +120,7 @@ class NCTableMatcher:
         last_nc_row = None
 
         for match in matches:
-            nc_row = match["nc_row"]
+            nc_row = match.nc_row
             should_split = current and (
                 (last_nc_row is not None and nc_row <= last_nc_row)
                 or (self.max_batch_size > 0 and len(current) >= self.max_batch_size)
