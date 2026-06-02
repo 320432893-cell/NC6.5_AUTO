@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from core.errors import WorkflowStateError
 from core.models import ExcelVoucherItem
 from core.nc_backfill_workflow import NCBackfillWorkflow
@@ -107,7 +109,7 @@ def test_build_backfill_audit_record():
         raw_key="",
         raw_amount="",
         raw_partner="",
-        amount=None,
+        amount=Decimal("1.00"),
         partner="深圳公司",
         voucher="已生成待回填",
         source="split_ab",
@@ -124,7 +126,7 @@ def test_build_backfill_audit_record():
 
     assert record == {
         "excel_row": 2,
-        "amount": "None",
+        "amount": "1.00",
         "partner": "深圳公司",
         "status": "matched",
         "update_value": 123,
@@ -140,7 +142,7 @@ def test_build_issue_audit_record_and_counts():
         raw_key="",
         raw_amount="",
         raw_partner="",
-        amount=None,
+        amount=Decimal("2.00"),
         partner="上海公司",
         voucher="已生成待回填",
         source="split_ab",

@@ -491,19 +491,19 @@ class NCVoucherWorkflow:
         if row_key in assigned_rows:
             return
         assigned_rows.add(row_key)
-        voucher_matches.append(
-            VoucherSaveMatch(
-                item=match["item"],
-                nc_row=match.get("nc_row"),
-                row_data=match["row_data"],
-                table_index=found["table"]["table_index"],
-                table_rows=found["table"]["row_count"],
-                voucher_row=found["row"]["row_index"],
-                voucher_cells=found["row"]["cells"],
-                match_mode=match.get("match_mode", ""),
-                fallback_reason=found.get("fallback_reason", ""),
-            )
+        voucher_match = VoucherSaveMatch(
+            item=match["item"],
+            nc_row=match.get("nc_row"),
+            row_data=match["row_data"],
+            table_index=found["table"]["table_index"],
+            table_rows=found["table"]["row_count"],
+            voucher_row=found["row"]["row_index"],
+            voucher_cells=found["row"]["cells"],
+            match_mode=match.get("match_mode", ""),
+            fallback_reason=found.get("fallback_reason", ""),
         )
+        voucher_match.validate_for_save(context="voucher_match")
+        voucher_matches.append(voucher_match)
 
     def find_voucher_order_fallback(self, match, ordinal, matches, row_records):
         """NC sometimes changes voucher amount during front generation.

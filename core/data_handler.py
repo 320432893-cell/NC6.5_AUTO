@@ -92,6 +92,9 @@ class DataHandler:
                 )
             )
 
+        for item in data:
+            item.validate_for_processing(context="excel_load")
+
         wb.close()
         log.info(f"加载 JAB 批量数据: {len(data)} 条")
         return data
