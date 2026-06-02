@@ -60,22 +60,22 @@ class NCTableMatcher:
                     rows = dated_rows
             if len(rows) == 1:
                 matches.append(
-                    {
-                        "item": item,
-                        "nc_row": rows[0]["row_index"],
-                        "row_data": rows[0],
-                    }
+                    PendingMatch(
+                        item=item,
+                        nc_row=rows[0]["row_index"],
+                        row_data=rows[0],
+                    )
                 )
             elif not rows and self.match_mode == "contains":
                 contains_rows = self._find_contains(snapshot, key)
                 self._append_match_or_issue(matches, issues, item, contains_rows)
             else:
                 issues.append(
-                    {
-                        "item": item,
-                        "reason": "未找到" if not rows else f"重复{len(rows)}条",
-                        "rows": [row["row_index"] for row in rows],
-                    }
+                    MatchIssue(
+                        item=item,
+                        reason="未找到" if not rows else f"重复{len(rows)}条",
+                        rows=[row["row_index"] for row in rows],
+                    )
                 )
 
         return matches, issues
@@ -90,7 +90,15 @@ class NCTableMatcher:
             voucher_col=voucher_col,
             prefer_generated_date=True,
         )
-        return matches, issues
+        generated_matches = [
+            GeneratedVoucherMatch(
+                item=match.item,
+                nc_row=match.nc_row,
+                row_data=match.row_data,
+            )
+            for match in matches
+        ]
+        return generated_matches, issues
 
     def filter_generated_date_rows(self, rows):
         if self.generated_date_col is None or not self.generated_date_value:
@@ -132,19 +140,19 @@ class NCTableMatcher:
     def _append_match_or_issue(self, matches, issues, item, rows):
         if len(rows) == 1:
             matches.append(
-                {
-                    "item": item,
-                    "nc_row": rows[0]["row_index"],
-                    "row_data": rows[0],
-                }
+                PendingMatch(
+                    item=item,
+                    nc_row=rows[0]["row_index"],
+                    row_data=rows[0],
+                )
             )
         else:
             issues.append(
-                {
-                    "item": item,
-                    "reason": "未找到" if not rows else f"重复{len(rows)}条",
-                    "rows": [row["row_index"] for row in rows],
-                }
+                MatchIssue(
+                    item=item,
+                    reason="未找到" if not rows else f"重复{len(rows)}条",
+                    rows=[row["row_index"] for row in rows],
+                )
             )
 
     def _find_contains(self, snapshot, key):

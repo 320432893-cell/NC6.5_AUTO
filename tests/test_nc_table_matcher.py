@@ -30,21 +30,21 @@ def test_build_increasing_batches_splits_on_descending_row_and_max_size():
         parse_error="",
     )
     matches: list[PendingMatch] = [
-        {"item": item, "nc_row": 1, "row_data": {}},
-        {"item": item, "nc_row": 2, "row_data": {}},
-        {"item": item, "nc_row": 5, "row_data": {}},
-        {"item": item, "nc_row": 4, "row_data": {}},
+        PendingMatch(item=item, nc_row=1, row_data={}),
+        PendingMatch(item=item, nc_row=2, row_data={}),
+        PendingMatch(item=item, nc_row=5, row_data={}),
+        PendingMatch(item=item, nc_row=4, row_data={}),
     ]
 
     batches = matcher.build_increasing_batches(matches)
 
     assert batches == [
         [
-            {"item": item, "nc_row": 1, "row_data": {}},
-            {"item": item, "nc_row": 2, "row_data": {}},
+            PendingMatch(item=item, nc_row=1, row_data={}),
+            PendingMatch(item=item, nc_row=2, row_data={}),
         ],
-        [{"item": item, "nc_row": 5, "row_data": {}}],
-        [{"item": item, "nc_row": 4, "row_data": {}}],
+        [PendingMatch(item=item, nc_row=5, row_data={})],
+        [PendingMatch(item=item, nc_row=4, row_data={})],
     ]
 
 

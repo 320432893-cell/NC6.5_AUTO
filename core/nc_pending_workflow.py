@@ -364,11 +364,11 @@ class NCPendingWorkflow:
             )
             tables = self.processor.voucher_workflow.read_voucher_tables(len(pending))
             matches: list[VoucherPendingMatch] = [
-                {
-                    "item": item,
-                    "nc_row": None,
-                    "row_data": {},
-                }
+                VoucherPendingMatch(
+                    item=item,
+                    nc_row=None,
+                    row_data={},
+                )
                 for item in pending
             ]
             voucher_matches, issues = (

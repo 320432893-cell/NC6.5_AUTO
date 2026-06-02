@@ -56,22 +56,49 @@ class TableSnapshotRow(TypedDict, total=False):
     extra_text: dict[int, str]
 
 
-class PendingMatch(TypedDict):
+@dataclass(frozen=True)
+class PendingMatch:
     item: ExcelVoucherItem
     nc_row: int
     row_data: TableSnapshotRow
 
+    def __getitem__(self, key: str) -> Any:
+        if not hasattr(self, key):
+            raise KeyError(key)
+        return getattr(self, key)
 
-class GeneratedVoucherMatch(TypedDict):
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
+
+
+@dataclass(frozen=True)
+class GeneratedVoucherMatch:
     item: ExcelVoucherItem
     nc_row: int
     row_data: TableSnapshotRow
 
+    def __getitem__(self, key: str) -> Any:
+        if not hasattr(self, key):
+            raise KeyError(key)
+        return getattr(self, key)
 
-class VoucherPendingMatch(TypedDict):
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
+
+
+@dataclass(frozen=True)
+class VoucherPendingMatch:
     item: ExcelVoucherItem
     nc_row: int | None
     row_data: TableSnapshotRow
+
+    def __getitem__(self, key: str) -> Any:
+        if not hasattr(self, key):
+            raise KeyError(key)
+        return getattr(self, key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
 
 
 @dataclass(frozen=True)
@@ -117,10 +144,19 @@ class VoucherSaveMatch:
             )
 
 
-class MatchIssue(TypedDict):
+@dataclass(frozen=True)
+class MatchIssue:
     item: ExcelVoucherItem
     reason: str
     rows: list[int]
+
+    def __getitem__(self, key: str) -> Any:
+        if not hasattr(self, key):
+            raise KeyError(key)
+        return getattr(self, key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
 
 
 BackfillUpdateValue = int | str

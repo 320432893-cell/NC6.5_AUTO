@@ -474,11 +474,11 @@ class NCVoucherWorkflow:
                 )
             else:
                 issues.append(
-                    {
-                        "item": match["item"],
-                        "reason": "未找到" if not rows else f"重复{len(rows)}条",
-                        "rows": [row["row"]["row_index"] for row in rows],
-                    }
+                    MatchIssue(
+                        item=match["item"],
+                        reason="未找到" if not rows else f"重复{len(rows)}条",
+                        rows=[row["row"]["row_index"] for row in rows],
+                    )
                 )
 
         return voucher_matches, issues

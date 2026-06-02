@@ -1,7 +1,7 @@
 from decimal import Decimal
 
 from core.errors import WorkflowStateError
-from core.models import ExcelVoucherItem
+from core.models import ExcelVoucherItem, MatchIssue
 from core.nc_backfill_workflow import NCBackfillWorkflow
 from core.nc_state import NCPageState
 
@@ -150,7 +150,7 @@ def test_build_issue_audit_record_and_counts():
     )
 
     issue_record = workflow.build_issue_audit_record(
-        {"item": item, "reason": "未找到", "rows": []},
+        MatchIssue(item=item, reason="未找到", rows=[]),
         update_value="回填未找到",
     )
 
