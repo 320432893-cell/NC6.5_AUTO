@@ -89,7 +89,84 @@ def validate_config(config):
             for key in ("timeout", "guard_timeout", "wait"):
                 _non_negative_number(step, key, errors, prefix=step_prefix)
 
+    receipt_cfg = config.get("receipt_entry")
+    if receipt_cfg is not None:
+        _validate_receipt_entry(receipt_cfg, errors)
+
     return errors
+
+
+def _validate_receipt_entry(receipt_cfg, errors):
+    if not isinstance(receipt_cfg, dict):
+        errors.append("receipt_entry must be an object")
+        return
+
+    _require(receipt_cfg, "state_label", str, errors, prefix="receipt_entry")
+    organizations = _require(
+        receipt_cfg,
+        "finance_organizations",
+        list,
+        errors,
+        prefix="receipt_entry",
+    )
+    accounts = _require(receipt_cfg, "accounts", list, errors, prefix="receipt_entry")
+
+    org_codes = set()
+    org_short_names = {}
+    if isinstance(organizations, list):
+        for index, organization in enumerate(organizations):
+            prefix = f"receipt_entry.finance_organizations[{index}]"
+            if not isinstance(organization, dict):
+                errors.append(f"{prefix} must be an object")
+                continue
+            code = _require_non_empty_str(organization, "code", errors, prefix=prefix)
+            _require_non_empty_str(organization, "name", errors, prefix=prefix)
+            short_name = _require_non_empty_str(
+                organization, "short_name", errors, prefix=prefix
+            )
+            if code:
+                if code in org_codes:
+                    errors.append(f"{prefix}.code must be unique, got {code!r}")
+                org_codes.add(code)
+                org_short_names[code] = short_name
+
+    account_keys = set()
+    if isinstance(accounts, list):
+        for index, account in enumerate(accounts):
+            prefix = f"receipt_entry.accounts[{index}]"
+            if not isinstance(account, dict):
+                errors.append(f"{prefix} must be an object")
+                continue
+            org_code = _require_non_empty_str(
+                account, "organization_code", errors, prefix=prefix
+            )
+            org_short_name = _require_non_empty_str(
+                account, "organization_short_name", errors, prefix=prefix
+            )
+            account_label = _require_non_empty_str(
+                account, "account_label", errors, prefix=prefix
+            )
+            account_no = _require_non_empty_str(
+                account, "account_no", errors, prefix=prefix
+            )
+            if org_code and org_code not in org_codes:
+                errors.append(
+                    f"{prefix}.organization_code must reference finance_organizations, "
+                    f"got {org_code!r}"
+                )
+            expected_short_name = org_short_names.get(org_code)
+            if expected_short_name and org_short_name != expected_short_name:
+                errors.append(
+                    f"{prefix}.organization_short_name must match organization "
+                    f"{org_code!r}, got {org_short_name!r}"
+                )
+            key = (org_code, account_label, account_no)
+            if key in account_keys:
+                errors.append(
+                    f"{prefix} duplicates account mapping "
+                    f"{org_code!r}/{account_label!r}/{account_no!r}"
+                )
+            account_keys.add(key)
 
 
 def _require(mapping, key, expected_type, errors, prefix=""):
@@ -102,6 +179,14 @@ def _require(mapping, key, expected_type, errors, prefix=""):
         errors.append(f"{label} must be {expected_type.__name__}")
         return None
     return value
+
+
+def _require_non_empty_str(mapping, key, errors, prefix=""):
+    value = _require(mapping, key, str, errors, prefix=prefix)
+    if isinstance(value, str) and not value.strip():
+        label = f"{prefix}.{key}" if prefix else key
+        errors.append(f"{label} must be non-empty")
+    return value.strip() if isinstance(value, str) else None
 
 
 def _enum(mapping, key, allowed, errors, prefix=""):

@@ -119,5 +119,111 @@
                 "wait": 1.0
             }
         ]
+    },
+    "receipt_entry": {
+        "state_label": "收款单录入",
+        "finance_organizations": [
+            {
+                "code": "A001",
+                "name": "上海移为通信技术股份有限公司",
+                "short_name": "移为"
+            },
+            {
+                "code": "A00101",
+                "name": "上海移为通信技术股份有限公司工会委员会",
+                "short_name": "移为工会"
+            },
+            {
+                "code": "A002",
+                "name": "合肥移顺信息技术有限公司",
+                "short_name": "移顺"
+            },
+            {
+                "code": "A003",
+                "name": "深圳移航通信技术有限公司",
+                "short_name": "移航"
+            },
+            {
+                "code": "A004",
+                "name": "上海移兴信息技术有限公司",
+                "short_name": "移兴"
+            },
+            {
+                "code": "A005",
+                "name": "上海杉诺信息技术有限公司",
+                "short_name": "杉诺"
+            },
+            {
+                "code": "A006",
+                "name": "上海移为通信技术（香港）有限公司",
+                "short_name": "移为香港"
+            },
+            {
+                "code": "A007",
+                "name": "深圳移锋通信技术有限公司",
+                "short_name": "移锋"
+            },
+            {
+                "code": "A011",
+                "name": "上海布谷元创科技有限公司",
+                "short_name": "布谷"
+            }
+        ],
+        "accounts": [
+            {
+                "organization_code": "A001",
+                "organization_short_name": "移为",
+                "account_label": "大陆花旗",
+                "account_no": "1783854003"
+            },
+            {
+                "organization_code": "A001",
+                "organization_short_name": "移为",
+                "account_label": "大陆交行",
+                "account_no": "FTE310066674143603000377"
+            },
+            {
+                "organization_code": "A001",
+                "organization_short_name": "移为",
+                "account_label": "大陆浦发",
+                "account_no": "97460154740002297"
+            },
+            {
+                "organization_code": "A001",
+                "organization_short_name": "移为",
+                "account_label": "大陆中行",
+                "account_no": "446881174884"
+            },
+            {
+                "organization_code": "A001",
+                "organization_short_name": "移为",
+                "account_label": "PayPal",
+                "account_no": "paypal"
+            },
+            {
+                "organization_code": "A001",
+                "organization_short_name": "移为",
+                "account_label": "招行",
+                "account_no": "FTE1219165931831"
+            },
+            {
+                "organization_code": "A003",
+                "organization_short_name": "移航",
+                "account_label": "移航招行",
+                "account_no": "755927177210901"
+            },
+            {
+                "organization_code": "A006",
+                "organization_short_name": "移为香港",
+                "account_label": "香港花旗",
+                "account_no": "1778667904"
+            },
+            {
+                "organization_code": "A011",
+                "organization_short_name": "布谷",
+                "account_label": "布谷",
+                "account_no": "121985369310088"
+            }
+        ]
     }
 }
