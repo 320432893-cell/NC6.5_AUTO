@@ -1,6 +1,6 @@
 # NC JAB 后续 TODO
 
-日期：2026-06-01
+日期：2026-06-02
 
 本文只记录后续要做的事和必须记住的坑。已完成的流水账看 git 历史，不在这里重复维护。
 
@@ -13,18 +13,19 @@
 - Excel 写入锁已包装为 `ExcelLockedError`，覆盖拆分 A/B、写生成状态和回填凭证号。
 - `backfill` 默认会从 `pending` 自动切到 `generated`；阻塞/异常状态会停止，避免按错误表格列位读取。
 - `backfill` 已记录结构化审计事件 `backfill_audit`，包含 Excel 行、金额、对手方、NC 行、凭证号和失败状态。
+- 关键匹配模型已收口为 dataclass：`ExcelVoucherItem`、`PendingMatch`、`GeneratedVoucherMatch`、`VoucherPendingMatch`、`VoucherSaveMatch`、`MatchIssue`。
+- `ExcelVoucherItem` 和 `VoucherSaveMatch` 已有统一契约检查；失败会带 Excel 行、金额、对手方、NC 行或制单表位置。
 - 当前没有继续低风险拆分项。后续再动结构，应优先做模型和契约，而不是机械拆文件。
 
 ## 待办
 
-1. 数据模型
-   - 继续把关键 TypedDict 收口为 dataclass。
-   - 优先模型：`ExcelVoucherItem`、`VoucherSaveMatch`。
-   - 已覆盖：`GeneratedVoucherMatch`、`BackfillUpdates`、`BackfillAuditRecord`。
+1. 只读 JAB 验证
+   - 同步到 H 盘运行镜像后，先跑 `plan`。
+   - 验证 Excel 读取、页面状态守卫、待生成表匹配和 CLI 摘要。
 
 2. 契约检查
-   - 继续补统一前置/后置检查。
-   - 失败要带 Excel 行、金额、对手方、NC 行、当前窗口。
+   - 继续观察真实 `plan` / `generate` 输出，发现缺字段再补。
+   - 已覆盖模型契约不要复制第二份定义，见 `core/models.py`。
 
 ## 保留坑点
 

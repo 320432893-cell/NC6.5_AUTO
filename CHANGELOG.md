@@ -2,6 +2,14 @@
 
 只记录影响维护判断的关键节点。具体实验流水账看 git 历史。
 
+## 2026-06-02 - 模型和契约收口
+
+- `ExcelVoucherItem`、`PendingMatch`、`GeneratedVoucherMatch`、`VoucherPendingMatch`、`VoucherSaveMatch`、`MatchIssue` 收口为 dataclass。
+- 删除模型的字典访问兼容层，workflow 改为属性访问。
+- `ExcelVoucherItem` 增加处理前契约检查：无解析错误时必须有正 Excel 行号、金额和对手方。
+- `VoucherSaveMatch` 增加保存前契约检查：制单表索引、表行数、制单行号和单元格内容必须有效。
+- `match_generated_voucher_table` 显式返回 `GeneratedVoucherMatch`，不再复用待生成匹配类型。
+
 ## 2026-06-01 - workflow 拆分和状态守卫
 
 - 新增页面状态识别和状态守卫：`pending`、`generated`、`voucher_open`、`query_open`、`loading`、`error`。
