@@ -16,17 +16,23 @@
 - 关键匹配模型已收口为 dataclass：`ExcelVoucherItem`、`PendingMatch`、`GeneratedVoucherMatch`、`VoucherPendingMatch`、`VoucherSaveMatch`、`MatchIssue`。
 - `ExcelVoucherItem` 和 `VoucherSaveMatch` 已有统一契约检查；失败会带 Excel 行、金额、对手方、NC 行或制单表位置。
 - 待生成表重复匹配属于异常；`generate` 默认 `duplicate_match_policy=stop`，会在点击 NC 前暂停。临时允许跳过异常行时用 `--on-duplicate skip`。
-- `receipt_entry` 已记录收款单录入状态标签、财务组织清单和组织-账户映射；当前只是配置和校验，未接入 JAB 自动操作。
+- `receipt_entry` 已记录收款单录入状态标签、财务组织清单、组织-账户映射、Excel 预处理和 NC 已做过匹配规则。
+- 收款单查询窗口已枚举到稳定条件行：`收款财务组织`、`单据日期`、`原币金额`、`客户`；`tools/receipt_query_fill.py` 已验证可写入 `A001` 和日期区间，不点确定也能成功填值。
 - 当前没有继续低风险拆分项。后续再动结构，应优先做模型和契约，而不是机械拆文件。
 
 ## 待办
 
-1. 只读 JAB 验证
-   - 同步到 H 盘运行镜像后，先跑 `plan`。
-   - 验证 Excel 读取、页面状态守卫、待生成表匹配和 CLI 摘要。
+1. 收款单查询闭环
+   - 在已打开的 `收款单录入 -> 查询条件` 窗口中，按主体分组填 `收款财务组织` 和最近 1-2 个月 `单据日期`。
+   - 先人工确认一轮 `--confirm` 后列表返回正确，再接自动读表。
+   - 读取结果表时使用列语义：`单据日期`、`客户`、`原币金额`；不要依赖视觉列宽。
 
-2. 契约检查
-   - 继续观察真实 `plan` / `generate` 输出，发现缺字段再补。
+2. Excel 回写
+   - 按 Excel 候选行的 `到款日期 + 原始金额 + 银行来款名` 匹配 NC 的 `单据日期 + 原币金额 + 客户`。
+   - 匹配唯一时写 `是否NC已做过`；未找到写未做过；重复命中按异常策略处理，默认暂停。
+
+3. 契约检查
+   - 继续观察真实 `plan` / `generate` / 收款查询输出，发现缺字段再补。
    - 已覆盖模型契约不要复制第二份定义，见 `core/models.py`。
 
 ## 保留坑点
@@ -35,10 +41,13 @@
 - JAB path 和 hwnd 不稳定，不要长期硬编码。
 - JAB `bounds` 不是底层动作，不要用它恢复坐标点击。
 - `ok=True` 只代表 JAB 动作返回成功，业务上必须做后置状态验证。
+- 控件探索工具本身也可能截断真相；`tools/jab_probe.py --inspect-path` 曾经固定只展开 1 层，导致右侧查询条件区被误判为空。遇到“控件不存在/为空”时，先核查 `--depth`、`--max-children`、窗口 title/class、visible/showing 过滤是否真的生效。
+- `--inspect-path` 输出里的 `path=0...` 是相对目标节点的路径，不是完整窗口路径；写入配置前必须用完整 path 再只读验证一次。
 - 主查询入口默认走 F3；用 JAB action 点主界面查询按钮曾触发 Access Bridge 不稳定。
 - 查询窗口内部 `正式单据` / `确定` 可走 JAB AccessibleAction，日期框走 `setTextContents`。
 - `目的业务日期` 是 `介于`，限定当天必须起止两个日期框都填同一天。
 - `setTextContents` 对日期框有效，但 JAB 文本读取可能返回空，不能把读回空直接判定为写入失败。
+- 收款单查询条件里的 `收款财务组织` 和 `单据日期` 也存在同样现象：`setTextContents` 成功后 JAB 读回可能为空，以界面状态或后续查询结果验证。
 - 隐藏或 `visible=False` 的 `SunAwtDialog` 查询窗口可能是残留，不能作为可操作窗口依据。
 - 查询窗口右侧筛选区和左侧会计科目树必须隔离，自动化不要碰左侧会计科目。
 - NC 查询条件区视觉换行不等于 JAB 结构，定位要结合 label、role、row 容器、bounds 和后置状态验证。

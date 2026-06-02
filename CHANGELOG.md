@@ -2,7 +2,7 @@
 
 只记录影响维护判断的关键节点。具体实验流水账看 git 历史。
 
-## 2026-06-02 - 模型和契约收口
+## 2026-06-02 - 模型、契约和收款单查询准备
 
 - `ExcelVoucherItem`、`PendingMatch`、`GeneratedVoucherMatch`、`VoucherPendingMatch`、`VoucherSaveMatch`、`MatchIssue` 收口为 dataclass。
 - 删除模型的字典访问兼容层，workflow 改为属性访问。
@@ -11,6 +11,16 @@
 - `match_generated_voucher_table` 显式返回 `GeneratedVoucherMatch`，不再复用待生成匹配类型。
 - 待生成表重复匹配定义为异常；`generate` 默认暂停在点击 NC 前，显式传 `--on-duplicate skip` 时写入异常行并跳过继续。
 - `config.json` 新增 `receipt_entry`，记录收款单录入状态标签、财务组织清单和组织-账户映射，并纳入配置校验。
+- 收款单 Excel 预处理已支持按银行映射主体，候选行默认限定最近 2 个月且跳过已有状态。
+- 收款单匹配规则已落地：Excel `到款日期 + 原始金额 + 银行来款名` 对齐 NC `单据日期 + 原币金额 + 客户`，客户名做归一化和包含匹配；重复命中按异常处理。
+- 收款单查询窗口已枚举到右侧条件行，并将 `收款财务组织`、`单据日期`、`原币金额`、`客户` 的 JAB path 写入配置校验。
+- 新增 `tools/receipt_query_fill.py`，已验证能在 `查询条件` 窗口写入 `A001` 和日期区间；默认不点确定，`--confirm` 才触发查询。
+- 修复 `tools/jab_probe.py --inspect-path` 忽略 `--depth` 的问题；该问题曾导致右侧查询条件区被误判为空。
+
+保留坑点：
+
+- `--inspect-path` 的输出路径是相对被 inspect 的目标节点，不是完整窗口路径；配置 JAB path 前必须用完整 path 复验。
+- `setTextContents` 对 NC 查询条件文本框可写入，但 JAB 文本读回可能为空，不能仅凭读回为空判失败。
 
 ## 2026-06-01 - workflow 拆分和状态守卫
 

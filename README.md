@@ -28,6 +28,7 @@
 - `core/nc_switch_generated_workflow.py`：切换到已生成/正式单据列表。
 - `core/nc_backfill_workflow.py`：已生成列表凭证号回填。
 - `core/nc_table_matcher.py`：NC 表格按金额、对手方、日期的匹配逻辑。
+- `core/receipt_entry.py`：收款单 Excel 预处理、主体映射和 NC 已做过匹配规则。
 - `core/errors.py`：NC workflow 领域异常，区分页面状态、表格匹配、JAB 控件、JAB 动作、Excel 写入锁和流程契约失败。
 - `core/jab_operator.py`：JAB 底层封装，负责读表、选行、按钮动作、F3/F5、关闭窗口、隐藏空白 AWT 小窗。
 - `core/data_handler.py`：Excel 读取、拼接 key 解析、结果写回、拆分 key。
@@ -118,6 +119,18 @@ cd /mnt/h/python脚本/.venv/nc_auto_v2
 
 ```bash
 /mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/jab_batch.py split-keys
+```
+
+收款单 Excel 候选行预检查：
+
+```bash
+/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_entry_check.py
+```
+
+收款单查询窗口只填条件、不点确定：
+
+```bash
+/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_query_fill.py --org-code A001 --date-from 2026-05-01 --date-to 2026-06-02
 ```
 
 ## Excel 规则
