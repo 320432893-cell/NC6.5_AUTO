@@ -233,6 +233,68 @@ def _validate_receipt_query(query_cfg, errors):
                 prefix="receipt_entry.query.result_columns",
             )
 
+    jab_cfg = query_cfg.get("jab")
+    if jab_cfg is not None:
+        _validate_receipt_query_jab(jab_cfg, errors)
+
+
+def _validate_receipt_query_jab(jab_cfg, errors):
+    if not isinstance(jab_cfg, dict):
+        errors.append("receipt_entry.query.jab must be an object")
+        return
+
+    for key in ("dialog_title", "dialog_class", "confirm_button_path"):
+        _require_non_empty_str(jab_cfg, key, errors, prefix="receipt_entry.query.jab")
+
+    fields = _require(
+        jab_cfg,
+        "fields",
+        dict,
+        errors,
+        prefix="receipt_entry.query.jab",
+    )
+    if not isinstance(fields, dict):
+        return
+
+    for key in ("finance_org", "document_date"):
+        field = _require(
+            fields,
+            key,
+            dict,
+            errors,
+            prefix="receipt_entry.query.jab.fields",
+        )
+        if isinstance(field, dict):
+            _validate_receipt_query_jab_field(
+                field,
+                errors,
+                prefix=f"receipt_entry.query.jab.fields.{key}",
+                range_field=key == "document_date",
+            )
+
+    for key in ("original_amount", "customer"):
+        field = fields.get(key)
+        if field is not None:
+            if not isinstance(field, dict):
+                errors.append(f"receipt_entry.query.jab.fields.{key} must be an object")
+                continue
+            _validate_receipt_query_jab_field(
+                field,
+                errors,
+                prefix=f"receipt_entry.query.jab.fields.{key}",
+                range_field=key == "original_amount",
+            )
+
+
+def _validate_receipt_query_jab_field(field, errors, prefix, range_field=False):
+    for key in ("label", "operator"):
+        _require_non_empty_str(field, key, errors, prefix=prefix)
+    if range_field:
+        for key in ("from_text_path", "to_text_path"):
+            _require_non_empty_str(field, key, errors, prefix=prefix)
+    else:
+        _require_non_empty_str(field, "text_path", errors, prefix=prefix)
+
 
 def _validate_receipt_candidate_check(candidate_cfg, errors):
     if not isinstance(candidate_cfg, dict):

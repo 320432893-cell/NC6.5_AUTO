@@ -78,6 +78,24 @@ def test_validate_receipt_entry_accepts_account_mapping():
             "finance_org_operator": "等于",
             "document_date_field": "单据日期",
             "document_date_operator": "介于",
+            "jab": {
+                "dialog_title": "查询条件",
+                "dialog_class": "SunAwtDialog",
+                "confirm_button_path": "0.0.1.0.2.1.0",
+                "fields": {
+                    "finance_org": {
+                        "label": "收款财务组织",
+                        "operator": "等于",
+                        "text_path": "0.0.0",
+                    },
+                    "document_date": {
+                        "label": "单据日期",
+                        "operator": "介于",
+                        "from_text_path": "0.0.1",
+                        "to_text_path": "0.0.2",
+                    },
+                },
+            },
             "result_columns": {
                 "document_date": "单据日期",
                 "original_amount": "原币金额",
@@ -107,6 +125,63 @@ def test_validate_receipt_entry_accepts_account_mapping():
     }
 
     assert validate_config(config) == []
+
+
+def test_validate_receipt_entry_rejects_missing_jab_query_path():
+    config = base_config()
+    config["receipt_entry"] = {
+        "state_label": "收款单录入",
+        "query": {
+            "date_from": "2026-01-01",
+            "date_to": "{today}",
+            "finance_org_field": "收款财务组织",
+            "finance_org_operator": "等于",
+            "document_date_field": "单据日期",
+            "document_date_operator": "介于",
+            "jab": {
+                "dialog_title": "查询条件",
+                "dialog_class": "SunAwtDialog",
+                "confirm_button_path": "0.0.1.0.2.1.0",
+                "fields": {
+                    "finance_org": {
+                        "label": "收款财务组织",
+                        "operator": "等于",
+                    },
+                    "document_date": {
+                        "label": "单据日期",
+                        "operator": "介于",
+                        "from_text_path": "0.0.1",
+                        "to_text_path": "0.0.2",
+                    },
+                },
+            },
+            "result_columns": {
+                "document_date": "单据日期",
+                "original_amount": "原币金额",
+                "customer": "客户",
+            },
+        },
+        "finance_organizations": [
+            {
+                "code": "A001",
+                "name": "上海移为通信技术股份有限公司",
+                "short_name": "移为",
+            },
+        ],
+        "accounts": [
+            {
+                "organization_code": "A001",
+                "organization_short_name": "移为",
+                "account_label": "大陆花旗",
+                "account_no": "1783854003",
+            },
+        ],
+    }
+
+    assert (
+        "receipt_entry.query.jab.fields.finance_org.text_path is required"
+        in validate_config(config)
+    )
 
 
 def test_validate_receipt_entry_rejects_unknown_account_organization():

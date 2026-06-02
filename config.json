@@ -141,6 +141,35 @@
             "finance_org_operator": "等于",
             "document_date_field": "单据日期",
             "document_date_operator": "介于",
+            "jab": {
+                "dialog_title": "查询条件",
+                "dialog_class": "SunAwtDialog",
+                "confirm_button_path": "0.0.1.0.2.1.0",
+                "fields": {
+                    "finance_org": {
+                        "label": "收款财务组织",
+                        "operator": "等于",
+                        "text_path": "0.0.1.0.1.0.0.1.0.0.0.0.0.0.1.0.1.1.2.0.0.0.0"
+                    },
+                    "document_date": {
+                        "label": "单据日期",
+                        "operator": "介于",
+                        "from_text_path": "0.0.1.0.1.0.0.1.0.0.0.0.0.0.1.0.1.3.2.0.0.0.0",
+                        "to_text_path": "0.0.1.0.1.0.0.1.0.0.0.0.0.0.1.0.1.3.2.1.0.0.0"
+                    },
+                    "original_amount": {
+                        "label": "原币金额",
+                        "operator": "介于",
+                        "from_text_path": "0.0.1.0.1.0.0.1.0.0.0.0.0.0.1.0.1.15.2.0",
+                        "to_text_path": "0.0.1.0.1.0.0.1.0.0.0.0.0.0.1.0.1.15.2.1"
+                    },
+                    "customer": {
+                        "label": "客户",
+                        "operator": "等于",
+                        "text_path": "0.0.1.0.1.0.0.1.0.0.0.0.0.0.1.0.1.17.2.0.0"
+                    }
+                }
+            },
             "result_columns": {
                 "document_date": "单据日期",
                 "original_amount": "原币金额",
