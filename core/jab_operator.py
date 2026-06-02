@@ -466,7 +466,8 @@ class JABOperator:
         click_mode=None,
         wait=None,
         timeout=None,
-        require_showing=False,
+        require_showing=True,
+        require_valid_bounds=True,
     ):
         self.ensure_started()
         if not path:
@@ -482,6 +483,7 @@ class JABOperator:
                 name=name,
                 role=role,
                 require_showing=require_showing,
+                require_valid_bounds=require_valid_bounds,
             )
             context, vm_id, owned_contexts, window_info = result
             if context:
@@ -522,7 +524,8 @@ class JABOperator:
         guard_role=None,
         wait=None,
         timeout=None,
-        require_showing=False,
+        require_showing=True,
+        require_valid_bounds=True,
     ):
         self.ensure_started()
         if not path:
@@ -539,6 +542,7 @@ class JABOperator:
                     name=guard_name,
                     role=guard_role,
                     require_showing=require_showing,
+                    require_valid_bounds=require_valid_bounds,
                 )
                 guard_context, guard_vm_id, guard_owned_contexts, _guard_window = guard
                 if guard_context:
@@ -554,6 +558,7 @@ class JABOperator:
                 name=name,
                 role=role,
                 require_showing=require_showing,
+                require_valid_bounds=require_valid_bounds,
             )
             context, vm_id, owned_contexts, window_info = result
             if context:
@@ -1149,7 +1154,8 @@ class JABOperator:
         role=None,
         action_name=None,
         timeout=None,
-        require_showing=False,
+        require_showing=True,
+        require_valid_bounds=True,
     ):
         self.ensure_started()
         result = self.find_context_by_path_once(
@@ -1159,6 +1165,7 @@ class JABOperator:
             name=name,
             role=role,
             require_showing=require_showing,
+            require_valid_bounds=require_valid_bounds,
         )
         context, vm_id, owned_contexts, window_info = result
         if not context:
@@ -1192,6 +1199,7 @@ class JABOperator:
         name=None,
         role=None,
         require_showing=False,
+        require_valid_bounds=False,
     ):
         parts = self.parse_context_path(path)
         windows = enum_windows(include_children=True)
@@ -1230,7 +1238,7 @@ class JABOperator:
             if not context:
                 continue
 
-            if require_showing or name or normalized_role:
+            if require_showing or require_valid_bounds or name or normalized_role:
                 info = self.get_context_info(vm_id.value, context)
                 if not info:
                     self.release_contexts(vm_id.value, owned_contexts)
@@ -1238,14 +1246,18 @@ class JABOperator:
                 control_name = info.name.strip()
                 desc = info.description.strip()
                 control_role = (info.role_en_US.strip() or info.role.strip()).lower()
-                states = (info.states_en_US.strip() or info.states.strip()).lower()
                 if name and control_name != name and desc != name:
                     self.release_contexts(vm_id.value, owned_contexts)
                     continue
                 if normalized_role and control_role != normalized_role:
                     self.release_contexts(vm_id.value, owned_contexts)
                     continue
-                if "visible" not in states or "showing" not in states:
+                if require_showing and not self.context_info_is_showing(info):
+                    self.release_contexts(vm_id.value, owned_contexts)
+                    continue
+                if require_valid_bounds and not self.context_info_has_valid_bounds(
+                    info
+                ):
                     self.release_contexts(vm_id.value, owned_contexts)
                     continue
 
@@ -1271,7 +1283,8 @@ class JABOperator:
         class_name=None,
         name=None,
         role=None,
-        require_showing=False,
+        require_showing=True,
+        require_valid_bounds=True,
         timeout=None,
     ):
         self.ensure_started()
@@ -1285,6 +1298,7 @@ class JABOperator:
                 name=name,
                 role=role,
                 require_showing=require_showing,
+                require_valid_bounds=require_valid_bounds,
             )
             context, vm_id, owned_contexts, window_info = result
             if context:
@@ -2785,6 +2799,15 @@ class JABOperator:
         if require_showing and ("visible" not in states or "showing" not in states):
             return False
         return control_name == expected_name or desc == expected_name
+
+    @staticmethod
+    def context_info_is_showing(info):
+        states = (info.states_en_US.strip() or info.states.strip()).lower()
+        return "visible" in states and "showing" in states
+
+    @staticmethod
+    def context_info_has_valid_bounds(info):
+        return info.x >= 0 and info.y >= 0 and info.width > 0 and info.height > 0
 
     def get_action_names(self, vm_id, context):
         actions = AccessibleActions()

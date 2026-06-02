@@ -554,6 +554,14 @@ def print_action_contexts(dll, vm_id, context, max_depth=4, max_children=40):
 
 
 def do_action(dll, vm_id, context, action_name=None):
+    if not context_is_interactable(dll, vm_id, context):
+        print("DO_ACTION refused: target is not showing or has invalid bounds.")
+        return False
+
+    return do_action_raw(dll, vm_id, context, action_name)
+
+
+def do_action_raw(dll, vm_id, context, action_name=None):
     names = print_actions(dll, vm_id, context)
     if not names:
         return False
@@ -576,6 +584,21 @@ def do_action(dll, vm_id, context, action_name=None):
     )
     print(f"DO_ACTION action={chosen!r} ok={bool(ok)} failure={failure.value}")
     return bool(ok)
+
+
+def context_is_interactable(dll, vm_id, context):
+    info = AccessibleContextInfo()
+    if not dll.getAccessibleContextInfo(vm_id, context, ctypes.byref(info)):
+        return False
+    states = (info.states_en_US.strip() or info.states.strip()).lower()
+    return (
+        "visible" in states
+        and "showing" in states
+        and info.x >= 0
+        and info.y >= 0
+        and info.width > 0
+        and info.height > 0
+    )
 
 
 def print_selection_info(dll, vm_id, context, max_children=20):
@@ -706,6 +729,11 @@ def main():
         help="Execute an action for one context path from each matching Java window.",
     )
     parser.add_argument(
+        "--allow-hidden-action",
+        action="store_true",
+        help="Allow --do-action-path on non-showing or invalid-bounds contexts.",
+    )
+    parser.add_argument(
         "--action", help="Action name to execute. Defaults to the first exposed action."
     )
     parser.add_argument(
@@ -834,7 +862,11 @@ def main():
                 if args.actions_path:
                     print_actions(dll, vm_id.value, target_context)
                 if args.do_action_path:
-                    do_action(dll, vm_id.value, target_context, args.action)
+                    if args.allow_hidden_action:
+                        print_actions(dll, vm_id.value, target_context)
+                        do_action_raw(dll, vm_id.value, target_context, args.action)
+                    else:
+                        do_action(dll, vm_id.value, target_context, args.action)
                 if selection_path:
                     print_selection_info(
                         dll, vm_id.value, target_context, max_children=args.max_children

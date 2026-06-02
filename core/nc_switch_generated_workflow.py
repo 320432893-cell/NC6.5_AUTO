@@ -275,7 +275,7 @@ class NCSwitchGeneratedWorkflow:
             class_name=dialog_class,
             name=step.get("name"),
             role=step.get("role"),
-            require_showing=bool(step.get("require_showing", False)),
+            require_showing=bool(step.get("require_showing", True)),
             timeout=float(step.get("guard_timeout", step.get("timeout", 3))),
         )
         if not wait_info:
@@ -296,7 +296,7 @@ class NCSwitchGeneratedWorkflow:
                 role=step.get("role"),
                 wait=float(step.get("wait", 0.0)),
                 timeout=float(step.get("timeout", 1)),
-                require_showing=bool(step.get("require_showing", False)),
+                require_showing=bool(step.get("require_showing", True)),
             )
         else:
             ok = self.jab.do_action_by_path(
@@ -309,7 +309,7 @@ class NCSwitchGeneratedWorkflow:
                 click_mode=step.get("click_mode"),
                 wait=float(step.get("wait", 0.0)),
                 timeout=float(step.get("timeout", 1)),
-                require_showing=bool(step.get("require_showing", False)),
+                require_showing=bool(step.get("require_showing", True)),
             )
         if not ok:
             raise JABActionError(
@@ -351,7 +351,7 @@ class NCSwitchGeneratedWorkflow:
             "role": open_query.get("role"),
             "action_name": open_query.get("action"),
             "timeout": float(open_query.get("return_timeout", 0.2)),
-            "require_showing": bool(open_query.get("require_showing", False)),
+            "require_showing": bool(open_query.get("require_showing", True)),
         }
         attempts = [
             {
@@ -379,7 +379,7 @@ class NCSwitchGeneratedWorkflow:
             "click_mode": open_query.get("click_mode"),
             "wait": float(open_query.get("wait", 0.8)),
             "timeout": float(open_query.get("timeout", 5)),
-            "require_showing": bool(open_query.get("require_showing", False)),
+            "require_showing": bool(open_query.get("require_showing", True)),
         }
         attempts = [
             {
@@ -449,7 +449,7 @@ class NCSwitchGeneratedWorkflow:
         if step.get("guard_role") is not None:
             cmd.extend(["--guard-role", str(step.get("guard_role"))])
 
-        if bool(step.get("require_showing", False)):
+        if bool(step.get("require_showing", True)):
             cmd.append("--require-showing")
 
         log.info(
