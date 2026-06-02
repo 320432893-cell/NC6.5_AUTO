@@ -15,6 +15,7 @@
 - `backfill` 已记录结构化审计事件 `backfill_audit`，包含 Excel 行、金额、对手方、NC 行、凭证号和失败状态。
 - 关键匹配模型已收口为 dataclass：`ExcelVoucherItem`、`PendingMatch`、`GeneratedVoucherMatch`、`VoucherPendingMatch`、`VoucherSaveMatch`、`MatchIssue`。
 - `ExcelVoucherItem` 和 `VoucherSaveMatch` 已有统一契约检查；失败会带 Excel 行、金额、对手方、NC 行或制单表位置。
+- 待生成表重复匹配属于异常；`generate` 默认 `duplicate_match_policy=stop`，会在点击 NC 前暂停。临时允许跳过异常行时用 `--on-duplicate skip`。
 - 当前没有继续低风险拆分项。后续再动结构，应优先做模型和契约，而不是机械拆文件。
 
 ## 待办

@@ -7,6 +7,7 @@ from pathlib import Path
 SAVE_STRATEGIES = {"single", "bottom_up", "safe_batch_by_pending_row"}
 SAVE_TRIGGERS = {"jab_button", "hotkey"}
 HOTKEY_ACTIVATE_POLICIES = {"always", "first", "foreground_guard"}
+DUPE_MATCH_POLICIES = {"stop", "skip"}
 OPEN_QUERY_METHODS = {"hotkey", "jab_action"}
 
 
@@ -43,6 +44,13 @@ def validate_config(config):
         batch_cfg,
         "hotkey_activate_policy",
         HOTKEY_ACTIVATE_POLICIES,
+        errors,
+        prefix="jab_batch",
+    )
+    _optional_enum(
+        batch_cfg,
+        "duplicate_match_policy",
+        DUPE_MATCH_POLICIES,
         errors,
         prefix="jab_batch",
     )
@@ -101,6 +109,12 @@ def _enum(mapping, key, allowed, errors, prefix=""):
     value = mapping.get(key)
     if value not in allowed:
         errors.append(f"{label} must be one of {sorted(allowed)}, got {value!r}")
+
+
+def _optional_enum(mapping, key, allowed, errors, prefix=""):
+    if key not in mapping:
+        return
+    _enum(mapping, key, allowed, errors, prefix=prefix)
 
 
 def _positive_int(mapping, key, errors, prefix=""):

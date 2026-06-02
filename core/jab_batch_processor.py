@@ -55,6 +55,9 @@ class JABBatchProcessor:
         self.voucher_order_fallback_mode = self.batch_cfg.get(
             "voucher_order_fallback_mode", "strict"
         )
+        self.duplicate_match_policy = self.batch_cfg.get(
+            "duplicate_match_policy", "stop"
+        )
         self.foreign_currency_rate = self.parse_optional_decimal(
             self.batch_cfg.get("foreign_currency_rate")
         )

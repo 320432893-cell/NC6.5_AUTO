@@ -105,6 +105,12 @@ def build_parser():
         help="外币到本位币汇率；不传则同名多行自动估计一致汇率",
     )
     parser.add_argument(
+        "--on-duplicate",
+        choices=("stop", "skip"),
+        default=None,
+        help="generate 遇到待生成表重复匹配时的处理：stop=暂停；skip=写异常并跳过该行继续",
+    )
+    parser.add_argument(
         "--hotkey-activate-policy",
         choices=("always", "first", "foreground_guard"),
         default=None,
@@ -138,6 +144,8 @@ def main():
         cfg.setdefault("jab_batch", {})["foreign_currency_rate"] = (
             args.foreign_currency_rate
         )
+    if args.on_duplicate is not None:
+        cfg.setdefault("jab_batch", {})["duplicate_match_policy"] = args.on_duplicate
     processor = JABBatchProcessor(
         cfg,
         perf_enabled=args.perf,

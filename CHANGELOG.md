@@ -9,6 +9,7 @@
 - `ExcelVoucherItem` 增加处理前契约检查：无解析错误时必须有正 Excel 行号、金额和对手方。
 - `VoucherSaveMatch` 增加保存前契约检查：制单表索引、表行数、制单行号和单元格内容必须有效。
 - `match_generated_voucher_table` 显式返回 `GeneratedVoucherMatch`，不再复用待生成匹配类型。
+- 待生成表重复匹配定义为异常；`generate` 默认暂停在点击 NC 前，显式传 `--on-duplicate skip` 时写入异常行并跳过继续。
 
 ## 2026-06-01 - workflow 拆分和状态守卫
 

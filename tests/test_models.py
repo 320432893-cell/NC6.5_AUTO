@@ -3,7 +3,7 @@ from decimal import Decimal
 import pytest
 
 from core.errors import ContractViolation
-from core.models import ExcelVoucherItem, VoucherSaveMatch
+from core.models import ExcelVoucherItem, MatchIssue, VoucherSaveMatch
 
 
 def make_item(**overrides):
@@ -53,3 +53,10 @@ def test_voucher_save_match_contract_rejects_invalid_table_fields():
         match="excel_row=5.*amount=9.99.*partner='上海公司'.*nc_row=7",
     ):
         match.validate_for_save(context="test")
+
+
+def test_match_issue_identifies_duplicate_match():
+    item = make_item()
+
+    assert MatchIssue(item=item, reason="重复2条", rows=[1, 17]).is_duplicate_match()
+    assert not MatchIssue(item=item, reason="未找到", rows=[]).is_duplicate_match()

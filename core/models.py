@@ -110,6 +110,9 @@ class MatchIssue:
     reason: str
     rows: list[int]
 
+    def is_duplicate_match(self) -> bool:
+        return self.reason.startswith("重复") and bool(self.rows)
+
 
 BackfillUpdateValue = int | str
 BackfillUpdates = dict[int, BackfillUpdateValue]

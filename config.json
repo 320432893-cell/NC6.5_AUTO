@@ -38,6 +38,7 @@
         "write_generated_status_each_save": false,
         "use_voucher_queue_cache": true,
         "voucher_order_fallback_mode": "strict",
+        "duplicate_match_policy": "stop",
         "foreign_currency_rate": null,
         "foreign_currency_rate_tolerance": 0.02,
         "save_success_timeout": 8.0,
