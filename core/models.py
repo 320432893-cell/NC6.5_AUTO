@@ -1,8 +1,10 @@
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, NotRequired, TypedDict
 
 
-class ExcelVoucherItem(TypedDict):
+@dataclass(frozen=True)
+class ExcelVoucherItem:
     row: int
     raw_key: Any
     raw_amount: Any
@@ -12,6 +14,14 @@ class ExcelVoucherItem(TypedDict):
     voucher: Any
     source: str
     parse_error: str
+
+    def __getitem__(self, key: str) -> Any:
+        if not hasattr(self, key):
+            raise KeyError(key)
+        return getattr(self, key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
 
 
 class TableSnapshotRow(TypedDict, total=False):

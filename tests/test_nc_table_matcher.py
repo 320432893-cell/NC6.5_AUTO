@@ -18,17 +18,17 @@ class FakeProcessor:
 
 def test_build_increasing_batches_splits_on_descending_row_and_max_size():
     matcher = NCTableMatcher(FakeProcessor())
-    item: ExcelVoucherItem = {
-        "row": 1,
-        "raw_key": "",
-        "raw_amount": "",
-        "raw_partner": "",
-        "amount": Decimal("1.00"),
-        "partner": "A",
-        "voucher": "",
-        "source": "split_ab",
-        "parse_error": "",
-    }
+    item = ExcelVoucherItem(
+        row=1,
+        raw_key="",
+        raw_amount="",
+        raw_partner="",
+        amount=Decimal("1.00"),
+        partner="A",
+        voucher="",
+        source="split_ab",
+        parse_error="",
+    )
     matches: list[PendingMatch] = [
         {"item": item, "nc_row": 1, "row_data": {}},
         {"item": item, "nc_row": 2, "row_data": {}},

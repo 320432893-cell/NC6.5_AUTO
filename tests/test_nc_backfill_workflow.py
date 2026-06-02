@@ -102,17 +102,17 @@ def test_backfill_update_contract_rejects_invalid_values(value):
 
 def test_build_backfill_audit_record():
     workflow = NCBackfillWorkflow(FakeProcessor([]))
-    item: ExcelVoucherItem = {
-        "row": 2,
-        "raw_key": "",
-        "raw_amount": "",
-        "raw_partner": "",
-        "amount": None,
-        "partner": "深圳公司",
-        "voucher": "已生成待回填",
-        "source": "split_ab",
-        "parse_error": "",
-    }
+    item = ExcelVoucherItem(
+        row=2,
+        raw_key="",
+        raw_amount="",
+        raw_partner="",
+        amount=None,
+        partner="深圳公司",
+        voucher="已生成待回填",
+        source="split_ab",
+        parse_error="",
+    )
 
     record = workflow.build_backfill_audit_record(
         item,
@@ -135,17 +135,17 @@ def test_build_backfill_audit_record():
 
 def test_build_issue_audit_record_and_counts():
     workflow = NCBackfillWorkflow(FakeProcessor([]))
-    item: ExcelVoucherItem = {
-        "row": 3,
-        "raw_key": "",
-        "raw_amount": "",
-        "raw_partner": "",
-        "amount": None,
-        "partner": "上海公司",
-        "voucher": "已生成待回填",
-        "source": "split_ab",
-        "parse_error": "",
-    }
+    item = ExcelVoucherItem(
+        row=3,
+        raw_key="",
+        raw_amount="",
+        raw_partner="",
+        amount=None,
+        partner="上海公司",
+        voucher="已生成待回填",
+        source="split_ab",
+        parse_error="",
+    )
 
     issue_record = workflow.build_issue_audit_record(
         {"item": item, "reason": "未找到", "rows": []},

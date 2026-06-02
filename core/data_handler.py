@@ -64,32 +64,32 @@ class DataHandler:
                     f"key={raw_key!r}, amount={raw_amount!r}, partner={raw_partner!r}, {e}"
                 )
                 data.append(
-                    {
-                        "row": row,
-                        "raw_key": raw_key,
-                        "raw_amount": raw_amount,
-                        "raw_partner": raw_partner,
-                        "amount": None,
-                        "partner": "",
-                        "voucher": result,
-                        "source": "",
-                        "parse_error": str(e),
-                    }
+                    ExcelVoucherItem(
+                        row=row,
+                        raw_key=raw_key,
+                        raw_amount=raw_amount,
+                        raw_partner=raw_partner,
+                        amount=None,
+                        partner="",
+                        voucher=result,
+                        source="",
+                        parse_error=str(e),
+                    )
                 )
                 continue
 
             data.append(
-                {
-                    "row": row,
-                    "raw_key": raw_key,
-                    "raw_amount": raw_amount,
-                    "raw_partner": raw_partner,
-                    "amount": amount,
-                    "partner": partner,
-                    "voucher": result,
-                    "source": source,
-                    "parse_error": "",
-                }
+                ExcelVoucherItem(
+                    row=row,
+                    raw_key=raw_key,
+                    raw_amount=raw_amount,
+                    raw_partner=raw_partner,
+                    amount=amount,
+                    partner=partner,
+                    voucher=result,
+                    source=source,
+                    parse_error="",
+                )
             )
 
         wb.close()
