@@ -855,7 +855,7 @@ def main():
                     dll,
                     vm_id.value,
                     target_context,
-                    max_depth=1,
+                    max_depth=args.depth,
                     max_children=args.max_children,
                 )
                 print_table_info(dll, vm_id.value, target_context)
