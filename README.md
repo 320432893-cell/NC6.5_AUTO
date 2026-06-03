@@ -127,10 +127,22 @@ cd /mnt/h/python脚本/.venv/nc_auto_v2
 /mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_entry_check.py
 ```
 
-收款单查询窗口只填条件、不点确定：
+收款单查询窗口只填条件、不点确定；默认会先在收款单录入页按 F3 打开查询条件窗口：
 
 ```bash
 /mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_query_fill.py --org-code A001 --date-from 2026-05-01 --date-to 2026-06-02
+```
+
+收款单查询后读取可见结果表：
+
+```bash
+/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_query_fill.py --org-code A001 --date-from 2026-05-01 --date-to 2026-06-02 --confirm --read-results
+```
+
+收款单查询后只读匹配预演；查询后会把每页条数改为 500，并按分页读取。输出 JSON 包含 `page_report`、金额范围、名称样本和重复原因；日期只用于查询范围，不参与匹配诊断：
+
+```bash
+/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_query_fill.py --org-code A001 --date-from 2026-03-31 --date-to 2026-05-31 --confirm --dry-run-match --max-rows 600 --max-cols 140
 ```
 
 ## Excel 规则
@@ -182,6 +194,8 @@ C:\Users\Queclink\Desktop\6.1凭证.xlsx
 
 ## NC 表格列位
 
+除 Excel/openpyxl 读写使用 1 基列号外，NC/JAB 表格列位一律按 0 基索引记录。
+
 待生成主表：
 
 - 金额列：`col=4`
@@ -203,6 +217,12 @@ C:\Users\Queclink\Desktop\6.1凭证.xlsx
 - 凭证号列：`col=22`
 - 凭证号回填时去前导 0。
 - 凭证号有效范围：`1 <= 凭证号 <= 9999`。
+
+收款单查询结果表：
+
+- 名称列：`col=2`
+- 原币金额列：`col=7`
+- `col=8` 是把 1 基列号误填到 NC/JAB 配置里的旧错误值，不要使用。
 
 ## 业务流程
 

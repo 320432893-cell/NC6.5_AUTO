@@ -49,6 +49,23 @@ class ReceiptNCRow:
 
 
 @dataclass(frozen=True)
+class ReceiptNCIndexedRow:
+    row_index: int
+    document_date: date
+    original_amount: Decimal
+    name: str
+    document_no: str
+    table_index: int
+
+
+@dataclass(frozen=True)
+class ReceiptNCExtractIssue:
+    table_index: int | None
+    row_index: int | None
+    reason: str
+
+
+@dataclass(frozen=True)
 class ReceiptMatchIssue:
     excel_row: int
     reason: str
@@ -139,6 +156,24 @@ class ReceiptEntryConfig:
         if explicit:
             return explicit
         return subtract_months(today or date.today(), self.candidate_recent_months)
+
+    @property
+    def result_columns(self):
+        return (self.receipt_cfg.get("query") or {}).get("result_columns") or {}
+
+    @property
+    def result_column_indexes(self):
+        default = {
+            "document_no": 0,
+            "document_date": 1,
+            "customer": 4,
+            "original_amount": 6,
+            "payer_name": 19,
+        }
+        configured = (self.receipt_cfg.get("query") or {}).get("result_column_indexes")
+        if not configured:
+            return default
+        return {**default, **configured}
 
     def organization_for_bank(self, bank):
         account = self.accounts_by_label.get(normalize_lookup_key(bank))
@@ -294,16 +329,15 @@ class ReceiptEntryMatcher:
     def match(self, excel_rows, nc_rows):
         index = {}
         for nc_row in nc_rows:
-            key = (nc_row.document_date, nc_row.original_amount)
+            key = nc_row.original_amount
             index.setdefault(key, []).append(nc_row)
 
         matched = {}
         issues = []
         for excel_row in excel_rows:
-            key = (excel_row.receipt_date, excel_row.raw_amount)
             candidates = [
                 nc_row
-                for nc_row in index.get(key, [])
+                for nc_row in index.get(excel_row.raw_amount, [])
                 if names_match(excel_row.payer_name, nc_row.customer)
             ]
             if len(candidates) == 1:
@@ -314,11 +348,211 @@ class ReceiptEntryMatcher:
                         excel_row=excel_row.row,
                         reason="未找到"
                         if not candidates
-                        else f"重复{len(candidates)}条",
+                        else format_receipt_duplicate_reason(len(candidates)),
                         nc_rows=[row.row_index for row in candidates],
                     )
                 )
         return matched, issues
+
+
+class ReceiptEntryDryRunMatcher:
+    def match(self, excel_rows, nc_rows):
+        index = {}
+        for nc_row in nc_rows:
+            key = nc_row.original_amount
+            index.setdefault(key, []).append(nc_row)
+
+        matched = {}
+        issues = []
+        for excel_row in excel_rows:
+            candidates = [
+                nc_row
+                for nc_row in index.get(excel_row.raw_amount, [])
+                if names_match(excel_row.payer_name, nc_row.name)
+            ]
+            if len(candidates) == 1:
+                matched[excel_row.row] = candidates[0]
+            else:
+                issues.append(
+                    ReceiptMatchIssue(
+                        excel_row=excel_row.row,
+                        reason="未找到"
+                        if not candidates
+                        else format_receipt_duplicate_reason(len(candidates)),
+                        nc_rows=[row.row_index for row in candidates],
+                    )
+                )
+        return matched, issues
+
+
+def format_receipt_duplicate_reason(count):
+    return f"重复{count}条：名称和金额相同，需人工确认"
+
+
+class ReceiptNCResultExtractor:
+    def __init__(self, config):
+        self.config = ReceiptEntryConfig(config)
+
+    def extract(self, tables):
+        return extract_receipt_nc_rows(tables, self.config.result_columns)
+
+    def extract_by_indexes(self, tables, name_column, amount_column=None):
+        columns = {**self.config.result_column_indexes, "name": name_column}
+        if amount_column is not None:
+            columns["original_amount"] = amount_column
+        return extract_receipt_nc_rows_by_indexes(tables, columns)
+
+
+def extract_receipt_nc_rows_by_indexes(tables, columns):
+    nc_rows = []
+    issues = []
+    main_tables = [
+        table
+        for table in tables
+        if table.get("col_count", 0) >= max(columns.values()) + 1
+        and table.get("row_count", 0) > 0
+    ]
+    if not main_tables:
+        return [], [
+            ReceiptNCExtractIssue(
+                table_index=None,
+                row_index=None,
+                reason=f"未找到可按列位抽取的收款单结果表: columns={columns}",
+            )
+        ]
+
+    seen_document_numbers = set()
+    for table in main_tables:
+        for row in table.get("rows") or []:
+            row_index = int(row.get("row_index", -1))
+            cells = row.get("cells") or []
+            if is_blank_result_row(cells, columns):
+                continue
+            try:
+                document_no = read_cell(cells, columns["document_no"])
+                if document_no and document_no in seen_document_numbers:
+                    continue
+                if document_no:
+                    seen_document_numbers.add(document_no)
+                nc_rows.append(
+                    ReceiptNCIndexedRow(
+                        row_index=row_index,
+                        table_index=int(table.get("table_index", -1)),
+                        document_no=document_no,
+                        document_date=parse_date(
+                            read_cell(cells, columns["document_date"])
+                        ),
+                        original_amount=parse_amount(
+                            read_cell(cells, columns["original_amount"])
+                        ),
+                        name=read_required_text(cells, columns["name"], "匹配名称为空"),
+                    )
+                )
+            except ValueError as exc:
+                issues.append(
+                    ReceiptNCExtractIssue(
+                        table_index=table.get("table_index"),
+                        row_index=row_index,
+                        reason=str(exc),
+                    )
+                )
+    return nc_rows, issues
+
+
+def extract_receipt_nc_rows(tables, result_columns):
+    required = {
+        "document_date": result_columns.get("document_date", "单据日期"),
+        "original_amount": result_columns.get("original_amount", "原币金额"),
+        "customer": result_columns.get("customer", "客户"),
+    }
+    nc_rows = []
+    issues = []
+    matched_header = False
+
+    for table in tables:
+        rows = table.get("rows") or []
+        resolved = resolve_receipt_result_columns(rows, required)
+        if not resolved:
+            continue
+        matched_header = True
+        header_row_index, columns = resolved
+        for row in rows:
+            row_index = int(row.get("row_index", -1))
+            if row_index <= header_row_index:
+                continue
+            cells = row.get("cells") or []
+            if is_blank_result_row(cells, columns):
+                continue
+            try:
+                nc_rows.append(
+                    ReceiptNCRow(
+                        row_index=row_index,
+                        document_date=parse_date(
+                            read_cell(cells, columns["document_date"])
+                        ),
+                        original_amount=parse_amount(
+                            read_cell(cells, columns["original_amount"])
+                        ),
+                        customer=read_required_text(
+                            cells,
+                            columns["customer"],
+                            "客户为空",
+                        ),
+                    )
+                )
+            except ValueError as exc:
+                issues.append(
+                    ReceiptNCExtractIssue(
+                        table_index=table.get("table_index"),
+                        row_index=row_index,
+                        reason=str(exc),
+                    )
+                )
+
+    if not matched_header:
+        issues.append(
+            ReceiptNCExtractIssue(
+                table_index=None,
+                row_index=None,
+                reason=f"未找到包含结果列的收款单表头: {list(required.values())}",
+            )
+        )
+    return nc_rows, issues
+
+
+def resolve_receipt_result_columns(rows, required):
+    required_keys = {
+        field: normalize_lookup_key(label) for field, label in required.items()
+    }
+    for row in rows:
+        cells = row.get("cells") or []
+        header = {
+            normalize_lookup_key(value): column
+            for column, value in enumerate(cells)
+            if str(value or "").strip()
+        }
+        if all(label in header for label in required_keys.values()):
+            return int(row.get("row_index", -1)), {
+                field: header[label] for field, label in required_keys.items()
+            }
+    return None
+
+
+def is_blank_result_row(cells, columns):
+    return all(not read_cell(cells, column).strip() for column in columns.values())
+
+
+def read_cell(cells, column):
+    if column >= len(cells):
+        return ""
+    return str(cells[column] or "").strip()
+
+
+def read_required_text(cells, column, error_message):
+    text = read_cell(cells, column)
+    if not text:
+        raise ValueError(error_message)
+    return text
 
 
 def parse_date(value):
@@ -338,7 +572,10 @@ def parse_date(value):
 def parse_amount(value):
     if value is None or str(value).strip() == "":
         raise ValueError("原始金额为空")
-    text = str(value).strip().replace(",", "")
+    text = re.sub(r"\s+", "", str(value).strip().replace(",", ""))
+    if re.fullmatch(r"\([+-]?\d+(?:\.\d+)?\)", text):
+        inner = text[1:-1].lstrip("+")
+        text = inner if inner.startswith("-") else f"-{inner}"
     try:
         return Decimal(text).quantize(Decimal("0.01"))
     except (InvalidOperation, ValueError) as exc:

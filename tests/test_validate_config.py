@@ -74,6 +74,12 @@ def test_validate_receipt_entry_accepts_account_mapping():
         "query": {
             "date_from": "2026-01-01",
             "date_to": "{today}",
+            "open_key": "f3",
+            "main_title": "Yonyou UClient",
+            "main_class": "YonyouUWnd",
+            "open_timeout": 5,
+            "activate_timeout": 5,
+            "open_wait": 0.8,
             "finance_org_field": "收款财务组织",
             "finance_org_operator": "等于",
             "document_date_field": "单据日期",
@@ -101,6 +107,13 @@ def test_validate_receipt_entry_accepts_account_mapping():
                 "original_amount": "原币金额",
                 "customer": "客户",
             },
+            "result_column_indexes": {
+                "document_no": 0,
+                "document_date": 1,
+                "customer": 2,
+                "original_amount": 7,
+                "payer_name": 2,
+            },
         },
         "candidate_check": {
             "recent_months": 2,
@@ -125,6 +138,57 @@ def test_validate_receipt_entry_accepts_account_mapping():
     }
 
     assert validate_config(config) == []
+
+
+def test_validate_receipt_entry_rejects_one_based_nc_amount_column():
+    config = base_config()
+    config["receipt_entry"] = {
+        "state_label": "收款单录入",
+        "query": {
+            "date_from": "2026-01-01",
+            "date_to": "{today}",
+            "finance_org_field": "收款财务组织",
+            "finance_org_operator": "等于",
+            "document_date_field": "单据日期",
+            "document_date_operator": "介于",
+            "jab": {
+                "dialog_title": "查询条件",
+                "dialog_class": "SunAwtDialog",
+                "confirm_button_path": "0.0.1.0.2.1.0",
+                "fields": {
+                    "finance_org": {
+                        "label": "收款财务组织",
+                        "operator": "等于",
+                        "text_path": "0.0.0",
+                    },
+                    "document_date": {
+                        "label": "单据日期",
+                        "operator": "介于",
+                        "from_text_path": "0.0.1",
+                        "to_text_path": "0.0.2",
+                    },
+                },
+            },
+            "result_columns": {
+                "document_date": "单据日期",
+                "original_amount": "原币金额",
+                "customer": "客户",
+            },
+            "result_column_indexes": {
+                "document_no": 0,
+                "document_date": 1,
+                "customer": 2,
+                "original_amount": 8,
+                "payer_name": 2,
+            },
+        },
+    }
+
+    assert (
+        "receipt_entry.query.result_column_indexes.original_amount "
+        "uses NC/JAB zero-based indexes; observed receipt amount column "
+        "is 7, not Excel-style 8"
+    ) in validate_config(config)
 
 
 def test_validate_receipt_entry_rejects_missing_jab_query_path():

@@ -137,6 +137,13 @@
         "query": {
             "date_from": "2026-01-01",
             "date_to": "{today}",
+            "open_key": "f3",
+            "main_title": "Yonyou UClient",
+            "main_class": "YonyouUWnd",
+            "open_timeout": 5,
+            "activate_timeout": 5,
+            "open_wait": 0.8,
+            "result_wait": 0.5,
             "finance_org_field": "收款财务组织",
             "finance_org_operator": "等于",
             "document_date_field": "单据日期",
@@ -174,6 +181,32 @@
                 "document_date": "单据日期",
                 "original_amount": "原币金额",
                 "customer": "客户"
+            },
+            "result_column_indexes": {
+                "document_no": 0,
+                "document_date": 1,
+                "customer": 2,
+                "original_amount": 7,
+                "payer_name": 2
+            },
+            "pagination": {
+                "page_size": 500,
+                "page_label_path": "0.0.1.0.0.0.0.2.0.0.0.1.1.0.0.0.1.1.1.0.0.0.1.6",
+                "page_size_text_path": "0.0.1.0.0.0.0.2.0.0.0.1.1.0.0.0.1.1.1.0.0.0.1.7",
+                "next_page_button_path": "0.0.1.0.0.0.0.2.0.0.0.1.1.0.0.0.1.1.1.0.0.0.1.2",
+                "window_class": "SunAwtCanvas",
+                "pager_scope_timeout": 5.0,
+                "wait_before_page_size_stable": false,
+                "wait_before_page_size": 0.5,
+                "wait_after_page_size": 0.5,
+                "wait_before_read": 0.5,
+                "wait_after_page_read": 0.0,
+                "stability_timeout": 10.0,
+                "stability_interval": 0.5,
+                "stability_required": 2,
+                "next_action_timeout": 5.0,
+                "next_bounds_timeout": 5.0,
+                "wait_after_next": 0.5
             }
         },
         "candidate_check": {

@@ -460,6 +460,7 @@ class JABOperator:
         path,
         title=None,
         class_name=None,
+        scope_hwnd=None,
         name=None,
         role=None,
         action_name=None,
@@ -480,6 +481,7 @@ class JABOperator:
                 path,
                 title=title,
                 class_name=class_name,
+                scope_hwnd=scope_hwnd,
                 name=name,
                 role=role,
                 require_showing=require_showing,
@@ -507,7 +509,8 @@ class JABOperator:
             time.sleep(0.2)
 
         log.warning(
-            f"JAB path 未找到可执行控件: path={path} title={title!r} class={class_name!r}"
+            "JAB path 未找到可执行控件: "
+            f"path={path} title={title!r} class={class_name!r} scope_hwnd={scope_hwnd!r}"
         )
         return False
 
@@ -517,6 +520,7 @@ class JABOperator:
         text,
         title=None,
         class_name=None,
+        scope_hwnd=None,
         name=None,
         role=None,
         guard_path=None,
@@ -539,6 +543,7 @@ class JABOperator:
                     guard_path,
                     title=title,
                     class_name=class_name,
+                    scope_hwnd=scope_hwnd,
                     name=guard_name,
                     role=guard_role,
                     require_showing=require_showing,
@@ -555,6 +560,7 @@ class JABOperator:
                 path,
                 title=title,
                 class_name=class_name,
+                scope_hwnd=scope_hwnd,
                 name=name,
                 role=role,
                 require_showing=require_showing,
@@ -578,9 +584,51 @@ class JABOperator:
             time.sleep(0.2)
 
         log.warning(
-            f"JAB path 未找到文本控件: path={path} title={title!r} class={class_name!r}"
+            "JAB path 未找到文本控件: "
+            f"path={path} title={title!r} class={class_name!r} scope_hwnd={scope_hwnd!r}"
         )
         return False
+
+    def get_text_by_path(
+        self,
+        path,
+        title=None,
+        class_name=None,
+        scope_hwnd=None,
+        name=None,
+        role=None,
+        timeout=None,
+        require_showing=True,
+        require_valid_bounds=False,
+    ):
+        self.ensure_started()
+        if not path:
+            raise ValueError("JAB text path is required")
+
+        deadline = time.time() + (timeout or self.search_timeout)
+        while time.time() < deadline:
+            check_abort()
+            result = self.find_context_by_path_once(
+                path,
+                title=title,
+                class_name=class_name,
+                scope_hwnd=scope_hwnd,
+                name=name,
+                role=role,
+                require_showing=require_showing,
+                require_valid_bounds=require_valid_bounds,
+            )
+            context, vm_id, owned_contexts, _window_info = result
+            if context:
+                try:
+                    info = self.get_context_info(vm_id, context)
+                    if not info:
+                        return None
+                    return info.description.strip() or info.name.strip()
+                finally:
+                    self.release_contexts(vm_id, owned_contexts)
+            time.sleep(0.2)
+        return None
 
     def set_text_near_label(
         self,
@@ -1150,6 +1198,7 @@ class JABOperator:
         path,
         title=None,
         class_name=None,
+        scope_hwnd=None,
         name=None,
         role=None,
         action_name=None,
@@ -1196,6 +1245,7 @@ class JABOperator:
         path,
         title=None,
         class_name=None,
+        scope_hwnd=None,
         name=None,
         role=None,
         require_showing=False,
@@ -1206,6 +1256,8 @@ class JABOperator:
         normalized_role = role.lower() if role else None
 
         for hwnd, window_title, window_class, pid, visible in windows:
+            if scope_hwnd is not None and int(hwnd) != int(scope_hwnd):
+                continue
             if title and window_title != title:
                 continue
             if class_name and window_class != class_name:
@@ -1286,6 +1338,7 @@ class JABOperator:
         require_showing=True,
         require_valid_bounds=True,
         timeout=None,
+        scope_hwnd=None,
     ):
         self.ensure_started()
         deadline = time.time() + (timeout or self.search_timeout)
@@ -1295,6 +1348,7 @@ class JABOperator:
                 path,
                 title=title,
                 class_name=class_name,
+                scope_hwnd=scope_hwnd,
                 name=name,
                 role=role,
                 require_showing=require_showing,
@@ -1681,6 +1735,138 @@ class JABOperator:
                 self.release_contexts(vm_id, owned_contexts)
 
         log.debug(f"JAB 读取所有表格: count={len(result)}")
+        return result
+
+    def read_table_summaries(self, min_rows=1, min_cols=None):
+        self.ensure_started()
+        tables = self.find_tables_once()
+        result = []
+
+        for table_index, (
+            _table_context,
+            vm_id,
+            owned_contexts,
+            table_info,
+            window_info,
+        ) in enumerate(tables):
+            try:
+                if table_info.rowCount < min_rows:
+                    continue
+                if min_cols is not None and table_info.columnCount < min_cols:
+                    continue
+                result.append(
+                    {
+                        "table_index": table_index,
+                        "window_title": window_info.get("title"),
+                        "window_class": window_info.get("class_name"),
+                        "window_visible": window_info.get("visible"),
+                        "row_count": table_info.rowCount,
+                        "col_count": table_info.columnCount,
+                    }
+                )
+            finally:
+                self.release_contexts(vm_id, owned_contexts)
+
+        log.debug(f"JAB 读取表格摘要: count={len(result)}")
+        return result
+
+    def read_table_selected_columns_from_context(
+        self,
+        table_index,
+        table_context,
+        vm_id,
+        table_info,
+        window_info,
+        columns,
+        max_rows=None,
+    ):
+        row_count = table_info.rowCount
+        col_count = table_info.columnCount
+        selected_columns = sorted(
+            {int(column) for column in columns if 0 <= int(column) < col_count}
+        )
+        row_limit = row_count if max_rows is None else min(row_count, max_rows)
+        cell_count = max(selected_columns, default=-1) + 1
+        rows = []
+
+        for row in range(row_limit):
+            check_abort()
+            cells = [""] * cell_count
+            selected = False
+            for col in selected_columns:
+                text, is_selected = self.get_table_cell_text_and_selection(
+                    vm_id,
+                    table_context,
+                    row,
+                    col,
+                )
+                cells[col] = text
+                selected = selected or is_selected
+            rows.append(
+                {
+                    "row_index": row,
+                    "cells": cells,
+                    "selected": selected,
+                }
+            )
+
+        return {
+            "table_index": table_index,
+            "window_title": window_info.get("title"),
+            "window_class": window_info.get("class_name"),
+            "window_visible": window_info.get("visible"),
+            "row_count": row_count,
+            "col_count": col_count,
+            "read_columns": selected_columns,
+            "rows": rows,
+        }
+
+    def read_all_table_selected_columns(
+        self,
+        columns,
+        max_rows=None,
+        min_rows=1,
+        min_cols=None,
+    ):
+        self.ensure_started()
+        selected_columns = sorted({int(column) for column in columns})
+        if not selected_columns:
+            return []
+        min_col_count = max(selected_columns) + 1 if min_cols is None else int(min_cols)
+        tables = self.find_tables_once()
+        result = []
+
+        for table_index, (
+            table_context,
+            vm_id,
+            owned_contexts,
+            table_info,
+            window_info,
+        ) in enumerate(tables):
+            try:
+                if (
+                    table_info.rowCount < min_rows
+                    or table_info.columnCount < min_col_count
+                ):
+                    continue
+                result.append(
+                    self.read_table_selected_columns_from_context(
+                        table_index,
+                        table_context,
+                        vm_id,
+                        table_info,
+                        window_info,
+                        selected_columns,
+                        max_rows=max_rows,
+                    )
+                )
+            finally:
+                self.release_contexts(vm_id, owned_contexts)
+
+        log.debug(
+            "JAB 读取表格指定列: "
+            f"count={len(result)} columns={selected_columns} max_rows={max_rows}"
+        )
         return result
 
     def read_window_table_cells(self, window_title, max_rows=None, max_cols=None):

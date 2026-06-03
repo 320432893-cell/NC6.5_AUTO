@@ -212,6 +212,12 @@ def _validate_receipt_query(query_cfg, errors):
         "document_date_operator",
     ):
         _require_non_empty_str(query_cfg, key, errors, prefix="receipt_entry.query")
+    for key in ("open_key", "main_title"):
+        if key in query_cfg:
+            _require_non_empty_str(query_cfg, key, errors, prefix="receipt_entry.query")
+    for key in ("open_timeout", "activate_timeout", "open_wait", "result_wait"):
+        if key in query_cfg:
+            _non_negative_number(query_cfg, key, errors, prefix="receipt_entry.query")
     if query_cfg.get("date_from") != "{today}":
         _iso_date(query_cfg, "date_from", errors, prefix="receipt_entry.query")
     if query_cfg.get("date_to") != "{today}":
@@ -232,6 +238,79 @@ def _validate_receipt_query(query_cfg, errors):
                 errors,
                 prefix="receipt_entry.query.result_columns",
             )
+
+    result_column_indexes = query_cfg.get("result_column_indexes")
+    if result_column_indexes is not None:
+        if not isinstance(result_column_indexes, dict):
+            errors.append("receipt_entry.query.result_column_indexes must be an object")
+        else:
+            for key in (
+                "document_no",
+                "document_date",
+                "original_amount",
+                "customer",
+                "payer_name",
+            ):
+                _non_negative_int(
+                    result_column_indexes,
+                    key,
+                    errors,
+                    prefix="receipt_entry.query.result_column_indexes",
+                )
+            if result_column_indexes.get("original_amount") == 8:
+                errors.append(
+                    "receipt_entry.query.result_column_indexes.original_amount "
+                    "uses NC/JAB zero-based indexes; observed receipt amount column "
+                    "is 7, not Excel-style 8"
+                )
+
+    pagination = query_cfg.get("pagination")
+    if pagination is not None:
+        if not isinstance(pagination, dict):
+            errors.append("receipt_entry.query.pagination must be an object")
+        else:
+            _positive_int(
+                pagination,
+                "page_size",
+                errors,
+                prefix="receipt_entry.query.pagination",
+            )
+            for key in (
+                "page_label_path",
+                "page_size_text_path",
+                "next_page_button_path",
+                "window_class",
+            ):
+                _require_non_empty_str(
+                    pagination, key, errors, prefix="receipt_entry.query.pagination"
+                )
+            for key in (
+                "pager_scope_timeout",
+                "wait_before_page_size",
+                "wait_after_page_size",
+                "wait_before_read",
+                "wait_after_page_read",
+                "stability_timeout",
+                "stability_interval",
+                "next_action_timeout",
+                "next_bounds_timeout",
+                "wait_after_next",
+            ):
+                _non_negative_number(
+                    pagination, key, errors, prefix="receipt_entry.query.pagination"
+                )
+            _positive_int(
+                pagination,
+                "stability_required",
+                errors,
+                prefix="receipt_entry.query.pagination",
+            )
+            if "wait_before_page_size_stable" in pagination and not isinstance(
+                pagination.get("wait_before_page_size_stable"), bool
+            ):
+                errors.append(
+                    "receipt_entry.query.pagination.wait_before_page_size_stable must be bool"
+                )
 
     jab_cfg = query_cfg.get("jab")
     if jab_cfg is not None:
