@@ -22,6 +22,12 @@ from tools.jab_probe import (
 )
 
 
+def take_desktop_screenshot():
+    import pyautogui
+
+    return pyautogui.screenshot()
+
+
 class JABOperator:
     """Small Java Access Bridge wrapper for stable NC button/menu actions."""
 
@@ -33,7 +39,7 @@ class JABOperator:
         )
         self.startup_wait = jab_cfg.get("startup_wait", 2.0)
         self.search_timeout = jab_cfg.get("search_timeout", 5.0)
-        self.max_depth = jab_cfg.get("max_depth", 25)
+        self.max_depth = jab_cfg.get("max_depth", 50)
         self.max_children = jab_cfg.get("max_children", 1000)
         self.menu_wait = jab_cfg.get("menu_wait", 0.5)
         self.amount_col = jab_cfg.get("amount_col", 4)
@@ -93,7 +99,12 @@ class JABOperator:
             pass
 
     def hide_blank_awt_windows(self):
-        """Hide small blank AWT helper windows sometimes left visible by JAB/Java."""
+        """Force-hide only hidden no-title AWT residue left by JAB/Java.
+
+        No-title small SunAwtWindow instances are also used by real NC popup
+        menus, reference dialogs, and dropdowns. Visible small windows must
+        never be disabled or moved here.
+        """
         if not self.hide_blank_awt_windows_enabled or os.name != "nt":
             return []
         if not hasattr(ctypes, "windll"):
@@ -101,6 +112,20 @@ class JABOperator:
 
         user32 = ctypes.windll.user32
         hidden = []
+        redraw_hwnds = []
+        sw_hide = 0
+        wm_close = 0x0010
+        gwl_exstyle = -20
+        ws_ex_toolwindow = 0x00000080
+        ws_ex_noactivate = 0x08000000
+        swp_nosize = 0x0001
+        swp_noactivate = 0x0010
+        swp_hidewindow = 0x0080
+        swp_noownerzorder = 0x0200
+        rdw_invalidate = 0x0001
+        rdw_erase = 0x0004
+        rdw_allchildren = 0x0080
+        rdw_updatenow = 0x0100
 
         class Rect(ctypes.Structure):
             _fields_ = [
@@ -113,9 +138,6 @@ class JABOperator:
         enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 
         def callback(hwnd, _lparam):
-            if not user32.IsWindowVisible(hwnd):
-                return True
-
             length = user32.GetWindowTextLengthW(hwnd)
             title = ctypes.create_unicode_buffer(length + 1)
             user32.GetWindowTextW(hwnd, title, length + 1)
@@ -128,16 +150,38 @@ class JABOperator:
             width = rect.right - rect.left
             height = rect.bottom - rect.top
 
+            if class_name.value in ("SunAwtFrame", "SunAwtCanvas"):
+                redraw_hwnds.append(hwnd)
+                return True
+
             if (
                 class_name.value == "SunAwtWindow"
                 and title.value == ""
                 and 0 < width <= 250
                 and 0 < height <= 250
             ):
-                user32.ShowWindow(hwnd, 0)
+                before_visible = bool(user32.IsWindowVisible(hwnd))
+                if before_visible:
+                    return True
+                style = user32.GetWindowLongW(hwnd, gwl_exstyle)
+                user32.SetWindowLongW(
+                    hwnd, gwl_exstyle, style | ws_ex_toolwindow | ws_ex_noactivate
+                )
+                user32.ShowWindow(hwnd, sw_hide)
+                user32.SetWindowPos(
+                    hwnd,
+                    0,
+                    -32000,
+                    -32000,
+                    0,
+                    0,
+                    swp_nosize | swp_noactivate | swp_hidewindow | swp_noownerzorder,
+                )
+                user32.PostMessageW(hwnd, wm_close, 0, 0)
                 hidden.append(
                     {
                         "hwnd": int(hwnd),
+                        "before_visible": before_visible,
                         "left": rect.left,
                         "top": rect.top,
                         "width": width,
@@ -148,6 +192,14 @@ class JABOperator:
             return True
 
         user32.EnumWindows(enum_proc(callback), 0)
+        redraw_hwnds.append(user32.GetDesktopWindow())
+        for hwnd in redraw_hwnds:
+            user32.RedrawWindow(
+                hwnd,
+                None,
+                0,
+                rdw_invalidate | rdw_erase | rdw_allchildren | rdw_updatenow,
+            )
         if hidden:
             log.info(f"JAB 已隐藏空白 AWT 浮窗: {hidden}")
         return hidden
@@ -334,6 +386,28 @@ class JABOperator:
         pyautogui.hotkey(*keys)
         time.sleep(self.menu_wait if wait is None else wait)
 
+    def type_text(self, text, interval=0.01, wait=None):
+        import pyautogui
+
+        pyautogui.write(str(text), interval=interval)
+        time.sleep(0 if wait is None else wait)
+
+    def clipboard_copy(self, text):
+        import pyperclip
+
+        pyperclip.copy(str(text))
+
+    def clipboard_paste(self, wait=None):
+        self.press_hotkey("ctrl", "v", wait=wait)
+
+    def clipboard_read(self):
+        import pyperclip
+
+        return pyperclip.paste()
+
+    def take_screenshot(self):
+        return take_desktop_screenshot()
+
     def do_generate_front(self):
         self.ensure_started()
 
@@ -469,6 +543,7 @@ class JABOperator:
         timeout=None,
         require_showing=True,
         require_valid_bounds=True,
+        cleanup_blank_awt=False,
     ):
         self.ensure_started()
         if not path:
@@ -491,9 +566,19 @@ class JABOperator:
             if context:
                 try:
                     if click_mode == "bounds":
-                        ok = self.click_context_center(vm_id, context)
+                        log.warning(
+                            "JAB bounds 点击已禁用: "
+                            f"path={path} hwnd={window_info.get('hwnd')} "
+                            f"title={window_info.get('title')!r}"
+                        )
+                        ok = False
                     else:
-                        ok = self.do_action(vm_id, context, action_name=action_name)
+                        ok = self.do_action(
+                            vm_id,
+                            context,
+                            action_name=action_name,
+                            cleanup_blank_awt=cleanup_blank_awt,
+                        )
                     if ok:
                         log.info(
                             "JAB path 动作成功: "
@@ -787,6 +872,239 @@ class JABOperator:
 
         return None, None, [], None, None, {}
 
+    def describe_controls_near_label(
+        self,
+        label,
+        title=None,
+        class_name=None,
+        require_showing=True,
+        max_vertical_distance=28,
+        max_right_distance=420,
+    ):
+        """Read-only diagnostic for controls near a label row."""
+        self.ensure_started()
+        windows = []
+
+        for hwnd, window_title, window_class, pid, visible in enum_windows(
+            include_children=True
+        ):
+            if title is not None and window_title != title:
+                continue
+            if class_name is not None and window_class != class_name:
+                continue
+
+            window_result = {
+                "hwnd": int(hwnd),
+                "title": window_title,
+                "class": window_class,
+                "pid": pid,
+                "visible": visible,
+                "is_java": bool(self.dll.isJavaWindow(hwnd)),
+                "labels": [],
+            }
+            windows.append(window_result)
+            if not window_result["is_java"]:
+                continue
+
+            vm_id = ctypes.c_long()
+            root_context = JOBJECT()
+            if not self.dll.getAccessibleContextFromHWND(
+                hwnd,
+                ctypes.byref(vm_id),
+                ctypes.byref(root_context),
+            ):
+                window_result["error"] = "getAccessibleContextFromHWND failed"
+                continue
+
+            controls = []
+            owned = []
+            try:
+                self.collect_controls_for_bounds_scan(
+                    vm_id.value,
+                    root_context.value,
+                    controls,
+                    owned,
+                    require_showing=require_showing,
+                    depth=0,
+                )
+                labels = [
+                    item
+                    for item in controls
+                    if item[1].role_en_US.strip().lower() == "label"
+                    and item[1].name.strip() == label
+                ]
+                labels.sort(key=lambda item: (item[1].y, item[1].x))
+                for _label_context, label_info in labels:
+                    nearby = [
+                        {
+                            "control": self.info_to_dict(item["info"]),
+                            "dy": item["dy"],
+                            "right_distance": item["right_distance"],
+                            "actions": item["actions"],
+                        }
+                        for item in self.controls_near_label_info(
+                            vm_id.value,
+                            controls,
+                            label_info,
+                            max_vertical_distance=max_vertical_distance,
+                            max_right_distance=max_right_distance,
+                        )
+                    ]
+                    nearby.sort(
+                        key=lambda item: (
+                            item["control"]["y"],
+                            item["control"]["x"],
+                            item["control"]["role"],
+                        )
+                    )
+                    window_result["labels"].append(
+                        {
+                            "label": self.info_to_dict(label_info),
+                            "nearby": nearby,
+                        }
+                    )
+            finally:
+                self.release_contexts(vm_id.value, owned)
+
+        return windows
+
+    def controls_near_label_info(
+        self,
+        vm_id,
+        controls,
+        label_info,
+        max_vertical_distance=28,
+        max_right_distance=420,
+    ):
+        label_mid_y = label_info.y + label_info.height / 2
+        label_right = label_info.x + label_info.width
+        nearby = []
+        for control_context, control_info in controls:
+            if control_info is label_info:
+                continue
+            control_mid_y = control_info.y + control_info.height / 2
+            dy = control_mid_y - label_mid_y
+            right_distance = control_info.x - label_right
+            if abs(dy) > max_vertical_distance:
+                continue
+            if right_distance < -40 or right_distance > max_right_distance:
+                continue
+            nearby.append(
+                {
+                    "context": control_context,
+                    "info": control_info,
+                    "dy": dy,
+                    "right_distance": right_distance,
+                    "actions": self.get_action_names(vm_id, control_context),
+                }
+            )
+        nearby.sort(
+            key=lambda item: (
+                item["info"].y,
+                item["info"].x,
+                item["info"].role_en_US.strip(),
+            )
+        )
+        return nearby
+
+    def click_control_near_label(
+        self,
+        label,
+        role,
+        index=0,
+        title=None,
+        class_name=None,
+        require_showing=True,
+        max_vertical_distance=28,
+        max_right_distance=420,
+        action_name=None,
+        wait=None,
+    ):
+        self.ensure_started()
+        role = str(role).strip().lower()
+
+        for hwnd, window_title, window_class, pid, visible in enum_windows(
+            include_children=True
+        ):
+            if title is not None and window_title != title:
+                continue
+            if class_name is not None and window_class != class_name:
+                continue
+            if not self.dll.isJavaWindow(hwnd):
+                continue
+
+            vm_id = ctypes.c_long()
+            root_context = JOBJECT()
+            if not self.dll.getAccessibleContextFromHWND(
+                hwnd,
+                ctypes.byref(vm_id),
+                ctypes.byref(root_context),
+            ):
+                continue
+
+            controls = []
+            owned = []
+            try:
+                self.collect_controls_for_bounds_scan(
+                    vm_id.value,
+                    root_context.value,
+                    controls,
+                    owned,
+                    require_showing=require_showing,
+                    depth=0,
+                )
+                labels = [
+                    item
+                    for item in controls
+                    if item[1].role_en_US.strip().lower() == "label"
+                    and item[1].name.strip() == label
+                ]
+                labels.sort(key=lambda item: (item[1].y, item[1].x))
+                for _label_context, label_info in labels:
+                    candidates = self.controls_near_label_info(
+                        vm_id.value,
+                        controls,
+                        label_info,
+                        max_vertical_distance=max_vertical_distance,
+                        max_right_distance=max_right_distance,
+                    )
+                    filtered = [
+                        item
+                        for item in candidates
+                        if item["info"].role_en_US.strip().lower() == role
+                    ]
+                    filtered.sort(key=lambda item: (item["info"].x, item["info"].y))
+                    if index >= len(filtered):
+                        continue
+
+                    target = filtered[index]
+                    context = target["context"]
+                    info = target["info"]
+                    actions = self.get_action_names(vm_id.value, context)
+                    ok = self.do_action(vm_id.value, context, action_name=action_name)
+                    method = "action"
+                    if wait is not None:
+                        time.sleep(wait)
+                    return {
+                        "ok": bool(ok),
+                        "method": method,
+                        "window": {
+                            "hwnd": int(hwnd),
+                            "title": window_title,
+                            "class": window_class,
+                            "pid": pid,
+                            "visible": visible,
+                        },
+                        "label": self.info_to_dict(label_info),
+                        "control": self.info_to_dict(info),
+                        "actions": actions,
+                        "index": index,
+                    }
+            finally:
+                self.release_contexts(vm_id.value, owned)
+
+        return {"ok": False, "role": role, "index": index}
+
     def describe_text_near_label(
         self,
         label,
@@ -887,6 +1205,50 @@ class JABOperator:
                 self.release_contexts(vm_id.value, owned)
 
         return windows
+
+    def collect_controls_for_bounds_scan(
+        self,
+        vm_id,
+        context,
+        controls,
+        owned,
+        require_showing=True,
+        depth=0,
+    ):
+        info = self.get_context_info(vm_id, context)
+        if not info:
+            return
+
+        role = (info.role_en_US.strip() or info.role.strip()).lower()
+        if role == "table" or depth >= self.max_depth:
+            return
+
+        child_count = min(info.childrenCount, self.max_children)
+        for index in range(child_count):
+            child = self.dll.getAccessibleChildFromContext(vm_id, context, index)
+            if not child:
+                continue
+            child_info = self.get_context_info(vm_id, child)
+            if not child_info:
+                self.release_contexts(vm_id, [child])
+                continue
+
+            owned.append(child)
+            states = (
+                child_info.states_en_US.strip() or child_info.states.strip()
+            ).lower()
+            showing = "visible" in states and "showing" in states
+            if not require_showing or showing:
+                controls.append((child, child_info))
+
+            self.collect_controls_for_bounds_scan(
+                vm_id,
+                child,
+                controls,
+                owned,
+                require_showing=require_showing,
+                depth=depth + 1,
+            )
 
     @staticmethod
     def info_to_dict(info):
@@ -1164,34 +1526,12 @@ class JABOperator:
             log.warning("JAB bounds 点击失败: 控件信息不可读")
             return False
 
-        if info.width <= 0 or info.height <= 0:
-            log.warning(
-                "JAB bounds 点击失败: 控件尺寸无效 "
-                f"name={info.name.strip()!r} bounds={info.x},{info.y},{info.width},{info.height}"
-            )
-            return False
-
-        x = int(info.x + info.width / 2)
-        y = int(info.y + info.height / 2)
-
-        import pyautogui
-
-        screen_width, screen_height = pyautogui.size()
-        if not (0 <= x < screen_width and 0 <= y < screen_height):
-            log.warning(
-                "JAB bounds 点击失败: 控件坐标超出屏幕 "
-                f"name={info.name.strip()!r} bounds={info.x},{info.y},{info.width},{info.height} "
-                f"screen={screen_width}x{screen_height}"
-            )
-            return False
-
-        pyautogui.click(x=x, y=y)
-        log.debug(
-            "JAB bounds 点击: "
+        log.warning(
+            "JAB bounds 点击已禁用: "
             f"name={info.name.strip()!r} role={info.role_en_US.strip() or info.role.strip()!r} "
-            f"x={x} y={y}"
+            f"bounds={info.x},{info.y},{info.width},{info.height}"
         )
-        return True
+        return False
 
     def trigger_action_by_path_async(
         self,
@@ -1205,6 +1545,7 @@ class JABOperator:
         timeout=None,
         require_showing=True,
         require_valid_bounds=True,
+        cleanup_blank_awt=False,
     ):
         self.ensure_started()
         result = self.find_context_by_path_once(
@@ -1226,7 +1567,12 @@ class JABOperator:
 
         def target():
             try:
-                ok = self.do_action(vm_id, context, action_name=action_name)
+                ok = self.do_action(
+                    vm_id,
+                    context,
+                    action_name=action_name,
+                    cleanup_blank_awt=cleanup_blank_awt,
+                )
                 log.info(
                     "JAB async path 动作返回: "
                     f"path={path} action={action_name or '<default>'} ok={ok} "
@@ -3004,7 +3350,7 @@ class JABOperator:
             for index in range(actions.actionsCount)
         ]
 
-    def do_action(self, vm_id, context, action_name=None):
+    def do_action(self, vm_id, context, action_name=None, cleanup_blank_awt=False):
         if not hasattr(self.dll, "getAccessibleActions") or not hasattr(
             self.dll, "doAccessibleActions"
         ):
@@ -3033,6 +3379,10 @@ class JABOperator:
             ctypes.byref(todo),
             ctypes.byref(failure),
         )
+        if ok:
+            time.sleep(0.2)
+            if cleanup_blank_awt:
+                self.hide_blank_awt_windows()
         log.debug(
             f"JAB 执行动作 {chosen_action!r}: ok={bool(ok)} failure={failure.value}"
         )

@@ -7,7 +7,7 @@
         "dll_path": "C:\\Users\\Queclink\\AppData\\Local\\UClient\\share\\java1.7.0_51-x64\\bin\\WindowsAccessBridge-64.dll",
         "startup_wait": 0.5,
         "search_timeout": 5.0,
-        "max_depth": 25,
+        "max_depth": 50,
         "max_children": 1000,
         "menu_wait": 0.5,
         "amount_col": 4,
@@ -59,7 +59,7 @@
             "name": "查询",
             "role": "push button",
             "action": "单击",
-            "click_mode": "bounds",
+            "click_mode": "action",
             "window_title": "",
             "window_class": "SunAwtCanvas",
             "key": "f3",
@@ -121,6 +121,7 @@
         ]
     },
     "receipt_entry": {
+        "schema_version": 2,
         "state_label": "收款单录入",
         "excel": {
             "path": "C:\\Users\\Queclink\\Downloads\\📊Pending Order & Credit Management_💸Payments来款通知.xlsx",
@@ -156,7 +157,7 @@
                     "finance_org": {
                         "label": "收款财务组织",
                         "operator": "等于",
-                        "text_path": "0.0.1.0.1.0.0.1.0.0.0.0.0.1.0.1.1.2.0.0.0.0"
+                        "timeout": 2.0
                     },
                     "document_date": {
                         "label": "单据日期",
@@ -185,9 +186,23 @@
             "result_column_indexes": {
                 "document_no": 0,
                 "document_date": 1,
-                "customer": 2,
-                "original_amount": 7,
-                "payer_name": 2
+                "customer": 4,
+                "original_amount": 6,
+                "payer_name": 4
+            },
+            "page_guard": {
+                "enabled": true,
+                "state_label_timeout": 1.5,
+                "state_label_require_showing": true,
+                "visible_only": true
+            },
+            "result_guard": {
+                "enabled": true,
+                "document_type_column": 2,
+                "document_type": "收款单",
+                "name_column_must_not_equal_document_type": true,
+                "blocked_keywords": [],
+                "max_samples": 20
             },
             "pagination": {
                 "page_size": 500,
@@ -205,7 +220,6 @@
                 "stability_interval": 0.5,
                 "stability_required": 2,
                 "next_action_timeout": 5.0,
-                "next_bounds_timeout": 5.0,
                 "wait_after_next": 0.5
             }
         },
@@ -261,60 +275,260 @@
                 "short_name": "布谷"
             }
         ],
+        "banks": [
+            {
+                "id": "citi",
+                "name": "花旗银行",
+                "aliases": [
+                    "花旗"
+                ],
+                "enabled": true
+            },
+            {
+                "id": "bcm",
+                "name": "交通银行",
+                "aliases": [
+                    "交行"
+                ],
+                "enabled": true
+            },
+            {
+                "id": "spdb",
+                "name": "浦发银行",
+                "aliases": [
+                    "浦发"
+                ],
+                "enabled": true
+            },
+            {
+                "id": "boc",
+                "name": "中国银行",
+                "aliases": [
+                    "中行"
+                ],
+                "enabled": true
+            },
+            {
+                "id": "paypal",
+                "name": "PayPal",
+                "aliases": [
+                    "Paypal"
+                ],
+                "enabled": true
+            },
+            {
+                "id": "cmb",
+                "name": "招商银行",
+                "aliases": [
+                    "招行"
+                ],
+                "enabled": true
+            },
+            {
+                "id": "bugu",
+                "name": "布谷账户",
+                "aliases": [
+                    "布谷"
+                ],
+                "enabled": true
+            }
+        ],
+        "detail_entry_policy": {
+            "main_line_order": [
+                "business_type",
+                "currency",
+                "account",
+                "subject",
+                "amount",
+                "settlement"
+            ],
+            "fee_line_order": [
+                "business_type",
+                "subject",
+                "amount",
+                "settlement"
+            ],
+            "fee_add_row_hotkey": "ctrl+i",
+            "fee_clear_account": true,
+            "extra_blank_row_delete_hotkey": "ctrl+d"
+        },
         "accounts": [
             {
+                "id": "a001_citi_main",
+                "enabled": true,
                 "organization_code": "A001",
                 "organization_short_name": "移为",
+                "bank_id": "citi",
+                "display_name": "移为-大陆花旗",
                 "account_label": "大陆花旗",
-                "account_no": "1783854003"
+                "account_no": "1783854003",
+                "excel_bank_aliases": [
+                    "大陆花旗"
+                ],
+                "entry_policy": {
+                    "account_input": "detail_first",
+                    "success_rule": "non_empty",
+                    "fallback_reference": true
+                }
             },
             {
+                "id": "a001_bcm_main",
+                "enabled": true,
                 "organization_code": "A001",
                 "organization_short_name": "移为",
+                "bank_id": "bcm",
+                "display_name": "移为-大陆交行",
                 "account_label": "大陆交行",
-                "account_no": "FTE310066674143603000377"
+                "account_no": "FTE310066674143603000377",
+                "excel_bank_aliases": [
+                    "大陆交行"
+                ],
+                "entry_policy": {
+                    "account_input": "detail_first",
+                    "success_rule": "non_empty",
+                    "fallback_reference": true
+                }
             },
             {
+                "id": "a001_spdb_main",
+                "enabled": true,
                 "organization_code": "A001",
                 "organization_short_name": "移为",
+                "bank_id": "spdb",
+                "display_name": "移为-大陆浦发",
                 "account_label": "大陆浦发",
-                "account_no": "97460154740002297"
+                "account_no": "97460154740002297",
+                "excel_bank_aliases": [
+                    "大陆浦发"
+                ],
+                "entry_policy": {
+                    "account_input": "detail_first",
+                    "success_rule": "non_empty",
+                    "fallback_reference": true
+                }
             },
             {
+                "id": "a001_boc_main",
+                "enabled": true,
                 "organization_code": "A001",
                 "organization_short_name": "移为",
+                "bank_id": "boc",
+                "display_name": "移为-大陆中行",
                 "account_label": "大陆中行",
-                "account_no": "446881174884"
+                "account_no": "446881174884",
+                "excel_bank_aliases": [
+                    "大陆中行"
+                ],
+                "entry_policy": {
+                    "account_input": "detail_first",
+                    "success_rule": "non_empty",
+                    "fallback_reference": true
+                }
             },
             {
+                "id": "a001_paypal",
+                "enabled": true,
                 "organization_code": "A001",
                 "organization_short_name": "移为",
+                "bank_id": "paypal",
+                "display_name": "移为-PayPal",
                 "account_label": "PayPal",
-                "account_no": "paypal"
+                "account_no": "paypal",
+                "excel_bank_aliases": [
+                    "PayPal",
+                    "Paypal"
+                ],
+                "entry_policy": {
+                    "account_input": "detail_first",
+                    "success_rule": "non_empty",
+                    "fallback_reference": false
+                }
             },
             {
+                "id": "a001_cmb_main",
+                "enabled": true,
                 "organization_code": "A001",
                 "organization_short_name": "移为",
+                "bank_id": "cmb",
+                "display_name": "移为-招行",
                 "account_label": "招行",
-                "account_no": "FTE1219165931831"
+                "account_no": "FTE1219165931831",
+                "excel_bank_aliases": [
+                    "招行"
+                ],
+                "nc_candidates_by_currency": {
+                    "人民币": [
+                        "FTE1219165931831RMB",
+                        "FTE1219165931831CNY",
+                        "FTE1219165931831"
+                    ],
+                    "美元": [
+                        "FTE1219165931831USD",
+                        "FTE1219165931831"
+                    ],
+                    "*": [
+                        "FTE1219165931831"
+                    ]
+                },
+                "entry_policy": {
+                    "account_input": "detail_first",
+                    "success_rule": "non_empty",
+                    "fallback_reference": true
+                }
             },
             {
+                "id": "a003_cmb_main",
+                "enabled": true,
                 "organization_code": "A003",
                 "organization_short_name": "移航",
+                "bank_id": "cmb",
+                "display_name": "移航-招行",
                 "account_label": "移航招行",
-                "account_no": "755927177210901"
+                "account_no": "755927177210901",
+                "excel_bank_aliases": [
+                    "移航招行"
+                ],
+                "entry_policy": {
+                    "account_input": "detail_first",
+                    "success_rule": "non_empty",
+                    "fallback_reference": true
+                }
             },
             {
+                "id": "a006_citi_hk",
+                "enabled": true,
                 "organization_code": "A006",
                 "organization_short_name": "移为香港",
+                "bank_id": "citi",
+                "display_name": "移为香港-香港花旗",
                 "account_label": "香港花旗",
-                "account_no": "1778667904"
+                "account_no": "1778667904",
+                "excel_bank_aliases": [
+                    "香港花旗"
+                ],
+                "entry_policy": {
+                    "account_input": "detail_first",
+                    "success_rule": "non_empty",
+                    "fallback_reference": true
+                }
             },
             {
+                "id": "a011_bugu_main",
+                "enabled": true,
                 "organization_code": "A011",
                 "organization_short_name": "布谷",
+                "bank_id": "bugu",
+                "display_name": "布谷-布谷",
                 "account_label": "布谷",
-                "account_no": "121985369310088"
+                "account_no": "121985369310088",
+                "excel_bank_aliases": [
+                    "布谷"
+                ],
+                "entry_policy": {
+                    "account_input": "detail_first",
+                    "success_rule": "non_empty",
+                    "fallback_reference": true
+                }
             }
         ]
     }

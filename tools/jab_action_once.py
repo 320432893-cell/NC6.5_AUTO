@@ -34,11 +34,26 @@ def build_parser():
         "--click-mode",
         choices=("action", "bounds"),
         default="action",
-        help="Use JAB AccessibleAction or click the JAB-reported control bounds.",
+        help="Use JAB AccessibleAction. bounds is kept only for compatibility and is refused by core JAB code.",
     )
     parser.add_argument("--wait", type=float, default=0.0)
     parser.add_argument("--timeout", type=float, default=3.0)
     parser.add_argument("--require-showing", action="store_true")
+    parser.add_argument(
+        "--allow-invalid-bounds",
+        action="store_true",
+        help="Allow JAB actions/text writes when NC reports off-screen bounds.",
+    )
+    parser.add_argument(
+        "--cleanup-blank-awt",
+        action="store_true",
+        help="Explicitly run guarded hidden AWT residue cleanup after the action.",
+    )
+    parser.add_argument(
+        "--no-cleanup-blank-awt",
+        action="store_true",
+        help="Deprecated no-op; cleanup is disabled by default.",
+    )
     return parser
 
 
@@ -87,6 +102,7 @@ def main():
                 wait=args.wait,
                 timeout=args.timeout,
                 require_showing=args.require_showing,
+                require_valid_bounds=not args.allow_invalid_bounds,
             )
         else:
             ok = jab.do_action_by_path(
@@ -100,6 +116,8 @@ def main():
                 wait=args.wait,
                 timeout=args.timeout,
                 require_showing=args.require_showing,
+                require_valid_bounds=not args.allow_invalid_bounds,
+                cleanup_blank_awt=args.cleanup_blank_awt,
             )
         print(f"ok={ok}")
         return 0 if ok else 1

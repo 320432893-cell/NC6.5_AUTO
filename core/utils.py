@@ -1,8 +1,11 @@
 import json
 
-import keyboard
-
 from core.logger import log
+
+try:
+    import keyboard
+except ModuleNotFoundError:
+    keyboard = None
 
 
 def load_config(path="config.json"):
@@ -13,6 +16,8 @@ def load_config(path="config.json"):
 
 
 def check_abort():
+    if keyboard is None:
+        return
     if keyboard.is_pressed("space"):
         log.warning("用户按下空格，脚本紧急停止")
         raise SystemExit("用户紧急停止")

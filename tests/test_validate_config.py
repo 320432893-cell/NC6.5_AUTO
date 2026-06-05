@@ -92,7 +92,7 @@ def test_validate_receipt_entry_accepts_account_mapping():
                     "finance_org": {
                         "label": "收款财务组织",
                         "operator": "等于",
-                        "text_path": "0.0.0",
+                        "timeout": 2.0,
                     },
                     "document_date": {
                         "label": "单据日期",
@@ -110,9 +110,9 @@ def test_validate_receipt_entry_accepts_account_mapping():
             "result_column_indexes": {
                 "document_no": 0,
                 "document_date": 1,
-                "customer": 2,
-                "original_amount": 7,
-                "payer_name": 2,
+                "customer": 4,
+                "original_amount": 6,
+                "payer_name": 4,
             },
         },
         "candidate_check": {
@@ -140,7 +140,148 @@ def test_validate_receipt_entry_accepts_account_mapping():
     assert validate_config(config) == []
 
 
+def test_validate_receipt_entry_accepts_extensible_bank_account_schema():
+    config = base_config()
+    config["receipt_entry"] = {
+        "schema_version": 2,
+        "state_label": "收款单录入",
+        "finance_organizations": [
+            {
+                "code": "A001",
+                "name": "上海移为通信技术股份有限公司",
+                "short_name": "移为",
+            },
+        ],
+        "banks": [
+            {"id": "cmb", "name": "招商银行", "aliases": ["招行"], "enabled": True},
+        ],
+        "detail_entry_policy": {
+            "main_line_order": [
+                "business_type",
+                "currency",
+                "account",
+                "subject",
+                "amount",
+                "settlement",
+            ],
+            "fee_line_order": ["business_type", "subject", "amount", "settlement"],
+            "fee_add_row_hotkey": "ctrl+i",
+            "fee_clear_account": True,
+            "extra_blank_row_delete_hotkey": "ctrl+d",
+        },
+        "accounts": [
+            {
+                "id": "cmb_a001",
+                "enabled": True,
+                "organization_code": "A001",
+                "organization_short_name": "移为",
+                "bank_id": "cmb",
+                "display_name": "移为-招行",
+                "account_label": "大陆招行",
+                "account_no": "FTE1219165931831",
+                "excel_bank_aliases": ["招商"],
+                "nc_candidates_by_currency": {
+                    "人民币": ["FTE1219165931831RMB", "FTE1219165931831"],
+                    "美元": ["FTE1219165931831USD", "FTE1219165931831"],
+                },
+                "entry_policy": {
+                    "account_input": "detail_first",
+                    "success_rule": "non_empty",
+                    "fallback_reference": True,
+                },
+            },
+        ],
+    }
+
+    assert validate_config(config) == []
+
+
+def test_validate_receipt_entry_rejects_conflicting_account_aliases():
+    config = base_config()
+    config["receipt_entry"] = {
+        "state_label": "收款单录入",
+        "finance_organizations": [
+            {
+                "code": "A001",
+                "name": "上海移为通信技术股份有限公司",
+                "short_name": "移为",
+            },
+        ],
+        "accounts": [
+            {
+                "id": "first",
+                "organization_code": "A001",
+                "organization_short_name": "移为",
+                "account_label": "招行",
+                "account_no": "1",
+            },
+            {
+                "id": "second",
+                "organization_code": "A001",
+                "organization_short_name": "移为",
+                "account_label": "招商银行",
+                "account_no": "2",
+                "excel_bank_aliases": ["招行"],
+            },
+        ],
+    }
+
+    assert validate_config(config) == [
+        "receipt_entry.accounts[1] lookup label '招行' conflicts with account 'first'"
+    ]
+
+
 def test_validate_receipt_entry_rejects_one_based_nc_amount_column():
+    config = base_config()
+    config["receipt_entry"] = {
+        "state_label": "收款单录入",
+        "query": {
+            "date_from": "2026-01-01",
+            "date_to": "{today}",
+            "finance_org_field": "收款财务组织",
+            "finance_org_operator": "等于",
+            "document_date_field": "单据日期",
+            "document_date_operator": "介于",
+            "jab": {
+                "dialog_title": "查询条件",
+                "dialog_class": "SunAwtDialog",
+                "confirm_button_path": "0.0.1.0.2.1.0",
+                "fields": {
+                    "finance_org": {
+                        "label": "收款财务组织",
+                        "operator": "等于",
+                    },
+                    "document_date": {
+                        "label": "单据日期",
+                        "operator": "介于",
+                        "from_text_path": "0.0.1",
+                        "to_text_path": "0.0.2",
+                    },
+                },
+            },
+            "result_columns": {
+                "document_date": "单据日期",
+                "original_amount": "原币金额",
+                "customer": "客户",
+            },
+            "result_column_indexes": {
+                "document_no": 0,
+                "document_date": 1,
+                "customer": 2,
+                "original_amount": 8,
+                "payer_name": 2,
+            },
+        },
+    }
+
+    assert (
+        "receipt_entry.query.result_column_indexes.original_amount "
+        "uses NC/JAB zero-based indexes; observed receipt amount column "
+        "is 6, not Excel-style 8"
+    ) in validate_config(config)
+
+
+def test_validate_receipt_entry_rejects_finance_org_text_path():
     config = base_config()
     config["receipt_entry"] = {
         "state_label": "收款单录入",
@@ -174,56 +315,6 @@ def test_validate_receipt_entry_rejects_one_based_nc_amount_column():
                 "original_amount": "原币金额",
                 "customer": "客户",
             },
-            "result_column_indexes": {
-                "document_no": 0,
-                "document_date": 1,
-                "customer": 2,
-                "original_amount": 8,
-                "payer_name": 2,
-            },
-        },
-    }
-
-    assert (
-        "receipt_entry.query.result_column_indexes.original_amount "
-        "uses NC/JAB zero-based indexes; observed receipt amount column "
-        "is 7, not Excel-style 8"
-    ) in validate_config(config)
-
-
-def test_validate_receipt_entry_rejects_missing_jab_query_path():
-    config = base_config()
-    config["receipt_entry"] = {
-        "state_label": "收款单录入",
-        "query": {
-            "date_from": "2026-01-01",
-            "date_to": "{today}",
-            "finance_org_field": "收款财务组织",
-            "finance_org_operator": "等于",
-            "document_date_field": "单据日期",
-            "document_date_operator": "介于",
-            "jab": {
-                "dialog_title": "查询条件",
-                "dialog_class": "SunAwtDialog",
-                "confirm_button_path": "0.0.1.0.2.1.0",
-                "fields": {
-                    "finance_org": {
-                        "label": "收款财务组织",
-                        "operator": "等于",
-                    },
-                    "document_date": {
-                        "label": "单据日期",
-                        "operator": "介于",
-                        "from_text_path": "0.0.1",
-                        "to_text_path": "0.0.2",
-                    },
-                },
-            },
-            "result_columns": {
-                "document_date": "单据日期",
-                "original_amount": "原币金额",
-                "customer": "客户",
-            },
         },
         "finance_organizations": [
             {
@@ -243,8 +334,8 @@ def test_validate_receipt_entry_rejects_missing_jab_query_path():
     }
 
     assert (
-        "receipt_entry.query.jab.fields.finance_org.text_path is required"
-        in validate_config(config)
+        "receipt_entry.query.jab.fields.finance_org.text_path "
+        "is not allowed; use label-based input" in validate_config(config)
     )
 
 

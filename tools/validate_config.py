@@ -9,6 +9,8 @@ SAVE_TRIGGERS = {"jab_button", "hotkey"}
 HOTKEY_ACTIVATE_POLICIES = {"always", "first", "foreground_guard"}
 DUPE_MATCH_POLICIES = {"stop", "skip"}
 OPEN_QUERY_METHODS = {"hotkey", "jab_action"}
+ACCOUNT_INPUT_STRATEGIES = {"detail_first", "reference_first"}
+ACCOUNT_SUCCESS_RULES = {"non_empty", "exact_or_candidate"}
 
 
 def load_json(path):
@@ -71,6 +73,8 @@ def validate_config(config):
         _require(open_query, "key", str, errors, prefix="open_query")
         _require(open_query, "dialog_title", str, errors, prefix="open_query")
         _require(open_query, "dialog_class", str, errors, prefix="open_query")
+        if open_query.get("click_mode") == "bounds":
+            errors.append("open_query.click_mode=bounds is not allowed")
         for key in ("timeout", "activate_timeout", "process_timeout"):
             _non_negative_number(open_query, key, errors, prefix="open_query")
 
@@ -102,6 +106,8 @@ def _validate_receipt_entry(receipt_cfg, errors):
         return
 
     _require(receipt_cfg, "state_label", str, errors, prefix="receipt_entry")
+    if "schema_version" in receipt_cfg:
+        _positive_int(receipt_cfg, "schema_version", errors, prefix="receipt_entry")
     excel_cfg = receipt_cfg.get("excel")
     if excel_cfg is not None:
         _validate_receipt_excel(excel_cfg, errors)
@@ -118,7 +124,13 @@ def _validate_receipt_entry(receipt_cfg, errors):
         errors,
         prefix="receipt_entry",
     )
+    banks = receipt_cfg.get("banks")
+    if banks is not None and not isinstance(banks, list):
+        errors.append("receipt_entry.banks must be a list")
     accounts = _require(receipt_cfg, "accounts", list, errors, prefix="receipt_entry")
+    detail_entry_policy = receipt_cfg.get("detail_entry_policy")
+    if detail_entry_policy is not None:
+        _validate_receipt_detail_entry_policy(detail_entry_policy, errors)
 
     org_codes = set()
     org_short_names = {}
@@ -139,7 +151,29 @@ def _validate_receipt_entry(receipt_cfg, errors):
                 org_codes.add(code)
                 org_short_names[code] = short_name
 
+    bank_ids = set()
+    if isinstance(banks, list):
+        for index, bank in enumerate(banks):
+            prefix = f"receipt_entry.banks[{index}]"
+            if not isinstance(bank, dict):
+                errors.append(f"{prefix} must be an object")
+                continue
+            bank_id = _require_non_empty_str(bank, "id", errors, prefix=prefix)
+            _require_non_empty_str(bank, "name", errors, prefix=prefix)
+            aliases = bank.get("aliases", [])
+            if aliases is not None and not isinstance(aliases, list):
+                errors.append(f"{prefix}.aliases must be a list")
+                aliases = []
+            if "enabled" in bank and not isinstance(bank.get("enabled"), bool):
+                errors.append(f"{prefix}.enabled must be bool")
+            if bank_id:
+                if bank_id in bank_ids:
+                    errors.append(f"{prefix}.id must be unique, got {bank_id!r}")
+                bank_ids.add(bank_id)
+
     account_keys = set()
+    account_ids = set()
+    account_lookup_owners = {}
     if isinstance(accounts, list):
         for index, account in enumerate(accounts):
             prefix = f"receipt_entry.accounts[{index}]"
@@ -152,12 +186,44 @@ def _validate_receipt_entry(receipt_cfg, errors):
             org_short_name = _require_non_empty_str(
                 account, "organization_short_name", errors, prefix=prefix
             )
+            account_id = account.get("id")
+            if account_id is not None:
+                account_id = _require_non_empty_str(
+                    account, "id", errors, prefix=prefix
+                )
             account_label = _require_non_empty_str(
                 account, "account_label", errors, prefix=prefix
             )
             account_no = _require_non_empty_str(
                 account, "account_no", errors, prefix=prefix
             )
+            bank_id = account.get("bank_id")
+            if bank_id is not None:
+                bank_id = _require_non_empty_str(
+                    account, "bank_id", errors, prefix=prefix
+                )
+                if bank_id and bank_id not in bank_ids:
+                    errors.append(
+                        f"{prefix}.bank_id must reference receipt_entry.banks, got {bank_id!r}"
+                    )
+            for list_key in ("aliases", "excel_bank_aliases"):
+                values = account.get(list_key, [])
+                if values is not None and not isinstance(values, list):
+                    errors.append(f"{prefix}.{list_key} must be a list")
+                    continue
+                for item_index, item in enumerate(values or []):
+                    if not isinstance(item, str) or not item.strip():
+                        errors.append(
+                            f"{prefix}.{list_key}[{item_index}] must be a non-empty string"
+                        )
+            if "enabled" in account and not isinstance(account.get("enabled"), bool):
+                errors.append(f"{prefix}.enabled must be bool")
+            candidate_map = account.get("nc_candidates_by_currency")
+            if candidate_map is not None:
+                _validate_candidate_map(candidate_map, errors, prefix)
+            entry_policy = account.get("entry_policy")
+            if entry_policy is not None:
+                _validate_account_entry_policy(entry_policy, errors, prefix)
             if org_code and org_code not in org_codes:
                 errors.append(
                     f"{prefix}.organization_code must reference finance_organizations, "
@@ -176,6 +242,92 @@ def _validate_receipt_entry(receipt_cfg, errors):
                     f"{org_code!r}/{account_label!r}/{account_no!r}"
                 )
             account_keys.add(key)
+            if account_id:
+                if account_id in account_ids:
+                    errors.append(f"{prefix}.id must be unique, got {account_id!r}")
+                account_ids.add(account_id)
+
+            lookup_labels = [account_label]
+            lookup_labels.extend(account.get("aliases") or [])
+            lookup_labels.extend(account.get("excel_bank_aliases") or [])
+            owner = account_id or f"{org_code}/{account_label}/{account_no}"
+            for label in lookup_labels:
+                lookup_key = _receipt_lookup_key(label)
+                if not lookup_key:
+                    continue
+                previous = account_lookup_owners.get(lookup_key)
+                if previous and previous != owner:
+                    errors.append(
+                        f"{prefix} lookup label {label!r} conflicts with account {previous!r}"
+                    )
+                account_lookup_owners[lookup_key] = owner
+
+
+def _validate_candidate_map(candidate_map, errors, prefix):
+    if not isinstance(candidate_map, dict):
+        errors.append(f"{prefix}.nc_candidates_by_currency must be an object")
+        return
+    for currency, candidates in candidate_map.items():
+        if not isinstance(currency, str) or not currency.strip():
+            errors.append(
+                f"{prefix}.nc_candidates_by_currency key must be non-empty string"
+            )
+        if not isinstance(candidates, list) or not candidates:
+            errors.append(
+                f"{prefix}.nc_candidates_by_currency[{currency!r}] must be a non-empty list"
+            )
+            continue
+        for index, candidate in enumerate(candidates):
+            if not isinstance(candidate, str) or not candidate.strip():
+                errors.append(
+                    f"{prefix}.nc_candidates_by_currency[{currency!r}][{index}] "
+                    "must be a non-empty string"
+                )
+
+
+def _validate_account_entry_policy(entry_policy, errors, prefix):
+    if not isinstance(entry_policy, dict):
+        errors.append(f"{prefix}.entry_policy must be an object")
+        return
+    _optional_enum(
+        entry_policy,
+        "account_input",
+        ACCOUNT_INPUT_STRATEGIES,
+        errors,
+        prefix=f"{prefix}.entry_policy",
+    )
+    _optional_enum(
+        entry_policy,
+        "success_rule",
+        ACCOUNT_SUCCESS_RULES,
+        errors,
+        prefix=f"{prefix}.entry_policy",
+    )
+    if "fallback_reference" in entry_policy and not isinstance(
+        entry_policy.get("fallback_reference"), bool
+    ):
+        errors.append(f"{prefix}.entry_policy.fallback_reference must be bool")
+
+
+def _validate_receipt_detail_entry_policy(policy, errors):
+    prefix = "receipt_entry.detail_entry_policy"
+    if not isinstance(policy, dict):
+        errors.append(f"{prefix} must be an object")
+        return
+    for key in ("main_line_order", "fee_line_order"):
+        if key in policy:
+            value = policy.get(key)
+            if not isinstance(value, list) or not all(
+                isinstance(item, str) and item.strip() for item in value
+            ):
+                errors.append(f"{prefix}.{key} must be a list of non-empty strings")
+    for key in ("fee_add_row_hotkey", "extra_blank_row_delete_hotkey"):
+        if key in policy:
+            _require_non_empty_str(policy, key, errors, prefix=prefix)
+    if "fee_clear_account" in policy and not isinstance(
+        policy.get("fee_clear_account"), bool
+    ):
+        errors.append(f"{prefix}.fee_clear_account must be bool")
 
 
 def _validate_receipt_excel(excel_cfg, errors):
@@ -261,8 +413,16 @@ def _validate_receipt_query(query_cfg, errors):
                 errors.append(
                     "receipt_entry.query.result_column_indexes.original_amount "
                     "uses NC/JAB zero-based indexes; observed receipt amount column "
-                    "is 7, not Excel-style 8"
+                    "is 6, not Excel-style 8"
                 )
+
+    page_guard = query_cfg.get("page_guard")
+    if page_guard is not None:
+        _validate_receipt_page_guard(page_guard, errors)
+
+    result_guard = query_cfg.get("result_guard")
+    if result_guard is not None:
+        _validate_receipt_result_guard(result_guard, errors)
 
     pagination = query_cfg.get("pagination")
     if pagination is not None:
@@ -293,11 +453,14 @@ def _validate_receipt_query(query_cfg, errors):
                 "stability_timeout",
                 "stability_interval",
                 "next_action_timeout",
-                "next_bounds_timeout",
                 "wait_after_next",
             ):
                 _non_negative_number(
                     pagination, key, errors, prefix="receipt_entry.query.pagination"
+                )
+            if "next_bounds_timeout" in pagination:
+                errors.append(
+                    "receipt_entry.query.pagination.next_bounds_timeout is not allowed"
                 )
             _positive_int(
                 pagination,
@@ -315,6 +478,80 @@ def _validate_receipt_query(query_cfg, errors):
     jab_cfg = query_cfg.get("jab")
     if jab_cfg is not None:
         _validate_receipt_query_jab(jab_cfg, errors)
+
+
+def _validate_receipt_page_guard(page_guard, errors):
+    if not isinstance(page_guard, dict):
+        errors.append("receipt_entry.query.page_guard must be an object")
+        return
+    if "enabled" in page_guard and not isinstance(page_guard.get("enabled"), bool):
+        errors.append("receipt_entry.query.page_guard.enabled must be bool")
+    if "state_label_timeout" in page_guard:
+        _non_negative_number(
+            page_guard,
+            "state_label_timeout",
+            errors,
+            prefix="receipt_entry.query.page_guard",
+        )
+    if "state_label_require_showing" in page_guard and not isinstance(
+        page_guard.get("state_label_require_showing"), bool
+    ):
+        errors.append(
+            "receipt_entry.query.page_guard.state_label_require_showing must be bool"
+        )
+    if "visible_only" in page_guard and not isinstance(
+        page_guard.get("visible_only"), bool
+    ):
+        errors.append("receipt_entry.query.page_guard.visible_only must be bool")
+
+
+def _validate_receipt_result_guard(result_guard, errors):
+    if not isinstance(result_guard, dict):
+        errors.append("receipt_entry.query.result_guard must be an object")
+        return
+    if "enabled" in result_guard and not isinstance(result_guard.get("enabled"), bool):
+        errors.append("receipt_entry.query.result_guard.enabled must be bool")
+    if "document_type_column" in result_guard:
+        _non_negative_int(
+            result_guard,
+            "document_type_column",
+            errors,
+            prefix="receipt_entry.query.result_guard",
+        )
+    if "document_type" in result_guard:
+        _require_non_empty_str(
+            result_guard,
+            "document_type",
+            errors,
+            prefix="receipt_entry.query.result_guard",
+        )
+    if "max_samples" in result_guard:
+        _positive_int(
+            result_guard,
+            "max_samples",
+            errors,
+            prefix="receipt_entry.query.result_guard",
+        )
+    if "name_column_must_not_equal_document_type" in result_guard and not isinstance(
+        result_guard.get("name_column_must_not_equal_document_type"), bool
+    ):
+        errors.append(
+            "receipt_entry.query.result_guard."
+            "name_column_must_not_equal_document_type must be bool"
+        )
+    blocked_keywords = result_guard.get("blocked_keywords")
+    if blocked_keywords is not None:
+        if not isinstance(blocked_keywords, list):
+            errors.append(
+                "receipt_entry.query.result_guard.blocked_keywords must be a list"
+            )
+        else:
+            for index, value in enumerate(blocked_keywords):
+                if not isinstance(value, str) or not value.strip():
+                    errors.append(
+                        "receipt_entry.query.result_guard.blocked_keywords"
+                        f"[{index}] must be a non-empty string"
+                    )
 
 
 def _validate_receipt_query_jab(jab_cfg, errors):
@@ -349,6 +586,7 @@ def _validate_receipt_query_jab(jab_cfg, errors):
                 errors,
                 prefix=f"receipt_entry.query.jab.fields.{key}",
                 range_field=key == "document_date",
+                near_label_field=key == "finance_org",
             )
 
     for key in ("original_amount", "customer"):
@@ -365,14 +603,25 @@ def _validate_receipt_query_jab(jab_cfg, errors):
             )
 
 
-def _validate_receipt_query_jab_field(field, errors, prefix, range_field=False):
+def _validate_receipt_query_jab_field(
+    field, errors, prefix, range_field=False, near_label_field=False
+):
     for key in ("label", "operator"):
         _require_non_empty_str(field, key, errors, prefix=prefix)
-    if range_field:
+    if near_label_field:
+        if "text_path" in field:
+            errors.append(f"{prefix}.text_path is not allowed; use label-based input")
+    elif range_field:
         for key in ("from_text_path", "to_text_path"):
             _require_non_empty_str(field, key, errors, prefix=prefix)
     else:
         _require_non_empty_str(field, "text_path", errors, prefix=prefix)
+    for key in ("focus_before_set", "focus_click_mode", "focus_wait", "focus_timeout"):
+        if key in field:
+            errors.append(f"{prefix}.{key} is not allowed")
+    for key in ("timeout",):
+        if key in field:
+            _non_negative_number(field, key, errors, prefix=prefix)
 
 
 def _validate_receipt_candidate_check(candidate_cfg, errors):
@@ -405,6 +654,10 @@ def _require(mapping, key, expected_type, errors, prefix=""):
         errors.append(f"{label} must be {expected_type.__name__}")
         return None
     return value
+
+
+def _receipt_lookup_key(value):
+    return "".join(str(value or "").strip().casefold().split())
 
 
 def _require_non_empty_str(mapping, key, errors, prefix=""):

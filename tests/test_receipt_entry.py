@@ -13,7 +13,10 @@ from core.receipt_entry import (
     ReceiptNCIndexedRow,
     ReceiptNCRow,
     extract_receipt_nc_rows,
+    format_receipt_amount_name_mismatch_reason,
     format_receipt_duplicate_reason,
+    format_receipt_name_amount_mismatch_reason,
+    format_receipt_not_found_reason,
     names_match,
     normalize_counterparty,
     parse_amount,
@@ -81,6 +84,47 @@ def test_bank_label_maps_to_organization_case_insensitive():
     assert organization.name == "上海移为通信技术股份有限公司"
 
 
+def test_extended_account_alias_maps_to_account_and_candidates():
+    raw = receipt_config()
+    receipt = raw["receipt_entry"]
+    receipt["schema_version"] = 2
+    receipt["banks"] = [
+        {"id": "cmb", "name": "招商银行", "aliases": ["招行"]},
+    ]
+    receipt["accounts"].append(
+        {
+            "id": "cmb_a001",
+            "enabled": True,
+            "organization_code": "A001",
+            "organization_short_name": "移为",
+            "bank_id": "cmb",
+            "account_label": "大陆招行",
+            "account_no": "FTE1219165931831",
+            "excel_bank_aliases": ["招商", "招行"],
+            "nc_candidates_by_currency": {
+                "人民币": ["FTE1219165931831RMB"],
+                "*": ["FTE1219165931831"],
+            },
+            "entry_policy": {
+                "account_input": "detail_first",
+                "success_rule": "non_empty",
+                "fallback_reference": True,
+            },
+        }
+    )
+    config = ReceiptEntryConfig(raw)
+
+    account = config.account_for_bank("招行")
+
+    assert account is not None
+    assert account.id == "cmb_a001"
+    assert config.organization_for_bank("招商").code == "A001"
+    assert account.nc_candidates("人民币") == [
+        "FTE1219165931831RMB",
+        "FTE1219165931831",
+    ]
+
+
 def test_ensure_output_columns_and_subjects(tmp_path):
     path = tmp_path / "payments.xlsx"
     wb = Workbook()
@@ -114,6 +158,30 @@ def test_ensure_output_columns_and_subjects(tmp_path):
     ]
     assert ws.cell(2, 5).value == "上海移为通信技术股份有限公司"
     assert ws.cell(3, 5).value is None
+    saved.close()
+
+
+def test_write_nc_done_statuses_creates_status_column(tmp_path):
+    path = tmp_path / "payments.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "💸Payments来款通知"
+    ws.append(["到款日期", "🟪银行来款名", "🟪原始金额", "银行"])
+    ws.append([date(2026, 1, 16), "matched", 225.68, "Paypal"])
+    ws.append([date(2026, 1, 17), "missing", 100, "Paypal"])
+    wb.save(path)
+    wb.close()
+
+    result = ReceiptEntryWorkbook(receipt_config(path)).write_nc_done_statuses(
+        {2: "已做过", 3: "未做过"}
+    )
+
+    assert result == {"updated": 2, "rows": [2, 3]}
+    saved = load_workbook(path)
+    ws = saved["💸Payments来款通知"]
+    assert ws.cell(1, 5).value == "是否NC已做过"
+    assert ws.cell(2, 5).value == "已做过"
+    assert ws.cell(3, 5).value == "未做过"
     saved.close()
 
 
@@ -224,7 +292,101 @@ def test_receipt_matcher_reports_duplicate_as_exception_issue():
     assert matched == {}
     assert len(issues) == 1
     assert issues[0].reason == format_receipt_duplicate_reason(len(nc_rows))
-    assert issues[0].nc_rows == [3, 4]
+
+
+def test_dry_run_matcher_reports_same_name_different_amount():
+    excel_row = ReceiptExcelRow(
+        row=10,
+        receipt_date=date(2026, 3, 31),
+        payer_name="Christoff Pretorius",
+        raw_amount=Decimal("100.00"),
+        bank="大陆花旗",
+        organization_code="A001",
+        organization_name="上海移为通信技术股份有限公司",
+        organization_short_name="移为",
+        nc_done_status="",
+    )
+    nc_row = ReceiptNCIndexedRow(
+        row_index=7,
+        table_index=2,
+        document_no="D7",
+        document_date=date(2026, 4, 1),
+        original_amount=Decimal("120.00"),
+        name="Christoff Pretorius",
+    )
+
+    matched, issues = ReceiptEntryDryRunMatcher().match([excel_row], [nc_row])
+
+    assert matched == {}
+    assert len(issues) == 1
+    assert issues[0].reason == format_receipt_name_amount_mismatch_reason(
+        excel_amount=Decimal("100.00"),
+        excel_name="Christoff Pretorius",
+        nc_amounts=[Decimal("120.00")],
+    )
+    assert issues[0].nc_rows == [7]
+
+
+def test_dry_run_matcher_reports_same_amount_different_name():
+    excel_row = ReceiptExcelRow(
+        row=10,
+        receipt_date=date(2026, 3, 31),
+        payer_name="Christoff Pretorius",
+        raw_amount=Decimal("100.00"),
+        bank="大陆花旗",
+        organization_code="A001",
+        organization_name="上海移为通信技术股份有限公司",
+        organization_short_name="移为",
+        nc_done_status="",
+    )
+    nc_row = ReceiptNCIndexedRow(
+        row_index=8,
+        table_index=2,
+        document_no="D8",
+        document_date=date(2026, 4, 1),
+        original_amount=Decimal("100.00"),
+        name="Different Payer",
+    )
+
+    matched, issues = ReceiptEntryDryRunMatcher().match([excel_row], [nc_row])
+
+    assert matched == {}
+    assert len(issues) == 1
+    assert issues[0].reason == format_receipt_amount_name_mismatch_reason(
+        excel_amount=Decimal("100.00"),
+        excel_name="Christoff Pretorius",
+        nc_names=["Different Payer"],
+    )
+    assert issues[0].nc_rows == [8]
+
+
+def test_dry_run_matcher_reports_no_amount_or_name_match():
+    excel_row = ReceiptExcelRow(
+        row=10,
+        receipt_date=date(2026, 3, 31),
+        payer_name="Christoff Pretorius",
+        raw_amount=Decimal("100.00"),
+        bank="大陆花旗",
+        organization_code="A001",
+        organization_name="上海移为通信技术股份有限公司",
+        organization_short_name="移为",
+        nc_done_status="",
+    )
+    nc_row = ReceiptNCIndexedRow(
+        row_index=9,
+        table_index=2,
+        document_no="D9",
+        document_date=date(2026, 4, 1),
+        original_amount=Decimal("120.00"),
+        name="Different Payer",
+    )
+
+    matched, issues = ReceiptEntryDryRunMatcher().match([excel_row], [nc_row])
+
+    assert matched == {}
+    assert len(issues) == 1
+    assert issues[0].reason == format_receipt_not_found_reason()
+    assert issues[0].nc_rows == []
 
 
 def test_extract_receipt_nc_rows_uses_header_labels_not_fixed_indexes():

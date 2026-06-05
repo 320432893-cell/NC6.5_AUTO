@@ -20,11 +20,44 @@ class ReceiptOrganization:
 
 
 @dataclass(frozen=True)
+class ReceiptBank:
+    id: str
+    name: str
+    aliases: tuple[str, ...] = ()
+    enabled: bool = True
+
+
+@dataclass(frozen=True)
 class ReceiptAccount:
     organization_code: str
     organization_short_name: str
     account_label: str
     account_no: str
+    id: str = ""
+    bank_id: str = ""
+    display_name: str = ""
+    aliases: tuple[str, ...] = ()
+    excel_bank_aliases: tuple[str, ...] = ()
+    nc_candidates_by_currency: dict[str, tuple[str, ...]] | None = None
+    entry_policy: dict[str, object] | None = None
+    enabled: bool = True
+
+    def lookup_names(self):
+        names = [
+            self.account_label,
+            *self.aliases,
+            *self.excel_bank_aliases,
+        ]
+        return [name for name in names if str(name or "").strip()]
+
+    def nc_candidates(self, currency=None):
+        candidates: list[str] = []
+        if self.nc_candidates_by_currency:
+            if currency:
+                candidates.extend(self.nc_candidates_by_currency.get(currency, ()))
+            candidates.extend(self.nc_candidates_by_currency.get("*", ()))
+        candidates.append(self.account_no)
+        return list(dict.fromkeys(str(item).strip() for item in candidates if item))
 
 
 @dataclass(frozen=True)
@@ -76,8 +109,10 @@ class ReceiptEntryConfig:
     def __init__(self, config):
         receipt_cfg = config.get("receipt_entry") or {}
         self.receipt_cfg = receipt_cfg
+        self.schema_version = int(receipt_cfg.get("schema_version", 1))
         self.excel_cfg = receipt_cfg.get("excel") or {}
         self.candidate_cfg = receipt_cfg.get("candidate_check") or {}
+        self.detail_entry_policy = receipt_cfg.get("detail_entry_policy") or {}
         self.organizations = {
             item["code"]: ReceiptOrganization(
                 code=item["code"],
@@ -86,19 +121,46 @@ class ReceiptEntryConfig:
             )
             for item in receipt_cfg.get("finance_organizations", [])
         }
+        self.banks = {
+            item["id"]: ReceiptBank(
+                id=item["id"],
+                name=item["name"],
+                aliases=tuple(item.get("aliases") or ()),
+                enabled=bool(item.get("enabled", True)),
+            )
+            for item in receipt_cfg.get("banks", [])
+        }
         self.accounts = [
             ReceiptAccount(
                 organization_code=item["organization_code"],
                 organization_short_name=item["organization_short_name"],
                 account_label=item["account_label"],
                 account_no=item["account_no"],
+                id=item.get("id") or default_account_id(item),
+                bank_id=item.get("bank_id", ""),
+                display_name=item.get("display_name", ""),
+                aliases=tuple(item.get("aliases") or ()),
+                excel_bank_aliases=tuple(item.get("excel_bank_aliases") or ()),
+                nc_candidates_by_currency=normalize_candidate_map(
+                    item.get("nc_candidates_by_currency")
+                ),
+                entry_policy=item.get("entry_policy") or {},
+                enabled=bool(item.get("enabled", True)),
             )
             for item in receipt_cfg.get("accounts", [])
         ]
-        self.accounts_by_label = {
-            normalize_lookup_key(account.account_label): account
-            for account in self.accounts
-        }
+        self.accounts_by_label = self._build_account_lookup()
+
+    def _build_account_lookup(self):
+        result = {}
+        for account in self.accounts:
+            if not account.enabled:
+                continue
+            for name in account.lookup_names():
+                key = normalize_lookup_key(name)
+                if key:
+                    result[key] = account
+        return result
 
     @property
     def sheet_name(self):
@@ -176,10 +238,13 @@ class ReceiptEntryConfig:
         return {**default, **configured}
 
     def organization_for_bank(self, bank):
-        account = self.accounts_by_label.get(normalize_lookup_key(bank))
+        account = self.account_for_bank(bank)
         if not account:
             return None
         return self.organizations.get(account.organization_code)
+
+    def account_for_bank(self, bank):
+        return self.accounts_by_label.get(normalize_lookup_key(bank))
 
 
 class ReceiptEntryWorkbook:
@@ -213,6 +278,41 @@ class ReceiptEntryWorkbook:
                 ws.cell(row=row.row, column=org_col, value=row.organization_name)
             self._save_workbook(wb, "写入收款单主体预处理列")
             return rows, self.select_candidate_rows(rows, today=today), issues
+        except PermissionError as exc:
+            wb.close()
+            raise ExcelLockedError(
+                f"Excel 文件无法写入，可能正被 WPS/Excel 打开: path={self.excel_path}"
+            ) from exc
+
+    def write_nc_done_statuses(self, row_statuses):
+        updates = {
+            int(row): str(status)
+            for row, status in row_statuses.items()
+            if status is not None and str(status).strip()
+        }
+        if not updates:
+            return {"updated": 0, "rows": []}
+
+        wb = openpyxl.load_workbook(self.excel_path, read_only=False)
+        try:
+            ws = wb[self.config.sheet_name]
+            columns = self._read_header(ws)
+            columns = self._ensure_column(ws, columns, self.config.nc_done_column)
+            status_col = columns[self.config.nc_done_column]
+            invalid_rows = [
+                row
+                for row in updates
+                if row <= self.config.header_row or row > ws.max_row
+            ]
+            if invalid_rows:
+                wb.close()
+                raise WorkflowStateError(
+                    f"收款 Excel 状态写入行号无效: {sorted(invalid_rows)}"
+                )
+            for row, status in sorted(updates.items()):
+                ws.cell(row=row, column=status_col, value=status)
+            self._save_workbook(wb, "写入收款单NC状态")
+            return {"updated": len(updates), "rows": sorted(updates)}
         except PermissionError as exc:
             wb.close()
             raise ExcelLockedError(
@@ -335,21 +435,46 @@ class ReceiptEntryMatcher:
         matched = {}
         issues = []
         for excel_row in excel_rows:
+            amount_candidates = index.get(excel_row.raw_amount, [])
             candidates = [
                 nc_row
-                for nc_row in index.get(excel_row.raw_amount, [])
+                for nc_row in amount_candidates
                 if names_match(excel_row.payer_name, nc_row.customer)
             ]
             if len(candidates) == 1:
                 matched[excel_row.row] = candidates[0]
             else:
+                if candidates:
+                    reason = format_receipt_duplicate_reason(len(candidates))
+                    issue_rows = [row.row_index for row in candidates]
+                elif amount_candidates:
+                    reason = format_receipt_amount_name_mismatch_reason(
+                        excel_amount=excel_row.raw_amount,
+                        excel_name=excel_row.payer_name,
+                        nc_names=[row.customer for row in amount_candidates],
+                    )
+                    issue_rows = [row.row_index for row in amount_candidates]
+                else:
+                    name_candidates = [
+                        nc_row
+                        for nc_row in nc_rows
+                        if names_match(excel_row.payer_name, nc_row.customer)
+                    ]
+                    reason = (
+                        format_receipt_name_amount_mismatch_reason(
+                            excel_amount=excel_row.raw_amount,
+                            excel_name=excel_row.payer_name,
+                            nc_amounts=[row.original_amount for row in name_candidates],
+                        )
+                        if name_candidates
+                        else format_receipt_not_found_reason()
+                    )
+                    issue_rows = [row.row_index for row in name_candidates]
                 issues.append(
                     ReceiptMatchIssue(
                         excel_row=excel_row.row,
-                        reason="未找到"
-                        if not candidates
-                        else format_receipt_duplicate_reason(len(candidates)),
-                        nc_rows=[row.row_index for row in candidates],
+                        reason=reason,
+                        nc_rows=issue_rows,
                     )
                 )
         return matched, issues
@@ -365,21 +490,46 @@ class ReceiptEntryDryRunMatcher:
         matched = {}
         issues = []
         for excel_row in excel_rows:
+            amount_candidates = index.get(excel_row.raw_amount, [])
             candidates = [
                 nc_row
-                for nc_row in index.get(excel_row.raw_amount, [])
+                for nc_row in amount_candidates
                 if names_match(excel_row.payer_name, nc_row.name)
             ]
             if len(candidates) == 1:
                 matched[excel_row.row] = candidates[0]
             else:
+                if candidates:
+                    reason = format_receipt_duplicate_reason(len(candidates))
+                    issue_rows = [row.row_index for row in candidates]
+                elif amount_candidates:
+                    reason = format_receipt_amount_name_mismatch_reason(
+                        excel_amount=excel_row.raw_amount,
+                        excel_name=excel_row.payer_name,
+                        nc_names=[row.name for row in amount_candidates],
+                    )
+                    issue_rows = [row.row_index for row in amount_candidates]
+                else:
+                    name_candidates = [
+                        nc_row
+                        for nc_row in nc_rows
+                        if names_match(excel_row.payer_name, nc_row.name)
+                    ]
+                    reason = (
+                        format_receipt_name_amount_mismatch_reason(
+                            excel_amount=excel_row.raw_amount,
+                            excel_name=excel_row.payer_name,
+                            nc_amounts=[row.original_amount for row in name_candidates],
+                        )
+                        if name_candidates
+                        else format_receipt_not_found_reason()
+                    )
+                    issue_rows = [row.row_index for row in name_candidates]
                 issues.append(
                     ReceiptMatchIssue(
                         excel_row=excel_row.row,
-                        reason="未找到"
-                        if not candidates
-                        else format_receipt_duplicate_reason(len(candidates)),
-                        nc_rows=[row.row_index for row in candidates],
+                        reason=reason,
+                        nc_rows=issue_rows,
                     )
                 )
         return matched, issues
@@ -387,6 +537,51 @@ class ReceiptEntryDryRunMatcher:
 
 def format_receipt_duplicate_reason(count):
     return f"重复{count}条：名称和金额相同，需人工确认"
+
+
+def format_receipt_amount_name_mismatch_reason(
+    excel_amount=None, excel_name=None, nc_names=None
+):
+    if excel_amount is None and excel_name is None and not nc_names:
+        return "金额匹配但名称不一致，需人工确认"
+    return (
+        "金额匹配但名称不一致，需人工确认："
+        f"Excel金额={format_receipt_value(excel_amount)}；"
+        f"Excel对手方={format_receipt_value(excel_name)}；"
+        f"NC对手方={format_receipt_values(nc_names)}"
+    )
+
+
+def format_receipt_name_amount_mismatch_reason(
+    excel_amount=None, excel_name=None, nc_amounts=None
+):
+    if excel_amount is None and excel_name is None and not nc_amounts:
+        return "名称匹配但金额不一致，需人工确认"
+    return (
+        "名称匹配但金额不一致，需人工确认："
+        f"Excel对手方={format_receipt_value(excel_name)}；"
+        f"Excel金额={format_receipt_value(excel_amount)}；"
+        f"NC金额={format_receipt_values(nc_amounts)}"
+    )
+
+
+def format_receipt_not_found_reason():
+    return "金额和对手方均未匹配"
+
+
+def format_receipt_value(value):
+    text = str(value if value is not None else "").strip()
+    return text or "空"
+
+
+def format_receipt_values(values, limit=3):
+    items = [format_receipt_value(value) for value in values or []]
+    if not items:
+        return "空"
+    shown = items[:limit]
+    if len(items) > limit:
+        shown.append(f"...共{len(items)}个")
+    return "、".join(shown)
 
 
 class ReceiptNCResultExtractor:
@@ -609,6 +804,29 @@ def days_in_month(year, month):
 
 def normalize_lookup_key(value):
     return "".join(str(value or "").strip().casefold().split())
+
+
+def default_account_id(item):
+    raw = "_".join(
+        str(item.get(key) or "").strip()
+        for key in ("organization_code", "account_label", "account_no")
+    )
+    return normalize_lookup_key(raw) or "account"
+
+
+def normalize_candidate_map(value):
+    if not isinstance(value, dict):
+        return None
+    result = {}
+    for currency, candidates in value.items():
+        if isinstance(candidates, str):
+            items = [candidates]
+        else:
+            items = list(candidates or [])
+        result[str(currency)] = tuple(
+            str(item).strip() for item in items if str(item or "").strip()
+        )
+    return result
 
 
 def normalize_counterparty(value):

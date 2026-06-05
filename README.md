@@ -30,7 +30,7 @@
 - `core/nc_table_matcher.py`：NC 表格按金额、对手方、日期的匹配逻辑。
 - `core/receipt_entry.py`：收款单 Excel 预处理、主体映射和 NC 已做过匹配规则。
 - `core/errors.py`：NC workflow 领域异常，区分页面状态、表格匹配、JAB 控件、JAB 动作、Excel 写入锁和流程契约失败。
-- `core/jab_operator.py`：JAB 底层封装，负责读表、选行、按钮动作、F3/F5、关闭窗口、隐藏空白 AWT 小窗。
+- `core/jab_operator.py`：JAB 底层封装，负责读表、选行、按钮动作、F3/F5、关闭窗口、受保护的 AWT 残留清理。
 - `core/data_handler.py`：Excel 读取、拼接 key 解析、结果写回、拆分 key。
 - `config.json`：Excel 路径、JAB DLL、列位和查询切换配置。
 - `TODO_JAB_HANDOFF.md`：后续开发 TODO。
@@ -39,6 +39,8 @@
 辅助探测工具：
 
 - `tools/jab_probe.py`
+- `tools/receipt_body_table_locator.py`
+- `tools/receipt_reference_cell_probe.py`
 - `tools/query_jab.bat`
 - `tools/run_jab_probe.bat`
 - `tools/test_voucher_selection.py`
@@ -145,6 +147,52 @@ cd /mnt/h/python脚本/.venv/nc_auto_v2
 /mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_query_fill.py --org-code A001 --date-from 2026-03-31 --date-to 2026-05-31 --confirm --dry-run-match --max-rows 600 --max-cols 140
 ```
 
+收款单匹配结果写回 Excel；唯一匹配写 `已做过`。金额和对手方都没有命中时写 `金额和对手方均未匹配`；金额命中但名称不符、名称命中但金额不符会写明 Excel 值和 NC 候选值；重复命中按实际条数写 `重复N条：名称和金额相同，需人工确认`，重复行也会在 JSON 的 `duplicate_rows` 中报告：
+
+```bash
+/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_query_fill.py --org-code A001 --date-from 2026-03-31 --date-to 2026-05-31 --confirm --dry-run-match --write-back --max-rows 600 --max-cols 140
+```
+
+重跑并覆盖 Excel 已有 `是否NC已做过` 状态时，加 `--include-filled-status`：
+
+```bash
+/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_query_fill.py --org-code A001 --date-from 2026-03-31 --date-to 2026-05-31 --confirm --dry-run-match --write-back --include-filled-status --max-rows 600 --max-cols 140
+```
+
+写回前必须先确认当前 NC 页面是目标 `收款单录入`。工具会做页面和结果表守卫；如果结果表的匹配名称列疑似读成 `收款单` 单据类型列，会拒绝继续。
+
+`收款财务组织` 当前按字段 label 聚焦右侧输入框后直接写组织编码，例如 `A001`、`A006`。不要点输入框右侧未知按钮；不要为了提交该输入框额外按 Enter，除非现场已确认该主体必须这样做。写入是否有效以后置查询结果和 Excel 主体匹配数为准，不能只看 JAB 文本读回。
+
+## NC 现场操作纪律
+
+自动化和用户共用同一个桌面输入焦点。任何 `pyautogui.write`、`pyautogui.hotkey`、剪贴板粘贴、普通按键都可能打进用户聊天框或 VS Code。执行这类全局键盘输入前，必须先单独确认目标窗口是前台窗口；如果 `GetForegroundWindow()` 不是目标 hwnd，脚本必须停，不允许发送快捷键、账号或 Enter。
+
+默认录入路径必须优先走后台 JAB：`setTextContents`、JAB action、selection/table API 和 JAB 控件树读回。前台窗口只用于判断能不能发送全局键盘输入，不能用来否定已经由后台 JAB 写入并回显成功的业务状态。
+
+表头文本框默认只做后台写入并继续，不强求立刻变中文或解锁下一字段。`财务组织(O)` 写 `A001` 后，如果后台 description/text 仍能读到 `A001`，就先写 `客户`，用客户输入触发财务组织名称和后续表头控件树加载，再写 `单据日期`、`币种`；如果 NC 自行把描述纠正成 `上海移为通信技术股份有限公司`，只作为更强状态记录。不得因为前台仍是 VS Code 就否定后台写入成功。
+
+例外：`客户` 是保存前硬门槛，不能按普通表头字段软通过。2026-06-05 真实测试确认，客户 `YW03200` 曾出现 `setTextContents` 返回成功但页面仍为空；因此收款单自制保存流程必须在表头写完后和保存前分别确认【客户】非空。客户为空时必须停，不写明细、不发送 `Ctrl+S`。当前 T0 已加入后台写入失败后的受保护屏幕输入兜底：点击客户字段、全选、输入客户编码，再点击【单据日期】字段失焦提交并轮询非空；该最新版尚未完成现场跑通。
+
+NC 表头层级很深，JAB 默认搜索深度必须保持 `max_depth=50`。`25` 层只能看到 `客户收款单` 页签和浅层财务组织，搜不到 `客户`、`单据日期`、`币种`、`收款银行账户` 等真实表头 label，会造成误判。
+
+收款单页签路径里的 `.2/.3` 这类段位会随当前打开的 NC 界面数量变化；用户打开另一个界面后当前收款页可能从 `.2` 变成 `.3`。这不是业务状态，也不是失败原因，不能把固定页签索引当长期依据。路径只能作为现场短期定位，主逻辑必须先确认当前 `收款单录入 / 客户收款单` 语义，再在足够深度的子树里找字段。
+
+表头字段同样不能固定深层 path 作为主路径。当前实现应先按 label 在当前可见 `SunAwtCanvas` 里语义定位，固定 path 只作为兜底，并在输出里标明。看到 `fallback_path_used` 时只能说明这次现场兜底命中，不能把该 path 固化进正式流程。
+
+不要把“前台化、输入、等待结果”合成一个长命令。先做短前台检查，再执行用户已确认的动作。遇到遗留 `使用权参照`、NC 主窗口在屏幕外、`新增` 匹配到非主窗口、或任何状态污染时，只报告状态，不继续补救性点击或写字段。
+
+收款单自制录入当前已从 row 1424 阶段推进到明细/手续费 T0：`新增 -> 自制`、明细主行、手续费行、手续费账户清空、多余空行删除都已验证；真实 `Ctrl+S` 保存闭环尚未跑通。最新 blocker 是表头【客户】非空：客户后台写入和一次屏幕兜底均出现读回为空，代码已改为客户输入后点击【单据日期】失焦提交并轮询，但该版本还未现场重跑。没有明确允许时禁止保存、暂存。
+
+`新增 -> 自制` 的成功标准是上方 `保存(Ctrl+S)`、`暂存`、`取消(Ctrl+Q)` 三个按钮同时出现；只看到 JAB action 返回成功或菜单项被点击，不算进入自制录入态。25 列明细表只作为填明细前的单独校验，不作为开单成功条件。
+
+`tools/receipt_self_made_fill_trial.py` 默认只负责开单和表头阶段；账户参照打开后会停止，后续前台检查、`Alt+F` 搜索、等待结果、选择确定必须拆成独立动作。明细填入默认禁用，必须显式传 `--fill-detail` 才会尝试进入明细；即使显式填明细，默认也只允许后台 JAB 写表格，不自动退到剪贴板粘贴或 typing。
+
+`tools/tmp_receipt_two_case_save_run.py` 是当前真实保存循环 T0。它会跑两条测试单：无手续费和有手续费；保存前会双检客户非空；成功 oracle 是保存后【新增】重新出现。该脚本会真实 `Ctrl+S` 保存，运行前必须向用户声明并等用户确认。若当前页面是上一轮失败留下的自制页，第一条允许复用当前页覆盖测试值；后续案例必须从保存后【新增】重新开始。
+
+明细表当前已验证的填写顺序：主行写 `收款业务类型=货款`、`币种`、`收款银行账户`、`科目=1002`、`贷方原币金额`、`结算方式=网银`。结算方式必须放最后，最后点回第一个字段提交，不按 Enter/Tab。手续费非零时才 `Ctrl+I` 增行，手续费行写 `手续费`、`660305`、手续费金额、`网银`；手续费行账户必须为空，自动带出时用 `Delete` 清空；若多出空白第 3 行，用 `Ctrl+D` 删除。
+
+AWT 小窗清理分两类处理：业务 popup 打开期间禁止泛清，必须先在当前 popup 控件树里完成选择；但 `新增 -> 自制` 选择完成后要显式清理本次菜单和所有无标题小型 `SunAwtWindow` 残留。残留清理不按 visible 区分，不可见小窗也要清，否则后续 JAB/窗口状态可能出错。手工清理用 `tools/close_awt_popup_residue.py --all-small`；旧 `--all-disabled-small` 只是兼容别名。
+
 ## Excel 规则
 
 当前 Excel：
@@ -220,9 +268,30 @@ C:\Users\Queclink\Desktop\6.1凭证.xlsx
 
 收款单查询结果表：
 
-- 名称列：`col=2`
-- 原币金额列：`col=7`
+- 单据类型列：`col=2`，常见值是 `收款单`，不能作为匹配名称列。
+- 名称/客户列：`col=4`
+- 原币金额列：`col=6`
+- 本币金额列：`col=7`，不能用于 Excel 原始金额匹配。
 - `col=8` 是把 1 基列号误填到 NC/JAB 配置里的旧错误值，不要使用。
+
+收款单配置 schema：
+
+- `receipt_entry.schema_version=2` 是面向后续 GUI 的配置模型；GUI 应编辑业务对象，不要把银行、账号、快捷键继续写死到脚本里。
+- `receipt_entry.banks` 是银行字典，只做展示、分类和可选别名维护；同一家银行可能有多个主体账户，银行别名不能自动当账户匹配规则。
+- `receipt_entry.accounts` 是账户字典，每个账户必须有稳定 `id`、`enabled`、`organization_code`、`bank_id`、`account_label`、`account_no`。Excel 银行列匹配只看账户自己的 `account_label`、`aliases`、`excel_bank_aliases`。
+- `nc_candidates_by_currency` 用于配置 NC 可输入候选，例如人民币账户优先 `...RMB`，避免代码继续猜 `RMB/USD/CNY` 后缀。
+- `entry_policy` 记录账户录入策略：当前主线是 `account_input=detail_first`、`success_rule=non_empty`、必要时 `fallback_reference=true`。
+- `detail_entry_policy` 记录明细主行/手续费行顺序和快捷键：手续费增行 `ctrl+i`，手续费账户清空，额外空行删除 `ctrl+d`。
+- `tools/validate_config.py` 会校验组织、银行、账户引用、账户别名冲突、候选值和策略枚举；新增银行或账号后必须先跑配置校验。
+
+收款单自制录入明细表：
+
+- 当前用 `tools/receipt_body_table_locator.py` 按 25 列 body table 特征定位，空白录入态通常是 1 行 25 列，旁边另有独立的合计表。
+- JAB selection API 的 child index 规则是 `row * 25 + col`。
+- 已探测关键列位按 0 基记录：`col=1` 收款业务类型，`col=3` 币种，`col=4` 收款银行账户，`col=5` 科目，`col=7` 金额/贷方原币金额，`col=11` 结算方式。
+- 选中表格单元格不等于键盘焦点进入编辑器。`col=11` 结算方式曾在 Enter/F2 后把焦点送到右上角全局搜索框，说明不能用剪贴板或全局键盘盲填参照列。
+- `结算方式` 上方也有输入框，但下方明细表录入后会自动同步上方字段；主路径应写明细表 `col=11`，上方字段只作为同步验证，不作为优先录入口。
+- `收款银行账户`、`结算方式` 这类列要继续递归参照/下拉 popup 控件树，找到真实可操作控件后再写入；`setTextContents` 成功或读回为空都不能单独作为业务成功依据。
 
 ## 业务流程
 
@@ -364,16 +433,21 @@ JAB 查询入口现状：
 - 老版 JAB 使用 `Windows_run()`；不要随手改 `tools/jab_probe.py` 和 `core/jab_operator.py` 的消息泵/初始化方式。
 - 不要硬编码 JAB path 或 hwnd，窗口重开后会变。
 - 不要信 `bounds` 做坐标点击，很多控件会返回负坐标或 `-1,-1,-1,-1`。
+- NC 自动化彻底禁用坐标点击、bounds 中心点点击和截图找坐标；只能用 JAB action、语义快捷键、JAB 文本/表格 API。
 - 优先使用 JAB action、selection、table API。
 - 隐藏或非 visible 的 `SunAwtDialog` 查询窗口可能是残留，不应作为可操作窗口依据。
 
 左上角奇怪截图/蓝框遮挡：
 
 - 开启 JAB 后曾多次出现左上角小窗口，表现为“NC 的截图还去不掉”“蓝框里边空白”“没有标题”。
-- 这不是 NC 业务界面，也不是需要点击的弹窗。
-- 根因基本确定是 Java/AWT/JAB 辅助窗口残留。
-- 常见特征：`SunAwtWindow`、title 为空、小尺寸、空白蓝框或像截图一样遮挡视线。
-- `core/jab_operator.py` 已有 `hide_blank_awt_windows()`，启动和关闭 JAB 时都会尝试隐藏。
+- 严重注意：无标题小 `SunAwtWindow` 不一定是残留，`新增 -> 自制/应收单` 菜单、参照框、下拉框也可能是同类窗口。
+- 旧清理逻辑曾把可见菜单禁用/隐藏/移走，造成菜单像截图一样粘住、按钮点击无反应。这是阻塞级故障，不是普通视觉瑕疵。
+- 当前规则：业务 popup 打开期间不泛清；完成选择后才显式清理。`新增` 前快照窗口，`新增` 后记录本次出现且包含 `自制/应收单` 的可见 `SunAwtWindow` hwnd，点完 `自制` 后 hide/close 这个 hwnd，并清理所有无标题小型 `SunAwtWindow` 残留。残留不按 visible 区分，不可见小窗也清。
+- `core/jab_operator.py` 的 `hide_blank_awt_windows()` 只作为残留清理入口，不能在业务 popup 刚打开时调用。会打开 popup 的动作应显式传 `cleanup_blank_awt=False`。
+- JAB action 默认不自动清 AWT 残留；`tools/jab_action_once.py` 只有显式 `--cleanup-blank-awt` 才会触发清理。
+- bounds 点击已经在底层拒绝，配置校验也禁止分页 `next_bounds_timeout` 和查询入口 `click_mode=bounds`。如果 JAB action 不可用，应继续探测控件树，而不是回退坐标。
+- 已验证 `新增(Ctrl+N)` 按钮本身可用，随后会弹出 `自制` / `应收单` 菜单；健康 popup 中 `自制` path 曾为 `0.0.1.0.0.0`，`应收单` path 曾为 `0.0.1.0.0.2`。path/hwnd 不稳定，只能现场复验后使用。
+- 遇到截图样残留时不要点它、不要按坐标关它；先确认它不是当前业务菜单/参照。如果已经完成当前 popup 选择，就用 `tools/close_awt_popup_residue.py --all-small` 显式清理无标题小型 `SunAwtWindow`，包括不可见残留，然后复扫 AWT 窗口。
 
 ## 常见问题
 

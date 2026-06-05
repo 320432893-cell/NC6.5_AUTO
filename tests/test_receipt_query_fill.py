@@ -1,5 +1,19 @@
+from datetime import date
+from decimal import Decimal
+
+from openpyxl import Workbook, load_workbook
+import pytest
+
+from core.receipt_entry import ReceiptNCResultExtractor
+from core.receipt_entry import format_receipt_duplicate_reason
+from core.receipt_entry import format_receipt_name_amount_mismatch_reason
 from tools.receipt_query_fill import (
+    ReceiptPageGuardError,
+    build_dry_run_match_report,
     ensure_query_window,
+    fill_receipt_query,
+    guard_receipt_parent_page,
+    guard_receipt_result_tables,
     parse_page_label,
     read_receipt_result_pages,
     set_receipt_page_size,
@@ -133,7 +147,7 @@ class FakePagedJAB:
         return True
 
 
-class FakeFallbackPagedJAB(FakePagedJAB):
+class FakeFailingNextPageJAB(FakePagedJAB):
     def do_action_by_path(
         self,
         path,
@@ -150,7 +164,7 @@ class FakeFallbackPagedJAB(FakePagedJAB):
         require_valid_bounds=True,
     ):
         self.actions.append((path, action_name, click_mode, scope_hwnd))
-        return click_mode == "bounds"
+        return False
 
 
 class FakeNoScopePagedJAB(FakePagedJAB):
@@ -167,6 +181,196 @@ class FakeNoScopePagedJAB(FakePagedJAB):
         scope_hwnd=None,
     ):
         return None
+
+
+class FakeGuardJAB:
+    def __init__(self, found):
+        self.found = found
+        self.released = []
+        self.started = False
+
+    def ensure_started(self):
+        self.started = True
+
+    def find_context(self, *args, **kwargs):
+        if self.found:
+            return 11, 22, [11]
+        return None, None, []
+
+    def release_contexts(self, vm_id, contexts):
+        self.released.append((vm_id, contexts))
+
+
+class FakeReceiptQueryJAB:
+    def __init__(self, config):
+        self.config = config
+        self.actions = []
+        self.set_texts = []
+        self.near_label_texts = []
+        self.keys = []
+        self.closed = False
+
+    def ensure_started(self):
+        return None
+
+    def find_context(self, *args, **kwargs):
+        return 11, 22, [11]
+
+    def release_contexts(self, vm_id, contexts):
+        return None
+
+    def wait_window_by_title(self, *args, **kwargs):
+        return 100
+
+    def set_text_by_path(
+        self,
+        path,
+        text,
+        title=None,
+        class_name=None,
+        scope_hwnd=None,
+        name=None,
+        role=None,
+        guard_path=None,
+        guard_name=None,
+        guard_role=None,
+        wait=None,
+        timeout=None,
+        require_showing=True,
+        require_valid_bounds=True,
+    ):
+        self.set_texts.append(
+            {
+                "path": path,
+                "text": text,
+                "title": title,
+                "class_name": class_name,
+                "role": role,
+            }
+        )
+        return True
+
+    def set_text_near_label(
+        self,
+        label,
+        text,
+        title=None,
+        class_name=None,
+        wait=None,
+        timeout=None,
+        require_showing=True,
+    ):
+        self.near_label_texts.append(
+            {
+                "label": label,
+                "text": text,
+                "title": title,
+                "class_name": class_name,
+                "timeout": timeout,
+                "require_showing": require_showing,
+            }
+        )
+        return True
+
+    def do_action_by_path(
+        self,
+        path,
+        title=None,
+        class_name=None,
+        scope_hwnd=None,
+        name=None,
+        role=None,
+        action_name=None,
+        click_mode=None,
+        wait=None,
+        timeout=None,
+        require_showing=True,
+        require_valid_bounds=True,
+    ):
+        self.actions.append(
+            {
+                "path": path,
+                "role": role,
+                "click_mode": click_mode,
+                "wait": wait,
+                "timeout": timeout,
+            }
+        )
+        return True
+
+    def close(self):
+        self.closed = True
+
+
+def receipt_config(path):
+    return {
+        "receipt_entry": {
+            "state_label": "收款单录入",
+            "excel": {
+                "path": str(path),
+                "sheet_name": "💸Payments来款通知",
+                "header_row": 1,
+                "start_date": "2026-01-01",
+                "date_column": "到款日期",
+                "payer_name_column": "🟪银行来款名",
+                "raw_amount_column": "🟪原始金额",
+                "bank_column": "银行",
+                "organization_column": "主体名称",
+                "nc_done_column": "是否NC已做过",
+            },
+            "query": {
+                "date_from": "2026-01-01",
+                "date_to": "{today}",
+                "open_key": "f3",
+                "open_timeout": 5,
+                "jab": {
+                    "dialog_title": "查询条件",
+                    "dialog_class": "SunAwtDialog",
+                    "confirm_button_path": "confirm",
+                    "fields": {
+                        "finance_org": {
+                            "label": "收款财务组织",
+                            "operator": "等于",
+                            "timeout": 2.0,
+                        },
+                        "document_date": {
+                            "label": "单据日期",
+                            "operator": "介于",
+                            "from_text_path": "date_from",
+                            "to_text_path": "date_to",
+                        },
+                    },
+                },
+                "result_column_indexes": {
+                    "document_no": 0,
+                    "document_date": 1,
+                    "customer": 2,
+                    "original_amount": 7,
+                    "payer_name": 2,
+                },
+            },
+            "candidate_check": {
+                "recent_months": 2,
+                "from_date": None,
+                "only_blank_status": True,
+            },
+            "finance_organizations": [
+                {
+                    "code": "A001",
+                    "name": "上海移为通信技术股份有限公司",
+                    "short_name": "移为",
+                }
+            ],
+            "accounts": [
+                {
+                    "organization_code": "A001",
+                    "organization_short_name": "移为",
+                    "account_label": "Paypal",
+                    "account_no": "paypal",
+                }
+            ],
+        }
+    }
 
 
 def test_ensure_query_window_opens_with_f3_when_dialog_missing():
@@ -207,6 +411,44 @@ def test_ensure_query_window_reuses_existing_dialog():
     assert jab.keys == []
 
 
+def test_fill_receipt_query_sets_finance_org_near_label(monkeypatch):
+    instances = []
+
+    def make_jab(config):
+        instance = FakeReceiptQueryJAB(config)
+        instances.append(instance)
+        return instance
+
+    monkeypatch.setattr("tools.receipt_query_fill.JABOperator", make_jab)
+
+    result = fill_receipt_query(
+        receipt_config("unused.xlsx"),
+        org_code="A003",
+        date_from="2026-03-31",
+        date_to="2026-05-31",
+        confirm=False,
+    )
+
+    jab = instances[0]
+    assert result["organization_code"] == "A003"
+    assert jab.actions == []
+    assert jab.near_label_texts == [
+        {
+            "label": "收款财务组织",
+            "text": "A003",
+            "title": "查询条件",
+            "class_name": "SunAwtDialog",
+            "timeout": 2.0,
+            "require_showing": True,
+        }
+    ]
+    assert [(item["path"], item["text"]) for item in jab.set_texts] == [
+        ("date_from", "2026-03-31"),
+        ("date_to", "2026-05-31"),
+    ]
+    assert jab.closed is True
+
+
 def test_parse_page_label_reads_total_pages_and_records():
     assert parse_page_label("第1页 共66页 659条记录 每页显示") == {
         "total_pages": 66,
@@ -243,8 +485,8 @@ def test_read_receipt_result_pages_sets_page_size_and_reads_next_page():
     assert [table["row_count"] for table in tables] == [2, 1]
 
 
-def test_read_receipt_result_pages_falls_back_to_bounds_click_for_next_page():
-    jab = FakeFallbackPagedJAB()
+def test_read_receipt_result_pages_does_not_fall_back_to_bounds_click_for_next_page():
+    jab = FakeFailingNextPageJAB()
 
     tables, report = read_receipt_result_pages(
         jab,
@@ -263,13 +505,10 @@ def test_read_receipt_result_pages_falls_back_to_bounds_click_for_next_page():
         max_cols=40,
     )
 
-    assert jab.actions == [
-        ("next", "单击", None, 330038),
-        ("next", None, "bounds", 330038),
-    ]
-    assert report["pages"][0]["next_page_ok"] is True
-    assert report["pages"][0]["next_page_method"] == "bounds"
-    assert [table["row_count"] for table in tables] == [2, 1]
+    assert jab.actions == [("next", "单击", None, 330038)]
+    assert report["pages"][0]["next_page_ok"] is False
+    assert report["pages"][0]["next_page_method"] == "failed"
+    assert [table["row_count"] for table in tables] == [2]
 
 
 def test_read_receipt_result_pages_blocks_next_page_without_pager_scope():
@@ -381,3 +620,314 @@ def test_set_receipt_page_size_can_skip_pre_stability(monkeypatch):
     assert before_stability["ok"] is None
     assert after_stability["ok"] is True
     assert waits == [0.0, 0.25]
+
+
+def test_guard_receipt_parent_page_requires_state_label():
+    with pytest.raises(ReceiptPageGuardError, match="收款单录入"):
+        guard_receipt_parent_page(
+            FakeGuardJAB(found=False),
+            {"receipt_entry": {"state_label": "收款单录入"}},
+            {},
+        )
+
+
+def test_guard_receipt_parent_page_releases_found_context():
+    jab = FakeGuardJAB(found=True)
+
+    report = guard_receipt_parent_page(
+        jab,
+        {"receipt_entry": {"state_label": "收款单录入"}},
+        {},
+    )
+
+    assert report["ok"] is True
+    assert jab.released == [(22, [11])]
+
+
+def test_guard_receipt_result_tables_blocks_wrong_document_type():
+    tables = [
+        {
+            "table_index": 4,
+            "row_count": 1,
+            "col_count": 41,
+            "rows": [
+                {
+                    "row_index": 0,
+                    "cells": [
+                        "D1",
+                        "2026-05-25",
+                        "收款单",
+                        "收款结算",
+                        "客户A",
+                        "",
+                        "100.00",
+                        "100.00",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "应收款",
+                    ],
+                }
+            ],
+        }
+    ]
+
+    with pytest.raises(ReceiptPageGuardError, match="错误页面"):
+        guard_receipt_result_tables(
+            tables,
+            {
+                "result_column_indexes": {
+                    "document_no": 0,
+                    "document_date": 1,
+                    "customer": 2,
+                    "original_amount": 7,
+                    "payer_name": 2,
+                },
+                "result_guard": {
+                    "document_type_column": 16,
+                    "document_type": "收款单录入",
+                    "blocked_keywords": ["应收款"],
+                },
+            },
+        )
+
+
+def test_guard_receipt_result_tables_accepts_receipt_document_type():
+    report = guard_receipt_result_tables(
+        [
+            {
+                "table_index": 4,
+                "row_count": 1,
+                "col_count": 8,
+                "rows": [
+                    {
+                        "row_index": 0,
+                        "cells": [
+                            "D1",
+                            "2026-05-25",
+                            "收款单",
+                            "",
+                            "客户A",
+                            "",
+                            "PAYER A",
+                            "",
+                            "100.00",
+                        ],
+                    }
+                ],
+            }
+        ],
+        {
+            "result_column_indexes": {
+                "document_no": 0,
+                "document_date": 1,
+                "customer": 2,
+                "original_amount": 8,
+                "payer_name": 6,
+            },
+            "result_guard": {"document_type_column": 2, "document_type": "收款单"},
+        },
+    )
+
+    assert report["ok"] is True
+
+
+def test_guard_receipt_result_tables_blocks_name_column_as_document_type():
+    with pytest.raises(ReceiptPageGuardError, match="名称列"):
+        guard_receipt_result_tables(
+            [
+                {
+                    "table_index": 4,
+                    "row_count": 1,
+                    "col_count": 8,
+                    "rows": [
+                        {
+                            "row_index": 0,
+                            "cells": [
+                                "D1",
+                                "2026-05-25",
+                                "收款单",
+                                "",
+                                "",
+                                "",
+                                "",
+                                "100.00",
+                            ],
+                        }
+                    ],
+                }
+            ],
+            {
+                "result_column_indexes": {
+                    "document_no": 0,
+                    "document_date": 1,
+                    "customer": 2,
+                    "original_amount": 7,
+                    "payer_name": 2,
+                },
+                "result_guard": {
+                    "document_type_column": 2,
+                    "document_type": "收款单",
+                    "name_column_must_not_equal_document_type": True,
+                },
+            },
+        )
+
+
+def test_dry_run_match_report_writes_specific_statuses(tmp_path):
+    path = tmp_path / "payments.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "💸Payments来款通知"
+    ws.append(["到款日期", "🟪银行来款名", "🟪原始金额", "银行", "是否NC已做过"])
+    ws.append([date(2026, 5, 1), "MATCHED INC", 100, "Paypal", None])
+    ws.append([date(2026, 5, 2), "MISSING INC", 200, "Paypal", None])
+    ws.append([date(2026, 5, 3), "DUP INC", 300, "Paypal", None])
+    ws.append([date(2026, 5, 4), "Christoff Pretorius", 400, "Paypal", None])
+    wb.save(path)
+    wb.close()
+    config = receipt_config(path)
+    tables = [
+        {
+            "table_index": 2,
+            "row_count": 3,
+            "col_count": 8,
+            "rows": [
+                {
+                    "row_index": 0,
+                    "cells": [
+                        "D1",
+                        "2026-05-01",
+                        "MATCHED INC",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "100.00",
+                    ],
+                },
+                {
+                    "row_index": 1,
+                    "cells": [
+                        "D2",
+                        "2026-05-03",
+                        "DUP INC",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "300.00",
+                    ],
+                },
+                {
+                    "row_index": 2,
+                    "cells": [
+                        "D3",
+                        "2026-05-03",
+                        "1/DUP INC",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "300.00",
+                    ],
+                },
+                {
+                    "row_index": 3,
+                    "cells": [
+                        "D4",
+                        "2026-05-04",
+                        "Christoff Pretorius",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "450.00",
+                    ],
+                },
+            ],
+        }
+    ]
+
+    report = build_dry_run_match_report(
+        config,
+        ReceiptNCResultExtractor(config),
+        tables,
+        org_code="A001",
+        business_date=date(2026, 6, 1),
+        write_back=True,
+    )
+
+    assert report["write_back"]["updated"] == 4
+    assert report["write_back"]["matched_rows"] == [2]
+    assert report["write_back"]["not_found_rows"] == [3]
+    assert report["write_back"]["duplicate_rows"] == [4]
+    assert report["write_back"]["exception_rows"] == [4, 5]
+    assert report["write_back"]["skipped_duplicate_rows"] == [4]
+    saved = load_workbook(path)
+    ws = saved["💸Payments来款通知"]
+    assert ws.cell(2, 5).value == "已做过"
+    assert ws.cell(3, 5).value == "未做过"
+    assert ws.cell(4, 5).value == format_receipt_duplicate_reason(2)
+    assert ws.cell(5, 5).value == format_receipt_name_amount_mismatch_reason(
+        excel_amount=Decimal("400.00"),
+        excel_name="Christoff Pretorius",
+        nc_amounts=["450.00"],
+    )
+    saved.close()
+
+
+def test_dry_run_match_report_can_include_already_filled_statuses(tmp_path):
+    path = tmp_path / "payments.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "💸Payments来款通知"
+    ws.append(["到款日期", "🟪银行来款名", "🟪原始金额", "银行", "是否NC已做过"])
+    ws.append([date(2026, 5, 1), "MATCHED INC", 100, "Paypal", "未做过"])
+    wb.save(path)
+    wb.close()
+    config = receipt_config(path)
+    config["receipt_entry"]["candidate_check"]["only_blank_status"] = False
+    tables = [
+        {
+            "table_index": 2,
+            "row_count": 1,
+            "col_count": 8,
+            "rows": [
+                {
+                    "row_index": 0,
+                    "cells": [
+                        "D1",
+                        "2026-05-01",
+                        "MATCHED INC",
+                        "",
+                        "",
+                        "",
+                        "",
+                        "100.00",
+                    ],
+                },
+            ],
+        }
+    ]
+
+    report = build_dry_run_match_report(
+        config,
+        ReceiptNCResultExtractor(config),
+        tables,
+        org_code="A001",
+        business_date=date(2026, 6, 1),
+        write_back=True,
+    )
+
+    assert report["org_candidates"] == 1
+    assert report["write_back"]["updated"] == 1
+    saved = load_workbook(path)
+    ws = saved["💸Payments来款通知"]
+    assert ws.cell(2, 5).value == "已做过"
+    saved.close()
