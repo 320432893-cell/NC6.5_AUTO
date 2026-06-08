@@ -31,13 +31,22 @@ def receipt_config(path="unused.xlsx"):
                 "path": str(path),
                 "sheet_name": "💸Payments来款通知",
                 "header_row": 1,
+                "start_row": 2,
+                "result_sheet_name": "收款单自动化结果",
                 "start_date": "2026-01-01",
                 "date_column": "到款日期",
                 "payer_name_column": "🟪银行来款名",
                 "raw_amount_column": "🟪原始金额",
                 "bank_column": "银行",
+                "currency_column": "币种",
+                "customer_code_column": "客户编码",
+                "fee_column": "手续费",
                 "organization_column": "主体名称",
                 "nc_done_column": "是否NC已做过",
+            },
+            "validation_policy": {
+                "mode": "strict",
+                "skip_invalid_rows": False,
             },
             "candidate_check": {
                 "recent_months": 2,
@@ -226,6 +235,102 @@ def test_candidate_from_date_overrides_recent_months(tmp_path):
     assert issues == []
     assert len(rows) == 2
     assert [row.payer_name for row in candidates] == ["candidate"]
+
+
+def test_build_local_plan_reports_precise_local_issues(tmp_path):
+    path = tmp_path / "payments.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "💸Payments来款通知"
+    ws.append(
+        [
+            "到款日期",
+            "🟪银行来款名",
+            "🟪原始金额",
+            "银行",
+            "币种",
+            "客户编码",
+            "手续费",
+        ]
+    )
+    ws.append([date(2026, 6, 1), "DUP INC", 100, "Paypal", "USD", "YW001", None])
+    ws.append([date(2026, 6, 1), "DUP INC", 100, "Paypal", "USD", "YW001", None])
+    ws.append([date(2026, 6, 2), "UNKNOWN", 200, "不存在银行", "USD", "YW002", None])
+    ws.append([date(2026, 6, 3), "NO CUSTOMER", 300, "Paypal", "USD", "", None])
+    wb.save(path)
+    wb.close()
+
+    rows, issues, summary = ReceiptEntryWorkbook(receipt_config(path)).build_local_plan()
+
+    assert [row.row for row in rows] == [2, 3]
+    assert summary["runnable_rows"] == 0
+    assert summary["duplicate_rows"] == [2, 3]
+    issue_types = [(issue.excel_row, issue.issue_type) for issue in issues]
+    assert (2, "DUPLICATE_EXCEL_ROWS") in issue_types
+    assert (3, "DUPLICATE_EXCEL_ROWS") in issue_types
+    assert (4, "BANK_ACCOUNT_NOT_CONFIGURED") in issue_types
+    assert (5, "CUSTOMER_CODE_EMPTY") in issue_types
+    bank_issue = next(
+        issue for issue in issues if issue.issue_type == "BANK_ACCOUNT_NOT_CONFIGURED"
+    )
+    assert bank_issue.stage == "配置识别"
+    assert bank_issue.field == "银行"
+    assert bank_issue.raw_value == "不存在银行"
+    assert (
+        bank_issue.config_node
+        == "receipt_entry.accounts[*].account_label/aliases/excel_bank_aliases"
+    )
+    assert "未匹配任何账户配置" in bank_issue.message
+
+
+def test_build_local_plan_writes_machine_sheet2(tmp_path):
+    path = tmp_path / "payments.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "💸Payments来款通知"
+    ws.append(
+        [
+            "到款日期",
+            "🟪银行来款名",
+            "🟪原始金额",
+            "银行",
+            "币种",
+            "客户编码",
+            "手续费",
+        ]
+    )
+    ws.append([date(2026, 6, 1), "OK INC", 100, "Paypal", "USD", "YW001", 0])
+    wb.save(path)
+    wb.close()
+
+    rows, issues, summary = ReceiptEntryWorkbook(receipt_config(path)).build_local_plan(
+        write_sheet=True
+    )
+
+    assert issues == []
+    assert summary["runnable_rows"] == 1
+    saved = load_workbook(path)
+    ws = saved["收款单自动化结果"]
+    headers = [ws.cell(1, column).value for column in range(1, ws.max_column + 1)]
+    assert headers[:13] == [
+        "原行号",
+        "主体编码",
+        "主体名称",
+        "银行",
+        "到款日期",
+        "客户编码",
+        "币种",
+        "银行来款名",
+        "金额",
+        "手续费",
+        "账户配置ID",
+        "收款银行账户",
+        "本地预检状态",
+    ]
+    assert ws.cell(2, 1).value == rows[0].row
+    assert ws.cell(2, 2).value == "A001"
+    assert ws.cell(2, 13).value == "通过"
+    saved.close()
 
 
 def test_counterparty_normalization_ignores_prefix_and_punctuation():

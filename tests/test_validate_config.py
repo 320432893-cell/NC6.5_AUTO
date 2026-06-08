@@ -63,13 +63,22 @@ def test_validate_receipt_entry_accepts_account_mapping():
             "path": "payments.xlsx",
             "sheet_name": "💸Payments来款通知",
             "header_row": 1,
+            "start_row": 2,
+            "result_sheet_name": "收款单自动化结果",
             "start_date": "2026-01-01",
             "date_column": "到款日期",
             "payer_name_column": "🟪银行来款名",
             "raw_amount_column": "🟪原始金额",
             "bank_column": "银行",
+            "currency_column": "币种",
+            "customer_code_column": "客户编码",
+            "fee_column": "手续费",
             "organization_column": "主体名称",
             "nc_done_column": "是否NC已做过",
+        },
+        "validation_policy": {
+            "mode": "strict",
+            "skip_invalid_rows": False,
         },
         "query": {
             "date_from": "2026-01-01",
@@ -364,3 +373,40 @@ def test_validate_receipt_entry_rejects_unknown_account_organization():
         "receipt_entry.accounts[0].organization_code must reference "
         "finance_organizations, got 'A003'"
     ]
+
+
+def test_validate_receipt_entry_rejects_invalid_start_row_and_policy():
+    config = base_config()
+    config["receipt_entry"] = {
+        "state_label": "收款单录入",
+        "excel": {
+            "path": "payments.xlsx",
+            "sheet_name": "💸Payments来款通知",
+            "header_row": 1,
+            "start_row": 1,
+            "start_date": "2026-01-01",
+            "date_column": "到款日期",
+            "payer_name_column": "🟪银行来款名",
+            "raw_amount_column": "🟪原始金额",
+            "bank_column": "银行",
+            "currency_column": "币种",
+            "customer_code_column": "客户编码",
+            "organization_column": "主体名称",
+            "nc_done_column": "是否NC已做过",
+        },
+        "validation_policy": {
+            "mode": "loose",
+            "skip_invalid_rows": "yes",
+        },
+        "finance_organizations": [],
+        "accounts": [],
+    }
+
+    errors = validate_config(config)
+
+    assert "receipt_entry.excel.start_row must be greater than header_row" in errors
+    assert (
+        "receipt_entry.validation_policy.mode must be one of "
+        "['skip_invalid_rows', 'strict'], got 'loose'"
+    ) in errors
+    assert "receipt_entry.validation_policy.skip_invalid_rows must be bool" in errors

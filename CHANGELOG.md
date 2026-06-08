@@ -2,6 +2,16 @@
 
 只记录影响维护判断的关键节点。具体实验流水账看 git 历史。
 
+## 2026-06-08 - 收款单本地预检和 Sheet2 机器结果表
+
+- 收款单新主线改为：从 `receipt_entry.excel.start_row` 开始读 Sheet1，先做本地配置识别和异常识别；录入前不查 NC，不再用“最近 2 个月”或 `是否NC已做过` 状态列决定本批候选。业务前提是交给机器的行本来就是未做过的；全部录入后再按主体各查一次 NC 做后验验证。
+- `config.json receipt_entry.excel` 新增 `start_row`、`result_sheet_name`、`currency_column`、`customer_code_column`、`fee_column`；`receipt_entry.validation_policy` 新增 `mode` 和 `skip_invalid_rows`。默认 `strict`，任意异常停止整批；`skip_invalid_rows` 只跳过异常行/重复组。
+- `core.receipt_entry` 新增 `ReceiptPlanRow` 和 `ReceiptPlanIssue`。`ReceiptEntryWorkbook.build_local_plan()` 负责本地预检、重复识别和 Sheet2 输出；Sheet2 默认名为 `收款单自动化结果`，只由机器生成/覆盖，人工不维护。
+- 本地预检异常必须精确到 `原行号/阶段/异常类型/字段/原值/配置节点/说明/处理动作`，不能只写“配置错误”或“数据异常”。当前异常覆盖缺必需列、起始行无效、银行未配置、账户禁用、主体缺失、日期/金额/币种/手续费错误、客户编码为空和本批重复。
+- 本地重复键为 `主体 + 到款日期 + 银行 + 币种 + 客户编码 + 银行来款名 + 金额`。重复组标 `DUPLICATE_EXCEL_ROWS`，整组不录入，避免在不查 NC 的前提下重复制单。
+- `tools/receipt_entry_check.py` 默认改为新本地预检入口；`--write` 写 Sheet2，`--validation-mode skip_invalid_rows` 可临时跳过异常行/重复组。旧的“最近 N 个月 + 空状态列”候选逻辑保留为 `--legacy-candidates`，只作兼容诊断。
+- 配置校验已纳入新字段和策略枚举；新增/修改收款配置后仍必须跑 `tools/validate_config.py`。
+
 ## 最新接手重点 - 2026-06-05
 
 - 当前不要宣称收款单真实保存已完成。明细主行和手续费行 T0 已验证，真实 `Ctrl+S` 两案例保存循环还没跑通。

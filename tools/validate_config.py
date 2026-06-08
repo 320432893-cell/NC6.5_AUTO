@@ -11,6 +11,7 @@ DUPE_MATCH_POLICIES = {"stop", "skip"}
 OPEN_QUERY_METHODS = {"hotkey", "jab_action"}
 ACCOUNT_INPUT_STRATEGIES = {"detail_first", "reference_first"}
 ACCOUNT_SUCCESS_RULES = {"non_empty", "exact_or_candidate"}
+RECEIPT_VALIDATION_MODES = {"strict", "skip_invalid_rows"}
 
 
 def load_json(path):
@@ -117,6 +118,9 @@ def _validate_receipt_entry(receipt_cfg, errors):
     candidate_cfg = receipt_cfg.get("candidate_check")
     if candidate_cfg is not None:
         _validate_receipt_candidate_check(candidate_cfg, errors)
+    validation_policy = receipt_cfg.get("validation_policy")
+    if validation_policy is not None:
+        _validate_receipt_validation_policy(validation_policy, errors)
     organizations = _require(
         receipt_cfg,
         "finance_organizations",
@@ -342,11 +346,26 @@ def _validate_receipt_excel(excel_cfg, errors):
         "payer_name_column",
         "raw_amount_column",
         "bank_column",
+        "currency_column",
+        "customer_code_column",
         "organization_column",
         "nc_done_column",
     ):
         _require_non_empty_str(excel_cfg, key, errors, prefix="receipt_entry.excel")
+    if "fee_column" in excel_cfg:
+        _require_non_empty_str(excel_cfg, "fee_column", errors, prefix="receipt_entry.excel")
+    if "result_sheet_name" in excel_cfg:
+        _require_non_empty_str(
+            excel_cfg, "result_sheet_name", errors, prefix="receipt_entry.excel"
+        )
     _positive_int(excel_cfg, "header_row", errors, prefix="receipt_entry.excel")
+    _positive_int(excel_cfg, "start_row", errors, prefix="receipt_entry.excel")
+    if (
+        isinstance(excel_cfg.get("header_row"), int)
+        and isinstance(excel_cfg.get("start_row"), int)
+        and excel_cfg["start_row"] <= excel_cfg["header_row"]
+    ):
+        errors.append("receipt_entry.excel.start_row must be greater than header_row")
     _iso_date(excel_cfg, "start_date", errors, prefix="receipt_entry.excel")
 
 
@@ -642,6 +661,23 @@ def _validate_receipt_candidate_check(candidate_cfg, errors):
     value = candidate_cfg.get("only_blank_status")
     if not isinstance(value, bool):
         errors.append("receipt_entry.candidate_check.only_blank_status must be bool")
+
+
+def _validate_receipt_validation_policy(policy, errors):
+    if not isinstance(policy, dict):
+        errors.append("receipt_entry.validation_policy must be an object")
+        return
+    _optional_enum(
+        policy,
+        "mode",
+        RECEIPT_VALIDATION_MODES,
+        errors,
+        prefix="receipt_entry.validation_policy",
+    )
+    if "skip_invalid_rows" in policy and not isinstance(
+        policy.get("skip_invalid_rows"), bool
+    ):
+        errors.append("receipt_entry.validation_policy.skip_invalid_rows must be bool")
 
 
 def _require(mapping, key, expected_type, errors, prefix=""):

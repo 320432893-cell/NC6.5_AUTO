@@ -28,7 +28,7 @@
 - `core/nc_switch_generated_workflow.py`：切换到已生成/正式单据列表。
 - `core/nc_backfill_workflow.py`：已生成列表凭证号回填。
 - `core/nc_table_matcher.py`：NC 表格按金额、对手方、日期的匹配逻辑。
-- `core/receipt_entry.py`：收款单 Excel 预处理、主体映射和 NC 已做过匹配规则。
+- `core/receipt_entry.py`：收款单 Excel 本地预检、主体映射、Sheet2 机器结果表和 NC 后验匹配基础模型。
 - `core/errors.py`：NC workflow 领域异常，区分页面状态、表格匹配、JAB 控件、JAB 动作、Excel 写入锁和流程契约失败。
 - `core/jab_operator.py`：JAB 底层封装，负责读表、选行、按钮动作、F3/F5、关闭窗口、受保护的 AWT 残留清理。
 - `core/data_handler.py`：Excel 读取、拼接 key 解析、结果写回、拆分 key。
@@ -123,10 +123,28 @@ cd /mnt/h/python脚本/.venv/nc_auto_v2
 /mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/jab_batch.py split-keys
 ```
 
-收款单 Excel 候选行预检查：
+收款单本地预检主入口。该命令从 `receipt_entry.excel.start_row` 开始读 Sheet1，只做 Excel/配置侧识别和异常拦截，不查 NC；异常会精确输出到行号、字段、原值、配置节点和处理动作：
 
 ```bash
 /mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_entry_check.py
+```
+
+写入机器生成的 Sheet2 结果表，默认表名为 `收款单自动化结果`：
+
+```bash
+/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_entry_check.py --write
+```
+
+正式口径默认 `strict`：发现任意异常整批停止。临时允许跳过异常行/重复组继续生成可运行计划时：
+
+```bash
+/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_entry_check.py --validation-mode skip_invalid_rows --write
+```
+
+旧的“最近 N 个月 + 是否NC已做过为空”候选预览只保留为兼容诊断入口：
+
+```bash
+/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_entry_check.py --legacy-candidates
 ```
 
 收款单查询窗口只填条件、不点确定；默认会先在收款单录入页按 F3 打开查询条件窗口：
@@ -141,13 +159,13 @@ cd /mnt/h/python脚本/.venv/nc_auto_v2
 /mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_query_fill.py --org-code A001 --date-from 2026-05-01 --date-to 2026-06-02 --confirm --read-results
 ```
 
-收款单查询后只读匹配预演；查询后会把每页条数改为 500，并按分页读取。输出 JSON 包含 `page_report`、金额范围、名称样本和重复原因；日期只用于查询范围，不参与匹配诊断：
+收款单查询后只读匹配预演；查询后会把每页条数改为 500，并按分页读取。输出 JSON 包含 `page_report`、金额范围、名称样本和重复原因；日期只用于查询范围，不参与匹配诊断。注意：这是历史/诊断工具，不是当前新主线的录入前筛选步骤：
 
 ```bash
 /mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_query_fill.py --org-code A001 --date-from 2026-03-31 --date-to 2026-05-31 --confirm --dry-run-match --max-rows 600 --max-cols 140
 ```
 
-收款单匹配结果写回 Excel；唯一匹配写 `已做过`。金额和对手方都没有命中时写 `金额和对手方均未匹配`；金额命中但名称不符、名称命中但金额不符会写明 Excel 值和 NC 候选值；重复命中按实际条数写 `重复N条：名称和金额相同，需人工确认`，重复行也会在 JSON 的 `duplicate_rows` 中报告：
+收款单匹配结果写回 Excel；唯一匹配写 `已做过`。金额和对手方都没有命中时写 `金额和对手方均未匹配`；金额命中但名称不符、名称命中但金额不符会写明 Excel 值和 NC 候选值；重复命中按实际条数写 `重复N条：名称和金额相同，需人工确认`，重复行也会在 JSON 的 `duplicate_rows` 中报告。注意：该写回旧入口不再作为新批量录入主线的前置判断，当前用户口径是假定交给机器的行均未做过，录入完成后再按主体查询 NC 做后验验证：
 
 ```bash
 /mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_query_fill.py --org-code A001 --date-from 2026-03-31 --date-to 2026-05-31 --confirm --dry-run-match --write-back --max-rows 600 --max-cols 140
@@ -277,12 +295,24 @@ C:\Users\Queclink\Desktop\6.1凭证.xlsx
 收款单配置 schema：
 
 - `receipt_entry.schema_version=2` 是面向后续 GUI 的配置模型；GUI 应编辑业务对象，不要把银行、账号、快捷键继续写死到脚本里。
+- `receipt_entry.excel.start_row` 是 Sheet1 业务起始行；新主线从该行开始读取，不再用“最近 2 个月”或 `是否NC已做过` 状态列决定本批候选。
+- `receipt_entry.excel.result_sheet_name` 是机器生成 Sheet2 名称，默认 `收款单自动化结果`。Sheet2 只由机器生成/覆盖，人工不维护。
+- `receipt_entry.excel.currency_column`、`customer_code_column`、`fee_column` 分别指定币种、客户编码、手续费列，用于本地预检和后续录入。
+- `receipt_entry.validation_policy.mode` 支持 `strict` 和 `skip_invalid_rows`。`strict` 有任意异常就停止整批；`skip_invalid_rows` 会把异常行/重复组写 Sheet2 并跳过。
 - `receipt_entry.banks` 是银行字典，只做展示、分类和可选别名维护；同一家银行可能有多个主体账户，银行别名不能自动当账户匹配规则。
 - `receipt_entry.accounts` 是账户字典，每个账户必须有稳定 `id`、`enabled`、`organization_code`、`bank_id`、`account_label`、`account_no`。Excel 银行列匹配只看账户自己的 `account_label`、`aliases`、`excel_bank_aliases`。
 - `nc_candidates_by_currency` 用于配置 NC 可输入候选，例如人民币账户优先 `...RMB`，避免代码继续猜 `RMB/USD/CNY` 后缀。
 - `entry_policy` 记录账户录入策略：当前主线是 `account_input=detail_first`、`success_rule=non_empty`、必要时 `fallback_reference=true`。
 - `detail_entry_policy` 记录明细主行/手续费行顺序和快捷键：手续费增行 `ctrl+i`，手续费账户清空，额外空行删除 `ctrl+d`。
 - `tools/validate_config.py` 会校验组织、银行、账户引用、账户别名冲突、候选值和策略枚举；新增银行或账号后必须先跑配置校验。
+
+收款单本地预检异常口径：
+
+- 本地预检由 `ReceiptEntryWorkbook.build_local_plan()` 执行。输出模型是 `ReceiptPlanRow` 和 `ReceiptPlanIssue`。
+- `ReceiptPlanIssue` 必须带 `excel_row`、`stage`、`issue_type`、`field`、`raw_value`、`config_node`、`message`、`action`；不要新增笼统的“配置错误/数据错误”。
+- 当前会识别缺必需列、起始行无效、银行为空/未配置/账户禁用、账户主体不存在、日期错误、银行来款名为空、金额错误或非正、币种为空或不支持、客户编码为空、手续费错误或负数、以及本批 Sheet1 内重复。
+- 重复键为 `主体 + 到款日期 + 银行 + 币种 + 客户编码 + 银行来款名 + 金额`。同一 key 出现多行时标 `DUPLICATE_EXCEL_ROWS`，整组不录入。
+- 通过预检的行按主体分组供后续录入使用；录入前不查 NC。全部录入后，每个主体只查询一次 NC 做后验验证，并把结果写回 Sheet2 的后验列。
 
 收款单自制录入明细表：
 

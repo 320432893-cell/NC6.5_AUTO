@@ -17,6 +17,10 @@
 - `ExcelVoucherItem` 和 `VoucherSaveMatch` 已有统一契约检查；失败会带 Excel 行、金额、对手方、NC 行或制单表位置。
 - 待生成表重复匹配属于异常；`generate` 默认 `duplicate_match_policy=stop`，会在点击 NC 前暂停。临时允许跳过异常行时用 `--on-duplicate skip`。
 - `receipt_entry` 已升级到面向后续 GUI 的 `schema_version=2`：财务组织、银行字典、账户字典、账户候选输入值、账户录入策略、明细/手续费录入策略都在 config 中维护。后续新增/修改银行账号必须改配置对象并跑 `tools/validate_config.py`，不要在临时脚本里写死银行、账号、币种后缀或快捷键。
+- 2026-06-08 新收款主线已改口径：从 `receipt_entry.excel.start_row` 开始读取 Sheet1，先做本地预检和异常拦截，不再用“最近 2 个月”或 `是否NC已做过` 状态列决定本批候选；默认前提是交给机器的行都未做过。录入前不查 NC，全部录入完成后再按主体各查一次 NC 做后验验证。
+- `tools/receipt_entry_check.py` 现在默认走新本地预检：调用 `ReceiptEntryWorkbook.build_local_plan()`，输出 `ReceiptPlanRow` / `ReceiptPlanIssue`；`--write` 会覆盖生成 Sheet2 `收款单自动化结果`。旧候选预览保留为 `--legacy-candidates`，不要把它当新主线入口。
+- 本地预检异常必须细到 `原行号/阶段/异常类型/字段/原值/配置节点/说明/处理动作`。重复键是 `主体 + 到款日期 + 银行 + 币种 + 客户编码 + 银行来款名 + 金额`；同一 key 多行标 `DUPLICATE_EXCEL_ROWS`，整组不录入。
+- `receipt_entry.validation_policy.mode` 默认 `strict`：任意异常停止整批；临时允许跳过异常行/重复组时用 `skip_invalid_rows` 或 `tools/receipt_entry_check.py --validation-mode skip_invalid_rows --write`。Sheet2 只由机器生成，人工不维护。
 - 收款单查询窗口已枚举到稳定条件行：`收款财务组织`、`单据日期`、`原币金额`、`客户`；`tools/receipt_query_fill.py` 默认先 F3 打开查询条件窗口，再写入主体和日期区间。
 - 收款单 NC 结果表已有代码侧抽取骨架：按表头语义抽取 `单据日期`、`原币金额`、`客户` 为 `ReceiptNCRow`，并通过 `tools/receipt_query_fill.py --read-results` 打印结果/抽取问题。
 - 收款单 dry-run 已支持查询后把每页条数设为 500，并按分页逐页读取；如果总记录数超过 500，会点“下页”继续采集，优先 JAB 动作接口，失败时按同一路径 bounds 点击回退；分页控件必须锁定到分页 label 所在 hwnd。
@@ -50,25 +54,33 @@
 
 ## 待办
 
-1. 收款单查询闭环
-   - 在 `收款单录入` 页按主体分组自动 F3 打开查询条件，填 `收款财务组织` 和最近 1-2 个月 `单据日期`。
-   - 如果查询窗口已经打开，可以加 `--no-open-query`，但前提是脚本能检测到可见 `查询条件` 弹窗；检测不到时不要盲目点其他按钮，先确认窗口焦点/title/class。
-   - 查询后必须设置每页条数为 500；这个值每次查询后会重置，不能假设持久。
-   - 总记录数可能超过 500，必须按分页 label 和“下页”逐页采集，按单据号去重；每次 dry-run 需要看 `page_report` 确认实际翻页。
+1. 收款单本地预检和 Sheet2 运行计划
+   - 正式入口先跑 `tools/receipt_entry_check.py --write`。它只读 Sheet1 和配置，不查 NC，不做 GUI 动作。
+   - 预检从 `receipt_entry.excel.start_row` 开始，读取 `到款日期`、`银行来款名`、`原始金额`、`银行`、`币种`、`客户编码`、可选 `手续费`。
+   - 配置识别步骤固定为：`银行 -> receipt_entry.accounts -> organization_code -> finance_organizations`。这两步必须先通过，后续才能进入数据校验。
+   - 异常类型不能合并成笼统错误；新增异常必须写成稳定枚举，并填 `field/raw_value/config_node/action`，方便 Sheet2 和 CLI 直接定位。
+   - 本地重复只用 Excel/配置判断，不查 NC；重复组默认全组跳过，不能自动挑一条继续录入。
+
+2. 收款单录入主线
+   - 本地预检通过后，按主体分组录入；录入前不查 NC。用户已明确前提：交给机器的行本来就是未做过的。
+   - 后续批量入口需要消费 `ReceiptPlanRow`，而不是旧 `ReceiptExcelRow` 候选；保存和后验结果要写回机器 Sheet2，不能依赖 Sheet1 状态列。
+   - 录入步骤仍是 `新增 -> 自制 -> 表头 -> 明细主行 -> 手续费分支 -> 保存`；客户字段仍是硬门槛。
+
+3. 做完后的 NC 后验查询
+   - 全部录入动作结束后，每个主体只查一次 NC，例如 A001 一次、A006 一次；不能为了重复判断或逐行验证重复查询同一主体。
+   - 后验查询复用 `receipt_query_fill.py` 的分页、稳定等待和结果抽取能力；查询结果只用于验证本批保存结果并写 Sheet2，不用于录入前跳过。
    - 当前真实 NC 已重新确认列位：`name=4`、`amount=6` 可命中 A001，`name=2` 实际是单据类型 `收款单`，`amount=7` 是本币金额。
 
-2. 剩余主体回写
-   - A006 已查询匹配成功；如 Excel 没有看到写回状态，直接重跑 A006 写回命令覆盖原状态。
-   - A011 还需要按同一规则先 dry-run，再确认写回。
-   - A003 暂停，等权限或 NC 查询条件生效方式确认后再跑。
-   - 每个主体先跑 `--dry-run-match` 看配置金额列 `6` 的 `write_back.planned`、`matched_rows`、`not_found_rows`、`duplicate_rows`、`exception_rows` 是否符合预期；确认后再加 `--write-back`。
-   - Excel/WPS 必须关闭，否则会触发 `ExcelLockedError`。
+4. 历史查询/写回工具维护口径
+   - `tools/receipt_query_fill.py --dry-run-match --write-back` 是历史查重/诊断入口，仍可用于人工核查列位、分页和结果表守卫，但不再是新批量录入主线的前置筛选。
+   - 如果必须用旧入口，仍要先确认当前 NC 页面是 `收款单录入`，并看 `page_report` 确认分页实际采集；Excel/WPS 必须关闭，否则会触发 `ExcelLockedError`。
+   - A003 历史问题仍保留：输入框可写 `A003`，但确认后结果曾仍是 A001 口径，按权限或 NC 条件未生效处理。
 
-3. 契约检查
+5. 契约检查
    - 继续观察真实 `plan` / `generate` / 收款查询输出，发现缺字段再补。
    - 已覆盖模型契约不要复制第二份定义，见 `core/models.py`。
 
-4. 收款单自制录入
+6. 收款单自制录入
    - 继续用 JAB 控件树而不是坐标/截图/剪贴板填表。入口顺序应是：点 `新增(Ctrl+N)` 按钮，等待可见 enabled `SunAwtWindow` 菜单，点 `自制`，验证 `保存`/`暂存`/`取消` 三按钮进入录入态。
    - `receipt_self_made_fill_trial.py` 必须把三按钮状态作为开单成功条件；JAB action 成功、菜单项点中或 path 命中都不能单独算成功。
    - 表头区按业务字段写入：财务组织取银行推导主体，到款日期写单据日期，客户写 Excel 客户编码，币种 `USD -> 美元`、`RMB -> 人民币`，收款银行账号按配置写账号；PayPal 特例没有账号，只输入名称。
@@ -78,7 +90,7 @@
    - 待增行状态只能由 Excel 手续费是否非零推导；手续费为 `0`、空、`None` 时禁止增行。手续费非零时，增行只能用稳定业务快捷键 `Ctrl+I`，不要用 Enter；下一步必须单独做 T0 验证：主行校验成功后，在安全焦点/前台守卫通过时发送 `Ctrl+I`，确认行数 +1，再只写手续费行字段，最后读回第 2 行校验。
    - 手续费分支已经 T0 跑通，后续正式化时不要删掉：手续费行账户如果自动带出，必须 `Delete` 清空；多余空白第 3 行用 `Ctrl+D` 删除。手续费行同样需要 `结算方式=网银`。
 
-5. 收款单自制录入 row 1424 当前进度
+7. 收款单自制录入 row 1424 当前进度
    - 本轮只允许以 Excel row `1424` 为试验行，不保存、不暂存。
    - row 1424 业务值：到款日期 `2026-04-02`，客户编码 `YW03200`，币种 `USD -> 美元`，银行 `大陆交行`，账号按配置仍为 `FTE310066674143603000377`，到账金额 `1090`，手续费 `"0"`，所以不增手续费行。
    - 已跑通到表头账户前：`新增 -> 自制` 可以从主窗口 `SunAwtFrame` 的 `新增(Ctrl+N)` 进入；表头顺序必须是 `财务组织(O)` 写 `A001` 后先写 `客户` `YW03200`，让 NC 加载财务组织名称和后续表头控件树，再写 `单据日期` `2026-04-02`、`币种` `美元`。后台 description/text 能读到写入值即允许继续；NC 如果自行把编码纠正成中文，只作为更强状态记录，不作为继续写后续字段的硬门槛。
@@ -92,7 +104,7 @@
    - `receipt_self_made_fill_trial.py` 默认在账户参照打开后停止；不能把“打开参照、搜索账号、等待结果、选择确定”合成一个命令。后续必须拆成前台检查、搜索、读结果、选中、确定和回填验证。
    - `receipt_account_reference_try.py` 已加前台校验雏形，但还不能直接长时间运行。后续必须先单独做 1 秒以内的前台检查，确认前台 hwnd 就是当前 `使用权参照`，再执行 `Alt+F` 和输入。
 
-6. 现场操作纪律，必须优先于任何代码想法
+8. 现场操作纪律，必须优先于任何代码想法
    - 默认录入路径必须走后台 JAB：`setTextContents`、JAB action、selection/table API 和 JAB 控件树读回。不要把后台写入成功与 Windows 前台焦点绑定。
    - 和用户共用同一个桌面输入焦点。任何 `pyautogui.write`、`pyautogui.hotkey`、剪贴板粘贴、普通 `press` 都属于全局键盘输入，可能打进用户聊天框或 VS Code。没有前台 hwnd 确认时绝对禁止执行。
    - 全局键盘输入必须分两步：第一步只读/短命令确认目标窗口是前台；第二步才输入。不能把“前台确认 + 输入 + 等 30 秒结果”合成一个黑盒命令。

@@ -74,6 +74,37 @@ class ReceiptExcelRow:
 
 
 @dataclass(frozen=True)
+class ReceiptPlanRow:
+    row: int
+    receipt_date: date
+    payer_name: str
+    raw_amount: Decimal
+    bank: str
+    currency: str
+    customer_code: str
+    fee: Decimal
+    organization_code: str
+    organization_name: str
+    organization_short_name: str
+    account_id: str
+    account_label: str
+    account_no: str
+    duplicate_key: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ReceiptPlanIssue:
+    excel_row: int | None
+    stage: str
+    issue_type: str
+    field: str
+    raw_value: str
+    config_node: str
+    message: str
+    action: str
+
+
+@dataclass(frozen=True)
 class ReceiptNCRow:
     row_index: int
     document_date: date
@@ -171,6 +202,14 @@ class ReceiptEntryConfig:
         return int(self.excel_cfg.get("header_row", 1))
 
     @property
+    def start_row(self):
+        return int(self.excel_cfg.get("start_row", self.header_row + 1))
+
+    @property
+    def result_sheet_name(self):
+        return self.excel_cfg.get("result_sheet_name", "收款单自动化结果")
+
+    @property
     def start_date(self):
         return parse_date(self.excel_cfg.get("start_date", "2026-01-01"))
 
@@ -189,6 +228,18 @@ class ReceiptEntryConfig:
     @property
     def bank_column(self):
         return self.excel_cfg.get("bank_column", "银行")
+
+    @property
+    def currency_column(self):
+        return self.excel_cfg.get("currency_column", "币种")
+
+    @property
+    def customer_code_column(self):
+        return self.excel_cfg.get("customer_code_column", "客户编码")
+
+    @property
+    def fee_column(self):
+        return self.excel_cfg.get("fee_column", "手续费")
 
     @property
     def organization_column(self):
@@ -212,6 +263,13 @@ class ReceiptEntryConfig:
     @property
     def candidate_only_blank_status(self):
         return bool(self.candidate_cfg.get("only_blank_status", True))
+
+    @property
+    def validation_policy(self):
+        policy = self.receipt_cfg.get("validation_policy") or {}
+        if policy.get("skip_invalid_rows"):
+            return "skip_invalid_rows"
+        return policy.get("mode", "strict")
 
     def candidate_start_date(self, today=None):
         explicit = self.candidate_from_date
@@ -246,6 +304,14 @@ class ReceiptEntryConfig:
     def account_for_bank(self, bank):
         return self.accounts_by_label.get(normalize_lookup_key(bank))
 
+    def account_lookup_labels(self):
+        labels = []
+        for account in self.accounts:
+            if not account.enabled:
+                continue
+            labels.extend(account.lookup_names())
+        return sorted(dict.fromkeys(labels))
+
 
 class ReceiptEntryWorkbook:
     def __init__(self, config, excel_path=None):
@@ -264,6 +330,24 @@ class ReceiptEntryWorkbook:
             return rows, self.select_candidate_rows(rows, today=today), issues
         finally:
             wb.close()
+
+    def build_local_plan(self, write_sheet=False):
+        wb = openpyxl.load_workbook(self.excel_path, read_only=False, data_only=True)
+        try:
+            ws = wb[self.config.sheet_name]
+            columns = self._read_header(ws)
+            rows, issues = self._build_plan_rows(ws, columns)
+            duplicate_issues = self._detect_duplicate_rows(rows)
+            issues.extend(duplicate_issues)
+        finally:
+            wb.close()
+        if write_sheet:
+            writable = openpyxl.load_workbook(self.excel_path, read_only=False)
+            try:
+                self._write_plan_sheet(writable, rows, issues)
+            finally:
+                writable.close()
+        return rows, issues, self._summarize_plan(rows, issues)
 
     def ensure_output_columns_and_subjects(self, today=None):
         wb = openpyxl.load_workbook(self.excel_path, read_only=False)
@@ -394,6 +478,424 @@ class ReceiptEntryWorkbook:
                 )
             )
         return rows, issues
+
+    def _build_plan_rows(self, ws, columns):
+        issues = []
+        rows = []
+        required = [
+            self.config.date_column,
+            self.config.payer_name_column,
+            self.config.raw_amount_column,
+            self.config.bank_column,
+            self.config.currency_column,
+            self.config.customer_code_column,
+        ]
+        missing = [name for name in required if name not in columns]
+        for name in missing:
+            issues.append(
+                ReceiptPlanIssue(
+                    excel_row=None,
+                    stage="配置识别",
+                    issue_type="EXCEL_REQUIRED_COLUMN_MISSING",
+                    field=name,
+                    raw_value="",
+                    config_node="receipt_entry.excel",
+                    message=f"Sheet1 缺少必需列 {name!r}",
+                    action="停止整批",
+                )
+            )
+        if missing:
+            return [], issues
+        if self.config.start_row <= self.config.header_row:
+            issues.append(
+                ReceiptPlanIssue(
+                    excel_row=None,
+                    stage="配置识别",
+                    issue_type="EXCEL_START_ROW_INVALID",
+                    field="start_row",
+                    raw_value=str(self.config.start_row),
+                    config_node="receipt_entry.excel.start_row",
+                    message=(
+                        "receipt_entry.excel.start_row 必须大于 "
+                        f"header_row={self.config.header_row}"
+                    ),
+                    action="停止整批",
+                )
+            )
+            return [], issues
+
+        for row_index in range(self.config.start_row, ws.max_row + 1):
+            raw_date = ws.cell(row_index, columns[self.config.date_column]).value
+            if raw_date in (None, ""):
+                continue
+            row, row_issues = self._build_plan_row(ws, columns, row_index)
+            issues.extend(row_issues)
+            if row is not None:
+                rows.append(row)
+        return rows, issues
+
+    def _build_plan_row(self, ws, columns, row_index):
+        row_issues = []
+        raw_date = ws.cell(row_index, columns[self.config.date_column]).value
+        payer_name = read_optional_cell(
+            ws, row_index, columns.get(self.config.payer_name_column)
+        )
+        raw_amount = ws.cell(row_index, columns[self.config.raw_amount_column]).value
+        bank = read_optional_cell(ws, row_index, columns.get(self.config.bank_column))
+        currency = read_optional_cell(
+            ws, row_index, columns.get(self.config.currency_column)
+        )
+        customer_code = read_optional_cell(
+            ws, row_index, columns.get(self.config.customer_code_column)
+        )
+        fee_raw = (
+            ws.cell(row_index, columns[self.config.fee_column]).value
+            if self.config.fee_column in columns
+            else None
+        )
+
+        receipt_date = None
+        amount = None
+        fee = Decimal("0.00")
+        account = None
+        organization = None
+
+        try:
+            receipt_date = parse_date(raw_date)
+        except ValueError:
+            row_issues.append(
+                plan_issue(
+                    row_index,
+                    "本地数据校验",
+                    "DATE_INVALID",
+                    self.config.date_column,
+                    raw_date,
+                    "receipt_entry.excel.date_column",
+                    f"到款日期格式无法识别: {raw_date!r}",
+                )
+            )
+
+        if not payer_name:
+            row_issues.append(
+                plan_issue(
+                    row_index,
+                    "本地数据校验",
+                    "PAYER_NAME_EMPTY",
+                    self.config.payer_name_column,
+                    payer_name,
+                    "receipt_entry.excel.payer_name_column",
+                    "银行来款名为空，无法用于后验匹配",
+                )
+            )
+
+        try:
+            amount = parse_amount(raw_amount)
+            if amount <= 0:
+                row_issues.append(
+                    plan_issue(
+                        row_index,
+                        "本地数据校验",
+                        "AMOUNT_ZERO_OR_NEGATIVE",
+                        self.config.raw_amount_column,
+                        raw_amount,
+                        "receipt_entry.excel.raw_amount_column",
+                        f"原始金额必须大于 0，当前为 {amount}",
+                    )
+                )
+        except ValueError as exc:
+            row_issues.append(
+                plan_issue(
+                    row_index,
+                    "本地数据校验",
+                    "AMOUNT_INVALID",
+                    self.config.raw_amount_column,
+                    raw_amount,
+                    "receipt_entry.excel.raw_amount_column",
+                    str(exc),
+                )
+            )
+
+        if not bank:
+            row_issues.append(
+                plan_issue(
+                    row_index,
+                    "配置识别",
+                    "BANK_EMPTY",
+                    self.config.bank_column,
+                    bank,
+                    "receipt_entry.excel.bank_column",
+                    "银行为空，无法匹配 receipt_entry.accounts",
+                )
+            )
+        else:
+            account = self.config.account_for_bank(bank)
+            if not account:
+                row_issues.append(
+                    plan_issue(
+                        row_index,
+                        "配置识别",
+                        "BANK_ACCOUNT_NOT_CONFIGURED",
+                        self.config.bank_column,
+                        bank,
+                        (
+                            "receipt_entry.accounts[*].account_label/"
+                            "aliases/excel_bank_aliases"
+                        ),
+                        (
+                            f"Sheet1 银行={bank!r} 未匹配任何账户配置；"
+                            f"可用配置值={self.config.account_lookup_labels()}"
+                        ),
+                    )
+                )
+            elif not account.enabled:
+                row_issues.append(
+                    plan_issue(
+                        row_index,
+                        "配置识别",
+                        "BANK_ACCOUNT_DISABLED",
+                        self.config.bank_column,
+                        bank,
+                        f"receipt_entry.accounts[{account.id}].enabled",
+                        f"银行={bank!r} 匹配到账户 {account.id!r}，但账户已禁用",
+                    )
+                )
+            else:
+                organization = self.config.organizations.get(account.organization_code)
+                if not organization:
+                    row_issues.append(
+                        plan_issue(
+                            row_index,
+                            "配置识别",
+                            "ORG_NOT_CONFIGURED",
+                            "organization_code",
+                            account.organization_code,
+                            "receipt_entry.finance_organizations",
+                            (
+                                f"账户 {account.id!r} 的 organization_code="
+                                f"{account.organization_code!r} 不存在"
+                            ),
+                        )
+                    )
+
+        currency_name = normalize_receipt_currency(currency)
+        if not currency:
+            row_issues.append(
+                plan_issue(
+                    row_index,
+                    "本地数据校验",
+                    "CURRENCY_EMPTY",
+                    self.config.currency_column,
+                    currency,
+                    "receipt_entry.excel.currency_column",
+                    "币种为空，无法选择 NC 明细币种和账号候选",
+                )
+            )
+        elif not currency_name:
+            row_issues.append(
+                plan_issue(
+                    row_index,
+                    "本地数据校验",
+                    "CURRENCY_UNSUPPORTED",
+                    self.config.currency_column,
+                    currency,
+                    "receipt_entry.excel.currency_column",
+                    f"币种={currency!r} 不在支持列表 USD/RMB/CNY/美元/人民币",
+                )
+            )
+
+        if not customer_code:
+            row_issues.append(
+                plan_issue(
+                    row_index,
+                    "本地数据校验",
+                    "CUSTOMER_CODE_EMPTY",
+                    self.config.customer_code_column,
+                    customer_code,
+                    "receipt_entry.excel.customer_code_column",
+                    "客户编码为空，不能写收款单表头客户字段",
+                )
+            )
+
+        if fee_raw not in (None, ""):
+            try:
+                fee = parse_amount(fee_raw)
+                if fee < 0:
+                    row_issues.append(
+                        plan_issue(
+                            row_index,
+                            "本地数据校验",
+                            "FEE_NEGATIVE",
+                            self.config.fee_column,
+                            fee_raw,
+                            "receipt_entry.excel.fee_column",
+                            f"手续费不能小于 0，当前为 {fee}",
+                        )
+                    )
+            except ValueError as exc:
+                row_issues.append(
+                    plan_issue(
+                        row_index,
+                        "本地数据校验",
+                        "FEE_INVALID",
+                        self.config.fee_column,
+                        fee_raw,
+                        "receipt_entry.excel.fee_column",
+                        str(exc).replace("原始金额", "手续费"),
+                    )
+                )
+
+        if account and currency_name and not account.nc_candidates(currency_name):
+            row_issues.append(
+                plan_issue(
+                    row_index,
+                    "配置识别",
+                    "DETAIL_ACCOUNT_CANDIDATE_MISSING",
+                    self.config.bank_column,
+                    bank,
+                    f"receipt_entry.accounts[{account.id}].nc_candidates_by_currency",
+                    (
+                        f"账户 {account.id!r} 在币种 {currency_name!r} 下没有可用 "
+                        "NC 账号候选"
+                    ),
+                )
+            )
+
+        if row_issues:
+            return None, row_issues
+        duplicate_key = make_receipt_duplicate_key(
+            organization.code,
+            receipt_date,
+            bank,
+            currency_name,
+            customer_code,
+            payer_name,
+            amount,
+        )
+        return (
+            ReceiptPlanRow(
+                row=row_index,
+                receipt_date=receipt_date,
+                payer_name=payer_name,
+                raw_amount=amount,
+                bank=bank,
+                currency=currency_name,
+                customer_code=customer_code,
+                fee=fee,
+                organization_code=organization.code,
+                organization_name=organization.name,
+                organization_short_name=organization.short_name,
+                account_id=account.id,
+                account_label=account.account_label,
+                account_no=account.nc_candidates(currency_name)[0],
+                duplicate_key=duplicate_key,
+            ),
+            [],
+        )
+
+    def _detect_duplicate_rows(self, rows):
+        grouped = {}
+        for row in rows:
+            grouped.setdefault(row.duplicate_key, []).append(row)
+        issues = []
+        for key, group in grouped.items():
+            if len(group) <= 1:
+                continue
+            row_numbers = [row.row for row in group]
+            key_text = " + ".join(key)
+            for row in group:
+                issues.append(
+                    ReceiptPlanIssue(
+                        excel_row=row.row,
+                        stage="本地重复校验",
+                        issue_type="DUPLICATE_EXCEL_ROWS",
+                        field="重复键",
+                        raw_value=key_text,
+                        config_node="local.duplicate_key",
+                        message=(
+                            f"本批 Sheet1 存在重复行；重复键={key_text}；"
+                            f"重复原行号={row_numbers}；为避免重复制单，整组未录入。"
+                        ),
+                        action="跳过重复组",
+                    )
+                )
+        return issues
+
+    def _summarize_plan(self, rows, issues):
+        duplicate_rows = {
+            issue.excel_row
+            for issue in issues
+            if issue.issue_type == "DUPLICATE_EXCEL_ROWS" and issue.excel_row
+        }
+        runnable = [row for row in rows if row.row not in duplicate_rows]
+        grouped = {}
+        for row in runnable:
+            grouped.setdefault(row.organization_code, []).append(row.row)
+        return {
+            "rows": len(rows),
+            "issues": len(issues),
+            "runnable_rows": len(runnable),
+            "duplicate_rows": sorted(duplicate_rows),
+            "organizations": {key: value for key, value in sorted(grouped.items())},
+            "validation_policy": self.config.validation_policy,
+            "can_run": not issues or self.config.validation_policy == "skip_invalid_rows",
+        }
+
+    def _write_plan_sheet(self, wb, rows, issues):
+        name = self.config.result_sheet_name
+        if name in wb.sheetnames:
+            del wb[name]
+        ws = wb.create_sheet(name)
+        headers = [
+            "原行号",
+            "主体编码",
+            "主体名称",
+            "银行",
+            "到款日期",
+            "客户编码",
+            "币种",
+            "银行来款名",
+            "金额",
+            "手续费",
+            "账户配置ID",
+            "收款银行账户",
+            "本地预检状态",
+            "异常阶段",
+            "异常类型",
+            "异常字段",
+            "原始值",
+            "配置节点",
+            "异常说明",
+            "处理动作",
+            "录入结果",
+            "保存结果",
+            "后验查询结果",
+        ]
+        ws.append(headers)
+        issues_by_row = {}
+        global_issues = []
+        for issue in issues:
+            if issue.excel_row is None:
+                global_issues.append(issue)
+            else:
+                issues_by_row.setdefault(issue.excel_row, []).append(issue)
+        rows_by_number = {row.row: row for row in rows}
+        emitted_rows = set()
+        for row in rows:
+            emitted_rows.add(row.row)
+            row_issues = issues_by_row.get(row.row, [])
+            if row_issues:
+                for issue in row_issues:
+                    ws.append(plan_sheet_row(row, issue, "异常"))
+            else:
+                ws.append(plan_sheet_row(row, None, "通过"))
+        for row_number, row_issues in sorted(issues_by_row.items()):
+            if row_number in emitted_rows:
+                continue
+            for issue in row_issues:
+                ws.append(plan_sheet_row(rows_by_number.get(row_number), issue, "异常"))
+        for issue in global_issues:
+            ws.append(plan_sheet_row(None, issue, "异常"))
+        wb.save(self.excel_path)
 
     def _read_header(self, ws):
         columns = {}
@@ -782,6 +1284,97 @@ def read_optional_cell(ws, row, column):
         return ""
     value = ws.cell(row, column).value
     return "" if value is None else str(value).strip()
+
+
+def plan_issue(
+    excel_row,
+    stage,
+    issue_type,
+    field,
+    raw_value,
+    config_node,
+    message,
+    action="跳过本行",
+):
+    return ReceiptPlanIssue(
+        excel_row=excel_row,
+        stage=stage,
+        issue_type=issue_type,
+        field=field,
+        raw_value=format_receipt_value(raw_value),
+        config_node=config_node,
+        message=message,
+        action=action,
+    )
+
+
+def normalize_receipt_currency(value):
+    text = str(value or "").strip().upper()
+    if text in {"USD", "美元"}:
+        return "美元"
+    if text in {"RMB", "CNY", "人民币"}:
+        return "人民币"
+    return ""
+
+
+def make_receipt_duplicate_key(
+    organization_code,
+    receipt_date,
+    bank,
+    currency,
+    customer_code,
+    payer_name,
+    amount,
+):
+    return (
+        str(organization_code or "").strip(),
+        receipt_date.isoformat() if isinstance(receipt_date, date) else str(receipt_date),
+        normalize_lookup_key(bank),
+        str(currency or "").strip(),
+        normalize_lookup_key(customer_code),
+        normalize_counterparty(payer_name),
+        str(amount),
+    )
+
+
+def plan_sheet_row(row, issue, status):
+    if row is None:
+        base = [""] * 12
+    else:
+        base = [
+            row.row,
+            row.organization_code,
+            row.organization_name,
+            row.bank,
+            row.receipt_date.isoformat(),
+            row.customer_code,
+            row.currency,
+            row.payer_name,
+            str(row.raw_amount),
+            str(row.fee),
+            row.account_id,
+            row.account_no,
+        ]
+    if issue is None:
+        issue_cells = ["", "", "", "", "", "", ""]
+    else:
+        issue_cells = [
+            issue.stage,
+            issue.issue_type,
+            issue.field,
+            issue.raw_value,
+            issue.config_node,
+            issue.message,
+            issue.action,
+        ]
+    return [
+        *base,
+        status,
+        *issue_cells,
+        "",
+        "",
+        "",
+    ]
 
 
 def subtract_months(value, months):
