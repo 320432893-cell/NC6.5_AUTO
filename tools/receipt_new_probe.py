@@ -87,16 +87,24 @@ def main():
     return 0 if report.get("open", {}).get("ok") else 1
 
 
-def run(args):
+def run(args, jab=None, before=None, buttons=None):
     timings = []
-    cfg = load_config(args.config)
-    jab = JABOperator(cfg)
+    owns_jab = jab is None
+    if owns_jab:
+        cfg = load_config(args.config)
+        jab = JABOperator(cfg)
     jab.hide_blank_awt_windows_enabled = False
     try:
-        measure(timings, "new-probe.jab.ensure-started", jab.ensure_started)
-        before = measure(
-            timings, "new-probe.collect-before", collect_receipt_new_windows, jab
-        )
+        if owns_jab:
+            measure(timings, "new-probe.jab.ensure-started", jab.ensure_started)
+        else:
+            timings.append({"name": "new-probe.jab.ensure-started", "seconds": 0.0})
+        if before is None:
+            before = measure(
+                timings, "new-probe.collect-before", collect_receipt_new_windows, jab
+            )
+        else:
+            timings.append({"name": "new-probe.collect-before", "seconds": 0.0})
         matches = measure(
             timings,
             "new-probe.find-matches",
@@ -107,16 +115,19 @@ def run(args):
             args.class_name,
             require_action=False,
         )
-        buttons = measure(
-            timings,
-            "new-probe.find-buttons",
-            find_named_controls_in_windows,
-            before,
-            args.name,
-            args.role,
-            args.class_name,
-            require_action=True,
-        )
+        if buttons is None:
+            buttons = measure(
+                timings,
+                "new-probe.find-buttons",
+                find_named_controls_in_windows,
+                before,
+                args.name,
+                args.role,
+                args.class_name,
+                require_action=True,
+            )
+        else:
+            timings.append({"name": "new-probe.find-buttons", "seconds": 0.0})
         buttons.sort(key=new_button_priority)
         open_report = measure(
             timings,
@@ -197,7 +208,8 @@ def run(args):
         )
     finally:
         jab.hide_blank_awt_windows_enabled = False
-        jab.close()
+        if owns_jab:
+            jab.close()
 
     report = {
         "matches": matches,

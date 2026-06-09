@@ -32,6 +32,7 @@ from tools.receipt_new_probe import (  # noqa: E402
 from tools.receipt_self_made_fill_trial import (  # noqa: E402
     find_context_with_window,
     find_receipt_header_form_field,
+    find_receipt_header_form_field_by_path,
     read_body_table,
 )
 from tools.tmp_receipt_cell_probe_run import (  # noqa: E402
@@ -153,7 +154,7 @@ def build_latest_test_cases(config, limit=TEST_CASE_LIMIT):
     ]
 
 
-def run_receipt_new_probe():
+def run_receipt_new_probe(jab=None, before=None, buttons=None):
     start = time.perf_counter()
     args = SimpleNamespace(
         config=str(ROOT / "config.json"),
@@ -171,7 +172,9 @@ def run_receipt_new_probe():
         json=False,
         summary=True,
     )
-    report = run_receipt_new_probe_in_process(args)
+    report = run_receipt_new_probe_in_process(
+        args, jab=jab, before=before, buttons=buttons
+    )
     parsed = summarize_receipt_new_probe_report(report)
     entry_state = report.get("entry_state") or {}
     ok = (
@@ -215,6 +218,7 @@ def wait_new_visible(jab, timeout=SAVE_SUCCESS_TIMEOUT):
 
 
 def ensure_starts_from_new_state(jab):
+    windows = collect_receipt_new_windows(jab)
     buttons = find_new_buttons(jab, name_query="新增", class_name="SunAwtFrame")
     if buttons:
         return {
@@ -222,8 +226,9 @@ def ensure_starts_from_new_state(jab):
             "state": "new-visible",
             "count": len(buttons),
             "first": buttons[0],
+            "buttons": buttons,
+            "windows": windows,
         }
-    windows = collect_receipt_new_windows(jab)
     entry_state = detect_self_made_entry_state(windows)
     if entry_state.get("ok"):
         return {
@@ -274,7 +279,8 @@ def business_for_case(config, case):
     }
 
 
-def fill_minimal_header(jab, business):
+def fill_minimal_header(jab, business, header_cache=None):
+    header_cache = header_cache if header_cache is not None else {}
     steps = []
     for item in [
         ("财务组织", business["finance_org_code"], "header_form", True),
@@ -284,13 +290,13 @@ def fill_minimal_header(jab, business):
         label, value, method, require_strict = item
         start = time.perf_counter()
         if label == "财务组织":
-            result = set_finance_org_header_field(jab, value)
+            result = set_finance_org_header_field(jab, value, header_cache)
         elif label == "客户":
-            result = set_customer_header_field(jab, value)
+            result = set_customer_header_field(jab, value, header_cache)
         elif label == "单据日期":
-            result = set_document_date_header_field(jab, value)
+            result = set_document_date_header_field(jab, value, header_cache)
         else:
-            result = screen_write_header_field(jab, label, value)
+            result = screen_write_header_field(jab, label, value, header_cache)
         result = dict(result)
         result.update(
             {
@@ -306,6 +312,7 @@ def fill_minimal_header(jab, business):
             result["strict_ok"] if require_strict else header_step_soft_ok(result)
         )
         steps.append(result)
+        remember_header_field(header_cache, label, result)
         if not result.get("soft_ok"):
             break
     return steps
@@ -317,8 +324,8 @@ def header_step_soft_ok(result):
     return False
 
 
-def set_finance_org_header_field(jab, value):
-    result = screen_write_control_by_name(jab, "财务组织(O)", value)
+def set_finance_org_header_field(jab, value, header_cache=None):
+    result = screen_write_control_by_name(jab, "财务组织(O)", value, header_cache)
     result.update(
         {
             "label": "财务组织",
@@ -329,8 +336,8 @@ def set_finance_org_header_field(jab, value):
     return result
 
 
-def set_customer_header_field(jab, value):
-    fallback = screen_write_header_field(jab, "客户", value)
+def set_customer_header_field(jab, value, header_cache=None):
+    fallback = screen_write_header_field(jab, "客户", value, header_cache)
     result = {
         "ok": bool(fallback.get("ok")),
         "label": "客户",
@@ -355,8 +362,8 @@ def set_customer_header_field(jab, value):
     return result
 
 
-def set_document_date_header_field(jab, value):
-    fallback = screen_write_header_field(jab, "单据日期", value)
+def set_document_date_header_field(jab, value, header_cache=None):
+    fallback = screen_write_header_field(jab, "单据日期", value, header_cache)
     result = {
         "ok": bool(fallback.get("ok")),
         "label": "单据日期",
@@ -381,8 +388,8 @@ def set_document_date_header_field(jab, value):
     return result
 
 
-def screen_write_header_field(jab, label, value):
-    found = find_receipt_header_form_field(jab, label)
+def screen_write_header_field(jab, label, value, header_cache=None):
+    found = find_cached_header_field(jab, label, header_cache)
     if not found.get("ok"):
         return {
             "ok": False,
@@ -455,25 +462,38 @@ def screen_write_header_field(jab, label, value):
             "guard": guard,
             "commit": commit,
             "path": found.get("path"),
+            "window": window,
+            "cache_hit": bool(found.get("cache_hit")),
             "fallback_path_used": bool(found.get("fallback_path_used")),
         }
     finally:
         jab.release_contexts(vm_id, owned_contexts)
 
 
-def screen_write_control_by_name(jab, control_name, value):
-    context, vm_id, owned_contexts, owned_indexes, window = find_context_with_window(
-        jab,
-        control_name,
-        roles=("text",),
-        timeout=3.0,
-        require_showing=True,
-        window_class="SunAwtCanvas",
-        visible_only=True,
-    )
+def screen_write_control_by_name(jab, control_name, value, header_cache=None):
+    cached_label = "财务组织" if control_name == "财务组织(O)" else control_name
+    cached = find_cached_header_field(jab, cached_label, header_cache)
+    if cached.get("ok"):
+        context = cached["context"]
+        vm_id = cached["vm_id"]
+        owned_contexts = cached["owned_contexts"]
+        window = cached.get("window") or {}
+        path = cached.get("path")
+    else:
+        context, vm_id, owned_contexts, owned_indexes, window = (
+            find_context_with_window(
+                jab,
+                control_name,
+                roles=("text",),
+                timeout=3.0,
+                require_showing=True,
+                window_class="SunAwtCanvas",
+                visible_only=True,
+            )
+        )
+        path = "0" + "".join(f".{index}" for index in owned_indexes)
     if not context:
         return {"ok": False, "reason": f"控件未找到：{control_name}"}
-    path = "0" + "".join(f".{index}" for index in owned_indexes)
     try:
         info = jab.get_context_info(vm_id, context)
         if not info:
@@ -515,6 +535,7 @@ def screen_write_control_by_name(jab, control_name, value):
         return {
             "ok": True,
             "path": path,
+            "cache_hit": bool(cached.get("ok")),
             "bounds": bounds,
             "target": [target_x, target_y],
             "guard": guard,
@@ -525,6 +546,60 @@ def screen_write_control_by_name(jab, control_name, value):
         }
     finally:
         jab.release_contexts(vm_id, owned_contexts)
+
+
+def remember_header_field(header_cache, label, result):
+    if header_cache is None or not result.get("ok"):
+        return
+    path = result.get("path")
+    window = result.get("window") or (result.get("guard") or {}).get("table_window")
+    if not path:
+        return
+    header_cache[label] = {
+        "path": path,
+        "window": normalize_window_info(window),
+    }
+
+
+def normalize_window_info(window):
+    window = dict(window or {})
+    if "class_name" not in window and "class" in window:
+        window["class_name"] = window.get("class")
+    return window
+
+
+def find_cached_header_field(jab, label, header_cache=None):
+    cached = (header_cache or {}).get(label) or {}
+    path = cached.get("path")
+    window = normalize_window_info(cached.get("window"))
+    if path:
+        context, vm_id, owned_contexts, window_info = jab.find_context_by_path_once(
+            path,
+            class_name=window.get("class_name") or "SunAwtCanvas",
+            scope_hwnd=window.get("hwnd"),
+            role="text",
+            require_showing=True,
+            require_valid_bounds=True,
+        )
+        if context:
+            return {
+                "ok": True,
+                "context": context,
+                "vm_id": vm_id,
+                "owned_contexts": owned_contexts,
+                "path": path,
+                "window": normalize_window_info(window_info),
+                "cache_hit": True,
+            }
+    found = (
+        find_receipt_header_form_field_by_path(jab, label)
+        if label in {"单据日期", "客户"}
+        else find_receipt_header_form_field(jab, label)
+    )
+    if found.get("ok"):
+        found["cache_hit"] = False
+        return found
+    return found
 
 
 def click_header_field_center(jab, label):
@@ -578,8 +653,8 @@ def click_header_field_center(jab, label):
         jab.release_contexts(vm_id, owned_contexts)
 
 
-def read_header_field_non_empty(jab, label):
-    found = find_receipt_header_form_field(jab, label)
+def read_header_field_non_empty(jab, label, header_cache=None):
+    found = find_cached_header_field(jab, label, header_cache)
     if not found.get("ok"):
         return {
             "ok": False,
@@ -600,6 +675,7 @@ def read_header_field_non_empty(jab, label):
             "ok": non_empty,
             "label": label,
             "path": found.get("path"),
+            "cache_hit": bool(found.get("cache_hit")),
             "fallback_path_used": bool(found.get("fallback_path_used")),
             "text": text,
             "description": description,
@@ -610,11 +686,11 @@ def read_header_field_non_empty(jab, label):
         jab.release_contexts(vm_id, owned_contexts)
 
 
-def wait_header_field_non_empty(jab, label, timeout=0.9):
+def wait_header_field_non_empty(jab, label, timeout=0.9, header_cache=None):
     deadline = time.time() + timeout
     last = None
     while time.time() < deadline:
-        last = read_header_field_non_empty(jab, label)
+        last = read_header_field_non_empty(jab, label, header_cache)
         if last.get("ok"):
             last["wait_seconds"] = round(timeout - max(deadline - time.time(), 0), 3)
             return last
@@ -630,19 +706,31 @@ def wait_header_field_non_empty(jab, label, timeout=0.9):
     return last
 
 
-def read_finance_org_field(jab):
-    context, vm_id, owned_contexts, owned_indexes, window = find_context_with_window(
-        jab,
-        "财务组织(O)",
-        roles=("text",),
-        timeout=1.0,
-        require_showing=True,
-        window_class="SunAwtCanvas",
-        visible_only=True,
-    )
+def read_finance_org_field(jab, header_cache=None):
+    cached = find_cached_header_field(jab, "财务组织", header_cache)
+    if cached.get("ok"):
+        context = cached["context"]
+        vm_id = cached["vm_id"]
+        owned_contexts = cached["owned_contexts"]
+        window = cached.get("window") or {}
+        path = cached.get("path")
+        cache_hit = True
+    else:
+        context, vm_id, owned_contexts, owned_indexes, window = (
+            find_context_with_window(
+                jab,
+                "财务组织(O)",
+                roles=("text",),
+                timeout=1.0,
+                require_showing=True,
+                window_class="SunAwtCanvas",
+                visible_only=True,
+            )
+        )
+        path = "0" + "".join(f".{index}" for index in owned_indexes)
+        cache_hit = False
     if not context:
         return {"ok": False, "label": "财务组织", "reason": "财务组织控件未找到"}
-    path = "0" + "".join(f".{index}" for index in owned_indexes)
     try:
         info = jab.get_context_info(vm_id, context)
         text = str(jab.get_text_context_value(vm_id, context) or "").strip()
@@ -653,6 +741,7 @@ def read_finance_org_field(jab):
             "ok": non_empty,
             "label": "财务组织",
             "path": path,
+            "cache_hit": cache_hit,
             "text": text,
             "description": description,
             "name": name,
@@ -663,11 +752,11 @@ def read_finance_org_field(jab):
         jab.release_contexts(vm_id, owned_contexts)
 
 
-def wait_finance_org_field_non_empty(jab, timeout=1.2):
+def wait_finance_org_field_non_empty(jab, timeout=1.2, header_cache=None):
     deadline = time.time() + timeout
     last = None
     while time.time() < deadline:
-        last = read_finance_org_field(jab)
+        last = read_finance_org_field(jab, header_cache)
         if last.get("ok"):
             last["wait_seconds"] = round(timeout - max(deadline - time.time(), 0), 3)
             return last
@@ -683,12 +772,12 @@ def wait_finance_org_field_non_empty(jab, timeout=1.2):
     return last
 
 
-def wait_header_field_has_text(jab, label, value, timeout=1.0):
+def wait_header_field_has_text(jab, label, value, timeout=1.0, header_cache=None):
     expected = str(value or "").strip()
     deadline = time.time() + timeout
     last = None
     while time.time() < deadline:
-        last = read_header_field_non_empty(jab, label)
+        last = read_header_field_non_empty(jab, label, header_cache)
         text = str((last or {}).get("text") or "").strip()
         description = str((last or {}).get("description") or "").strip()
         if last and last.get("ok") and (text == expected or description == expected):
@@ -752,8 +841,8 @@ def finance_org_matches_exact(result, business):
     return False
 
 
-def review_finance_org_after_fill(jab, business):
-    checks = [review_finance_org_exact(jab, business)]
+def review_finance_org_after_fill(jab, business, header_cache=None):
+    checks = [review_finance_org_exact(jab, business, header_cache)]
     failed_required = [
         item
         for item in checks
@@ -770,11 +859,13 @@ def review_finance_org_after_fill(jab, business):
     }
 
 
-def review_header_before_save(jab, business):
+def review_header_before_save(jab, business, header_cache=None):
     checks = [
-        review_finance_org_exact(jab, business),
-        review_header_has_text(jab, "单据日期", business["document_date"]),
-        review_customer_resolved(jab, business),
+        review_finance_org_exact(jab, business, header_cache),
+        review_header_has_text(
+            jab, "单据日期", business["document_date"], header_cache
+        ),
+        review_customer_resolved(jab, business, header_cache),
     ]
     failed_required = [
         item
@@ -792,8 +883,10 @@ def review_header_before_save(jab, business):
     }
 
 
-def review_finance_org_exact(jab, business):
-    result = wait_finance_org_field_non_empty(jab, timeout=1.2)
+def review_finance_org_exact(jab, business, header_cache=None):
+    result = wait_finance_org_field_non_empty(
+        jab, timeout=1.2, header_cache=header_cache
+    )
     ok = bool(result.get("ok")) and finance_org_matches_exact(result, business)
     expected = {
         "code": business.get("finance_org_code"),
@@ -810,8 +903,10 @@ def review_finance_org_exact(jab, business):
     }
 
 
-def review_customer_resolved(jab, business):
-    result = wait_header_field_non_empty(jab, "客户", timeout=0.9)
+def review_customer_resolved(jab, business, header_cache=None):
+    result = wait_header_field_non_empty(
+        jab, "客户", timeout=0.9, header_cache=header_cache
+    )
     ok = bool(result.get("ok"))
     expected = {
         "input_code": business.get("customer_code"),
@@ -829,8 +924,10 @@ def review_customer_resolved(jab, business):
     }
 
 
-def review_header_has_text(jab, label, value):
-    result = wait_header_field_has_text(jab, label, value, timeout=1.0)
+def review_header_has_text(jab, label, value, header_cache=None):
+    result = wait_header_field_has_text(
+        jab, label, value, timeout=1.0, header_cache=header_cache
+    )
     return {
         **result,
         "required": True,
@@ -1323,52 +1420,54 @@ def run_one_case(config, case, allow_existing_entry=False):
                 }
             )
             return case_report
-    finally:
-        jab.close()
 
-    if start_state.get("state") == "existing-self-made-entry":
-        opened = {
-            "ok": True,
-            "seconds": 0.0,
-            "method": "reuse-existing-self-made-entry",
-        }
-    else:
-        opened = run_receipt_new_probe()
-    case_report["open_self_made"] = opened
-    case_report["timings"].append({"name": "新增->自制", "seconds": opened["seconds"]})
-    for item in opened.get("timings") or []:
+        if start_state.get("state") == "existing-self-made-entry":
+            opened = {
+                "ok": True,
+                "seconds": 0.0,
+                "method": "reuse-existing-self-made-entry",
+            }
+        else:
+            opened = run_receipt_new_probe(
+                jab=jab,
+                before=start_state.get("windows"),
+                buttons=start_state.get("buttons"),
+            )
+        case_report["open_self_made"] = opened
         case_report["timings"].append(
-            {
-                "name": f"新增->自制.{item.get('name')}",
-                "seconds": item.get("seconds"),
-            }
+            {"name": "新增->自制", "seconds": opened["seconds"]}
         )
-    if not opened.get("ok"):
-        case_report.update(
-            {
-                "ok": False,
-                "failed_step": "open-self-made",
-                "reason": "新增->自制失败",
-                "seconds": elapsed(case_start),
-            }
-        )
-        return case_report
+        for item in opened.get("timings") or []:
+            case_report["timings"].append(
+                {
+                    "name": f"新增->自制.{item.get('name')}",
+                    "seconds": item.get("seconds"),
+                }
+            )
+        if not opened.get("ok"):
+            case_report.update(
+                {
+                    "ok": False,
+                    "failed_step": "open-self-made",
+                    "reason": "新增->自制失败",
+                    "seconds": elapsed(case_start),
+                }
+            )
+            return case_report
 
-    jab = JABOperator(config)
-    try:
-        start = time.perf_counter()
-        jab.ensure_started()
         case_report["timings"].append(
-            {"name": "填写阶段.JAB启动", "seconds": elapsed(start)}
+            {"name": "填写阶段.JAB启动", "seconds": 0.0, "reused": True}
         )
         business = business_for_case(config, case)
         case_report["business"] = business
         case_report["customer_checks"] = []
         case_report["header_reviews"] = []
+        header_cache = {}
 
         header_start = time.perf_counter()
-        header_steps = fill_minimal_header(jab, business)
+        header_steps = fill_minimal_header(jab, business, header_cache)
         case_report["header_steps"] = header_steps
+        case_report["header_cache"] = header_cache
         case_report["timings"].append(
             {"name": "表头", "seconds": elapsed(header_start)}
         )
@@ -1384,7 +1483,9 @@ def run_one_case(config, case, allow_existing_entry=False):
             return case_report
 
         start = time.perf_counter()
-        finance_org_after_fill = review_finance_org_after_fill(jab, business)
+        finance_org_after_fill = review_finance_org_after_fill(
+            jab, business, header_cache
+        )
         case_report["header_reviews"].append(finance_org_after_fill)
         case_report["timings"].append(
             {"name": "财务组织回看.写完后", "seconds": elapsed(start)}
@@ -1442,7 +1543,7 @@ def run_one_case(config, case, allow_existing_entry=False):
             return case_report
 
         start = time.perf_counter()
-        header_review = review_header_before_save(jab, business)
+        header_review = review_header_before_save(jab, business, header_cache)
         case_report["header_reviews"].append(header_review)
         case_report["header_review"] = header_review
         case_report["timings"].append(
