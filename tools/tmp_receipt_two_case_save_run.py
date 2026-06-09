@@ -5,10 +5,11 @@
 
 import ctypes
 from dataclasses import dataclass
-import subprocess
+import re
 import sys
 import time
 import traceback
+from types import SimpleNamespace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,7 +17,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from core.jab_operator import JABOperator  # noqa: E402
-from core.receipt_entry import ReceiptEntryConfig  # noqa: E402
+from core.receipt_entry import ReceiptEntryConfig, ReceiptEntryWorkbook  # noqa: E402
 from core.utils import load_config  # noqa: E402
 from tools.jab_health_check import check_jab_ready, print_jab_health_failure  # noqa: E402
 from tools.receipt_account_reference_try import STOP_HOTKEY, is_stop_hotkey_pressed  # noqa: E402
@@ -25,18 +26,20 @@ from tools.receipt_new_probe import (  # noqa: E402
     collect_receipt_new_windows,
     detect_self_made_entry_state,
     find_new_buttons,
+    run as run_receipt_new_probe_in_process,
+    summarize_report as summarize_receipt_new_probe_report,
 )
 from tools.receipt_self_made_fill_trial import (  # noqa: E402
+    find_context_with_window,
     find_receipt_header_form_field,
     read_body_table,
-    set_receipt_header_form_field,
-    set_text_by_control_name,
 )
 from tools.tmp_receipt_cell_probe_run import (  # noqa: E402
     mouse_click,
     move_mouse,
     send_hotkey_ctrl_a,
     send_text,
+    send_virtual_key,
 )
 from tools.tmp_receipt_detail_main_line_run import (  # noqa: E402
     run_fee_only,
@@ -46,6 +49,15 @@ from tools.tmp_receipt_detail_main_line_run import (  # noqa: E402
 
 START_DELAY_SECONDS = 2
 SAVE_SUCCESS_TIMEOUT = 12.0
+SAVE_ENABLED = False
+READ_DETAIL_BEFORE_SAVE_SKIPPED = False
+ALLOW_EXISTING_ENTRY_FOR_FIRST_CASE = False
+TEST_CASE_LIMIT = 2
+TEST_ORG_CODE = "A001"
+TEST_PREFERRED_CURRENCY = "人民币"
+TEST_BANK_LABEL = "招行"
+TEST_BANK_ACCOUNT_NO = "FTE1219165931831RMB"
+TEST_FEE_OVERRIDES = ("20.00", "33.00")
 
 
 @dataclass(frozen=True)
@@ -57,49 +69,45 @@ class TestCase:
     currency: str
     amount: str
     fee: str
+    bank_account_no: str
+    excel_row: int | None = None
+    payer_name: str = ""
+    source_bank: str = ""
 
 
-TEST_CASES = [
-    TestCase(
-        name="无手续费",
-        document_date="2026-04-02",
-        customer_code="YW03200",
-        bank_label="招行",
-        currency="人民币",
-        amount="1",
-        fee="0",
-    ),
-    TestCase(
-        name="有手续费",
-        document_date="2026-04-02",
-        customer_code="YW03200",
-        bank_label="招行",
-        currency="人民币",
-        amount="2",
-        fee="10",
-    ),
-]
-
-
-def print_header():
+def print_header(test_cases):
     print("测试功能：收款单两案例真实保存循环")
     print()
     print("测试数据：")
-    for index, case in enumerate(TEST_CASES, start=1):
+    for index, case in enumerate(test_cases, start=1):
         print(
-            f"{index}. {case.name}: 日期={case.document_date}, 客户={case.customer_code}, "
-            f"银行={case.bank_label}, 币种={case.currency}, 金额={case.amount}, 手续费={case.fee}"
+            f"{index}. {case.name}: Excel行={case.excel_row}, 日期={case.document_date}, "
+            f"客户={case.customer_code}, 原Excel银行={case.source_bank}, "
+            f"录入银行={case.bank_label}, 账号={case.bank_account_no}, "
+            f"币种={case.currency}, 金额={case.amount}, 手续费={case.fee}"
         )
+    print()
+    print(
+        f"选数口径：最近 {TEST_CASE_LIMIT} 条有效行，"
+        f"主体={TEST_ORG_CODE}，币种={TEST_PREFERRED_CURRENCY}；"
+        f"收款银行账号固定用 {TEST_BANK_ACCOUNT_NO}；"
+        f"手续费用脚本测试值覆盖={TEST_FEE_OVERRIDES}"
+    )
     print()
     print("本脚本会做：")
     print("1. 每条从【新增】入口进入【自制】")
     print("2. 写表头：财务组织、客户、单据日期")
     print("3. 写明细主行：货款、币种、收款银行账户、科目、金额、网银")
     print("4. 手续费非零时：Ctrl+I 增行，写手续费行，清账户，删多余空行")
-    print("5. 前台守卫通过后发送 Ctrl+S 保存")
-    print("6. 保存后等待【新增】再次出现，作为保存成功")
+    if SAVE_ENABLED:
+        print("5. 前台守卫通过后发送 Ctrl+S 保存")
+        print("6. 保存后等待【新增】再次出现，作为保存成功")
+    else:
+        print("5. 保存前停止：本轮只诊断填写，不发送 Ctrl+S")
     print()
     print("不会做：关闭窗口、写 Excel 状态、处理非测试数据")
+    if not SAVE_ENABLED:
+        print("不会做：保存、暂存")
     print(f"紧急停止：按 {STOP_HOTKEY}")
     print(f"启动后等待：{START_DELAY_SECONDS} 秒，用来切到 NC 窗口")
     print("=" * 60)
@@ -109,34 +117,77 @@ def elapsed(start):
     return round(time.perf_counter() - start, 3)
 
 
-def run_receipt_new_probe():
-    cmd = [
-        sys.executable,
-        str(ROOT / "tools" / "receipt_new_probe.py"),
-        "--method",
-        "button",
-        "--class-name",
-        "SunAwtFrame",
-        "--choose-self-made",
-        "--wait",
-        "0.8",
-        "--summary",
+def build_latest_test_cases(config, limit=TEST_CASE_LIMIT):
+    workbook = ReceiptEntryWorkbook(config)
+    rows, issues, summary = workbook.build_local_plan(write_sheet=False)
+    issue_rows = {issue.excel_row for issue in issues if issue.excel_row is not None}
+    candidates = [
+        row
+        for row in rows
+        if row.row not in issue_rows
+        and row.organization_code == TEST_ORG_CODE
+        and row.currency == TEST_PREFERRED_CURRENCY
     ]
+    candidates.sort(key=lambda row: (row.receipt_date, row.row), reverse=True)
+    selected = candidates[:limit]
+    if len(selected) < limit:
+        raise RuntimeError(
+            f"有效测试行不足 {limit} 条：主体={TEST_ORG_CODE}, "
+            f"可选={len(selected)}, 总计划行={summary.get('rows')}"
+        )
+    return [
+        TestCase(
+            name=f"最近有效行{index}",
+            excel_row=row.row,
+            document_date=row.receipt_date.isoformat(),
+            customer_code=row.customer_code,
+            payer_name=row.payer_name,
+            source_bank=row.bank,
+            bank_label=TEST_BANK_LABEL,
+            bank_account_no=TEST_BANK_ACCOUNT_NO,
+            currency=row.currency,
+            amount=str(row.raw_amount),
+            fee=TEST_FEE_OVERRIDES[(index - 1) % len(TEST_FEE_OVERRIDES)],
+        )
+        for index, row in enumerate(selected, start=1)
+    ]
+
+
+def run_receipt_new_probe():
     start = time.perf_counter()
-    proc = subprocess.run(
-        cmd,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        capture_output=True,
+    args = SimpleNamespace(
+        config=str(ROOT / "config.json"),
+        method="button",
+        path=None,
+        title=None,
+        class_name="SunAwtFrame",
+        name="新增",
+        role=None,
+        action=None,
+        return_timeout=0.2,
+        wait=0.8,
+        choose_self_made=True,
+        self_made_index=0,
+        json=False,
+        summary=True,
     )
-    ok = proc.returncode == 0
+    report = run_receipt_new_probe_in_process(args)
+    parsed = summarize_receipt_new_probe_report(report)
+    entry_state = report.get("entry_state") or {}
+    ok = (
+        bool((report.get("open") or {}).get("ok"))
+        and bool((report.get("choose_self_made") or {}).get("ok"))
+        and bool(entry_state.get("ok") or entry_state.get("partial_ok"))
+    )
     return {
         "ok": ok,
         "seconds": elapsed(start),
-        "returncode": proc.returncode,
-        "stdout": proc.stdout.strip(),
-        "stderr": proc.stderr.strip(),
+        "returncode": 0 if ok else 1,
+        "stdout": "",
+        "stderr": "",
+        "parsed_summary": parsed,
+        "timings": parsed.get("timings") or [],
+        "raw_report": report,
     }
 
 
@@ -197,14 +248,23 @@ def business_for_case(config, case):
     if not org:
         raise RuntimeError(f"账号 {case.bank_label} 绑定的财务组织不存在")
     candidates = account.nc_candidates(case.currency)
-    bank_account = candidates[0] if candidates else account.account_no
+    bank_account = case.bank_account_no or (
+        candidates[0] if candidates else account.account_no
+    )
+    if bank_account != TEST_BANK_ACCOUNT_NO:
+        raise RuntimeError(
+            f"本轮测试只允许账号 {TEST_BANK_ACCOUNT_NO}，实际将使用 {bank_account}"
+        )
     return {
         "finance_org_code": org.code,
         "finance_org_name": org.name,
+        "finance_org_short_name": org.short_name,
         "document_date": case.document_date,
         "customer_code": case.customer_code,
+        "payer_name": case.payer_name,
         "currency": case.currency,
         "bank_label": case.bank_label,
+        "source_bank": case.source_bank,
         "bank_account": bank_account,
         "amount": case.amount,
         "fee": case.fee,
@@ -217,18 +277,20 @@ def business_for_case(config, case):
 def fill_minimal_header(jab, business):
     steps = []
     for item in [
-        ("财务组织", business["finance_org_code"], "control_name", False),
+        ("财务组织", business["finance_org_code"], "header_form", True),
+        ("单据日期", business["document_date"], "header_form", True),
         ("客户", business["customer_code"], "header_form", True),
-        ("单据日期", business["document_date"], "header_form", False),
     ]:
         label, value, method, require_strict = item
         start = time.perf_counter()
-        if method == "control_name":
-            result = set_text_by_control_name(jab, "财务组织(O)", value)
+        if label == "财务组织":
+            result = set_finance_org_header_field(jab, value)
         elif label == "客户":
             result = set_customer_header_field(jab, value)
+        elif label == "单据日期":
+            result = set_document_date_header_field(jab, value)
         else:
-            result = set_receipt_header_form_field(jab, label, value)
+            result = screen_write_header_field(jab, label, value)
         result = dict(result)
         result.update(
             {
@@ -252,33 +314,70 @@ def fill_minimal_header(jab, business):
 def header_step_soft_ok(result):
     if result.get("ok"):
         return True
-    # NC/JAB 对部分表头字段会出现 setTextContents 成功但读回为空。
-    # T0 保存循环以保存后【新增】为最终 oracle，因此这里不因读回空阻断。
-    if result.get("path") and not result.get("exception"):
-        return True
     return False
 
 
-def set_customer_header_field(jab, value):
-    result = dict(set_receipt_header_form_field(jab, "客户", value, commit_key="tab"))
-    if result.get("ok"):
-        result["screen_fallback"] = {"skipped": True, "reason": "JAB 后台写入已成功"}
-        return result
+def set_finance_org_header_field(jab, value):
+    result = screen_write_control_by_name(jab, "财务组织(O)", value)
+    result.update(
+        {
+            "label": "财务组织",
+            "value": value,
+            "method": "screen_input_enter",
+        }
+    )
+    return result
 
+
+def set_customer_header_field(jab, value):
     fallback = screen_write_header_field(jab, "客户", value)
-    result["screen_fallback"] = fallback
+    result = {
+        "ok": bool(fallback.get("ok")),
+        "label": "客户",
+        "value": value,
+        "method": "screen_input_enter",
+        "path": fallback.get("path"),
+        "fallback_path_used": bool(fallback.get("fallback_path_used")),
+        "backend_write": {
+            "skipped": True,
+            "reason": "客户是 NC 参照型字段，JAB setTextContents 不触发解析，直接使用真实输入",
+        },
+        "screen_fallback": fallback,
+    }
     if not fallback.get("ok"):
         result["ok"] = False
         result["reason"] = fallback.get("reason") or "客户屏幕输入兜底失败"
         return result
+    result["commit_check"] = {
+        "skipped": True,
+        "reason": "客户输入后已 Enter 提交，不原地等待读回；保存前统一回看",
+    }
+    return result
 
-    checked = wait_header_field_non_empty(jab, "客户", timeout=4.0)
-    result["screen_fallback_check"] = checked
-    result["ok"] = bool(checked.get("ok"))
-    result["reason"] = None if result["ok"] else checked.get("reason")
-    if result["ok"]:
-        result["text_after"] = checked.get("text")
-        result["description_after"] = checked.get("description")
+
+def set_document_date_header_field(jab, value):
+    fallback = screen_write_header_field(jab, "单据日期", value)
+    result = {
+        "ok": bool(fallback.get("ok")),
+        "label": "单据日期",
+        "value": value,
+        "method": "screen_input_enter",
+        "path": fallback.get("path"),
+        "fallback_path_used": bool(fallback.get("fallback_path_used")),
+        "backend_write": {
+            "skipped": True,
+            "reason": "日期字段 JAB setTextContents 读回迟钝，直接使用真实输入并失焦提交",
+        },
+        "screen_fallback": fallback,
+    }
+    if not fallback.get("ok"):
+        result["ok"] = False
+        result["reason"] = fallback.get("reason") or "单据日期屏幕输入失败"
+        return result
+    result["commit_check"] = {
+        "skipped": True,
+        "reason": "日期写入后不原地等待，保存前统一回看",
+    }
     return result
 
 
@@ -297,13 +396,17 @@ def screen_write_header_field(jab, label, value):
     try:
         info = jab.get_context_info(vm_id, context)
         if not info:
-            return {"ok": False, "label": label, "reason": "无法读取客户字段 bounds"}
+            return {
+                "ok": False,
+                "label": label,
+                "reason": f"无法读取{label}字段 bounds",
+            }
         bounds = [info.x, info.y, info.width, info.height]
         if info.x < 0 or info.y < 0 or info.width <= 0 or info.height <= 0:
             return {
                 "ok": False,
                 "label": label,
-                "reason": f"客户字段 bounds 不可见：{bounds}",
+                "reason": f"{label}字段 bounds 不可见：{bounds}",
                 "bounds": bounds,
             }
         window = found.get("window") or {}
@@ -321,23 +424,24 @@ def screen_write_header_field(jab, label, value):
         try:
             if hasattr(jab.dll, "requestFocus"):
                 jab.dll.requestFocus(vm_id, context)
-                time.sleep(0.1)
+                time.sleep(0.05)
             move_mouse(target_x, target_y)
             mouse_click()
-            time.sleep(0.08)
+            time.sleep(0.04)
             mouse_click()
-            time.sleep(0.15)
-            send_hotkey_ctrl_a()
             time.sleep(0.08)
+            send_hotkey_ctrl_a()
+            time.sleep(0.04)
             send_text(value)
-            time.sleep(0.3)
-            commit = click_header_field_center(jab, "单据日期")
-            time.sleep(0.8)
+            time.sleep(0.08)
+            press_virtual_key(0x0D)
+            commit = {"ok": True, "key": "Enter"}
+            time.sleep(0.08)
         except Exception as exc:
             return {
                 "ok": False,
                 "label": label,
-                "reason": f"客户屏幕输入失败：{type(exc).__name__}: {exc}",
+                "reason": f"{label}屏幕输入失败：{type(exc).__name__}: {exc}",
                 "target": [target_x, target_y],
                 "bounds": bounds,
                 "guard": guard,
@@ -352,6 +456,72 @@ def screen_write_header_field(jab, label, value):
             "commit": commit,
             "path": found.get("path"),
             "fallback_path_used": bool(found.get("fallback_path_used")),
+        }
+    finally:
+        jab.release_contexts(vm_id, owned_contexts)
+
+
+def screen_write_control_by_name(jab, control_name, value):
+    context, vm_id, owned_contexts, owned_indexes, window = find_context_with_window(
+        jab,
+        control_name,
+        roles=("text",),
+        timeout=3.0,
+        require_showing=True,
+        window_class="SunAwtCanvas",
+        visible_only=True,
+    )
+    if not context:
+        return {"ok": False, "reason": f"控件未找到：{control_name}"}
+    path = "0" + "".join(f".{index}" for index in owned_indexes)
+    try:
+        info = jab.get_context_info(vm_id, context)
+        if not info:
+            return {"ok": False, "reason": f"无法读取控件 bounds：{control_name}"}
+        bounds = [info.x, info.y, info.width, info.height]
+        if info.x < 0 or info.y < 0 or info.width <= 0 or info.height <= 0:
+            return {
+                "ok": False,
+                "reason": f"控件 bounds 不可见：{bounds}",
+                "bounds": bounds,
+                "path": path,
+            }
+        guard = same_nc_root_foreground(window)
+        if not guard.get("ok"):
+            return {
+                "ok": False,
+                "reason": guard.get("reason"),
+                "guard": guard,
+                "bounds": bounds,
+                "path": path,
+            }
+        target_x = int(info.x + info.width / 2)
+        target_y = int(info.y + info.height / 2)
+        if hasattr(jab.dll, "requestFocus"):
+            jab.dll.requestFocus(vm_id, context)
+            time.sleep(0.03)
+        move_mouse(target_x, target_y)
+        mouse_click()
+        time.sleep(0.04)
+        mouse_click()
+        time.sleep(0.06)
+        send_hotkey_ctrl_a()
+        time.sleep(0.03)
+        send_text(value)
+        time.sleep(0.08)
+        press_virtual_key(0x0D)
+        time.sleep(0.08)
+        info_after = jab.get_context_info(vm_id, context)
+        return {
+            "ok": True,
+            "path": path,
+            "bounds": bounds,
+            "target": [target_x, target_y],
+            "guard": guard,
+            "commit": {"ok": True, "key": "Enter"},
+            "text_after": jab.get_text_context_value(vm_id, context),
+            "description_after": info_after.description.strip() if info_after else None,
+            "window": window,
         }
     finally:
         jab.release_contexts(vm_id, owned_contexts)
@@ -460,10 +630,213 @@ def wait_header_field_non_empty(jab, label, timeout=3.0):
     return last
 
 
-def check_customer_non_empty(jab, stage):
-    result = wait_header_field_non_empty(jab, "客户", timeout=3.0)
-    result["stage"] = stage
-    return result
+def read_finance_org_field(jab):
+    context, vm_id, owned_contexts, owned_indexes, window = find_context_with_window(
+        jab,
+        "财务组织(O)",
+        roles=("text",),
+        timeout=1.0,
+        require_showing=True,
+        window_class="SunAwtCanvas",
+        visible_only=True,
+    )
+    if not context:
+        return {"ok": False, "label": "财务组织", "reason": "财务组织控件未找到"}
+    path = "0" + "".join(f".{index}" for index in owned_indexes)
+    try:
+        info = jab.get_context_info(vm_id, context)
+        text = str(jab.get_text_context_value(vm_id, context) or "").strip()
+        description = info.description.strip() if info else ""
+        name = info.name.strip() if info else ""
+        non_empty = bool(text or description)
+        return {
+            "ok": non_empty,
+            "label": "财务组织",
+            "path": path,
+            "text": text,
+            "description": description,
+            "name": name,
+            "window": window,
+            "reason": None if non_empty else "财务组织为空",
+        }
+    finally:
+        jab.release_contexts(vm_id, owned_contexts)
+
+
+def wait_finance_org_field_non_empty(jab, timeout=1.5):
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        last = read_finance_org_field(jab)
+        if last.get("ok"):
+            last["wait_seconds"] = round(timeout - max(deadline - time.time(), 0), 3)
+            return last
+        time.sleep(0.2)
+    if last is None:
+        return {
+            "ok": False,
+            "label": "财务组织",
+            "reason": "财务组织非空检测没有取得结果",
+            "wait_seconds": timeout,
+        }
+    last["wait_seconds"] = timeout
+    return last
+
+
+def wait_header_field_has_text(jab, label, value, timeout=2.0):
+    expected = str(value or "").strip()
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        last = read_header_field_non_empty(jab, label)
+        text = str((last or {}).get("text") or "").strip()
+        description = str((last or {}).get("description") or "").strip()
+        if last and last.get("ok") and (text == expected or description == expected):
+            last["wait_seconds"] = round(timeout - max(deadline - time.time(), 0), 3)
+            return last
+        time.sleep(0.2)
+    if last is None:
+        return {
+            "ok": False,
+            "label": label,
+            "reason": f"表头【{label}】没有取得结果",
+            "wait_seconds": timeout,
+        }
+    last["ok"] = False
+    last["wait_seconds"] = timeout
+    last["reason"] = f"表头【{label}】未匹配期望值 {expected!r}"
+    return last
+
+
+def normalize_review_value(value):
+    return re.sub(r"\s+", "", str(value or "").strip()).casefold()
+
+
+def header_observed_values(result):
+    return [
+        value
+        for value in (
+            result.get("text"),
+            result.get("description"),
+            result.get("name"),
+        )
+        if str(value or "").strip()
+    ]
+
+
+def org_review_aliases(business):
+    return [
+        value
+        for value in (
+            business.get("finance_org_code"),
+            business.get("finance_org_name"),
+            business.get("finance_org_short_name"),
+        )
+        if str(value or "").strip()
+    ]
+
+
+def finance_org_matches_exact(result, business):
+    observed = [
+        normalize_review_value(value) for value in header_observed_values(result)
+    ]
+    code = normalize_review_value(business.get("finance_org_code"))
+    name = normalize_review_value(business.get("finance_org_name"))
+    aliases = [normalize_review_value(value) for value in org_review_aliases(business)]
+    if any(value in aliases for value in observed):
+        return True
+    # Some NC fields display "A001 上海移为通信技术股份有限公司".
+    # Requiring both code and full name avoids short-name collisions such as A001 vs A00101.
+    if code and name and any(code in value and name in value for value in observed):
+        return True
+    return False
+
+
+def review_finance_org_after_fill(jab, business):
+    checks = [review_finance_org_exact(jab, business)]
+    failed_required = [
+        item
+        for item in checks
+        if item.get("required", True) and not bool(item.get("ok"))
+    ]
+    return {
+        "ok": not failed_required,
+        "stage": "财务组织写完后",
+        "checks": checks,
+        "reason": None
+        if not failed_required
+        else "财务组织写完后回看失败："
+        + "、".join(item["label"] for item in failed_required),
+    }
+
+
+def review_header_before_save(jab, business):
+    checks = [
+        review_finance_org_exact(jab, business),
+        review_header_has_text(jab, "单据日期", business["document_date"]),
+        review_customer_resolved(jab, business),
+    ]
+    failed_required = [
+        item
+        for item in checks
+        if item.get("required", True) and not bool(item.get("ok"))
+    ]
+    return {
+        "ok": not failed_required,
+        "stage": "保存前",
+        "checks": checks,
+        "reason": None
+        if not failed_required
+        else "保存前表头回看失败："
+        + "、".join(item["label"] for item in failed_required),
+    }
+
+
+def review_finance_org_exact(jab, business):
+    result = wait_finance_org_field_non_empty(jab, timeout=1.5)
+    ok = bool(result.get("ok")) and finance_org_matches_exact(result, business)
+    expected = {
+        "code": business.get("finance_org_code"),
+        "name": business.get("finance_org_name"),
+        "short_name": business.get("finance_org_short_name"),
+    }
+    return {
+        **result,
+        "ok": ok,
+        "required": True,
+        "expected": expected,
+        "verification_mode": "exact_or_strict_alias",
+        "reason": None if ok else f"财务组织未匹配预期组织 {expected!r}",
+    }
+
+
+def review_customer_resolved(jab, business):
+    result = wait_header_field_non_empty(jab, "客户", timeout=1.5)
+    ok = bool(result.get("ok"))
+    expected = {
+        "input_code": business.get("customer_code"),
+        "payer_name": business.get("payer_name"),
+    }
+    return {
+        **result,
+        "ok": ok,
+        "required": True,
+        "expected": expected,
+        "verification_mode": "resolved_non_empty_after_exact_code_input",
+        "reason": None
+        if ok
+        else f"客户编码 {business.get('customer_code')!r} 输入后未解析出客户",
+    }
+
+
+def review_header_has_text(jab, label, value):
+    result = wait_header_field_has_text(jab, label, value, timeout=1.5)
+    return {
+        **result,
+        "required": True,
+        "expected": value,
+        "verification_mode": "exact_text",
+    }
 
 
 def fill_main_detail(jab, business):
@@ -527,19 +900,45 @@ def same_nc_root_foreground(table_window):
         "ok": ok,
         "foreground": int(foreground or 0),
         "foreground_root": int(foreground_root or 0),
+        "foreground_class": window_class_name(foreground),
+        "foreground_title": window_text(foreground),
+        "foreground_root_class": window_class_name(foreground_root),
+        "foreground_root_title": window_text(foreground_root),
         "table_hwnd": table_hwnd,
         "table_root": int(table_root or 0),
+        "table_class": window_class_name(table_hwnd),
+        "table_title": window_text(table_hwnd),
+        "table_root_class": window_class_name(table_root),
+        "table_root_title": window_text(table_root),
         "reason": None
         if ok
         else "当前前台窗口不是本次定位到的 NC 收款单窗口，未发送 Ctrl+S",
     }
 
 
+def window_text(hwnd):
+    if sys.platform != "win32" or not hwnd:
+        return ""
+    user32 = ctypes.windll.user32
+    length = user32.GetWindowTextLengthW(hwnd)
+    buffer = ctypes.create_unicode_buffer(length + 1)
+    user32.GetWindowTextW(hwnd, buffer, length + 1)
+    return buffer.value
+
+
+def window_class_name(hwnd):
+    if sys.platform != "win32" or not hwnd:
+        return ""
+    user32 = ctypes.windll.user32
+    buffer = ctypes.create_unicode_buffer(256)
+    user32.GetClassNameW(hwnd, buffer, 256)
+    return buffer.value
+
+
 def send_ctrl_s():
     try:
         send_virtual_key(0x11, key_up=False)
-        send_virtual_key(0x53, key_up=False)
-        send_virtual_key(0x53, key_up=True)
+        press_virtual_key(0x53)
         send_virtual_key(0x11, key_up=True)
     except Exception:
         try:
@@ -548,65 +947,243 @@ def send_ctrl_s():
             raise
 
 
-def send_virtual_key(vk, key_up=False):
-    inp = INPUT()
-    inp.type = 1
-    inp.ki = KEYBDINPUT(vk, 0, 0x0002 if key_up else 0, 0, None)
-    ctypes.windll.kernel32.SetLastError(0)
-    sent = ctypes.windll.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(inp))
-    if sent != 1:
-        error_code = ctypes.windll.kernel32.GetLastError()
-        raise RuntimeError(
-            f"SendInput failed, vk={vk}, key_up={key_up}, error={error_code}"
-        )
-
-
-class KEYBDINPUT(ctypes.Structure):
-    _fields_ = [
-        ("wVk", ctypes.c_ushort),
-        ("wScan", ctypes.c_ushort),
-        ("dwFlags", ctypes.c_ulong),
-        ("time", ctypes.c_ulong),
-        ("dwExtraInfo", ctypes.c_void_p),
-    ]
-
-
-class INPUT(ctypes.Structure):
-    class _INPUT_UNION(ctypes.Union):
-        _fields_ = [("ki", KEYBDINPUT)]
-
-    _anonymous_ = ("union",)
-    _fields_ = [("type", ctypes.c_ulong), ("union", _INPUT_UNION)]
+def press_virtual_key(vk):
+    send_virtual_key(vk, key_up=False)
+    time.sleep(0.03)
+    send_virtual_key(vk, key_up=True)
 
 
 def save_and_wait_new(jab, located):
     start = time.perf_counter()
+    diagnostics = {}
     best = located.get("best") or {}
-    guard = same_nc_root_foreground(best.get("window") or {})
-    if not guard.get("ok"):
-        return {"ok": False, "seconds": elapsed(start), "guard": guard}
-    try:
-        send_ctrl_s()
-    except Exception as exc:
+    diagnostics["prelocated_table"] = {
+        "ok": bool(best),
+        "seconds": 0.0,
+        "row_count": best.get("row_count"),
+        "col_count": best.get("col_count"),
+        "window": best.get("window"),
+    }
+    if not best:
         return {
             "ok": False,
             "seconds": elapsed(start),
+            "diagnostics": diagnostics,
+            "reason": "保存前未定位到收款明细表",
+        }
+    guard_start = time.perf_counter()
+    guard = same_nc_root_foreground(best.get("window") or {})
+    guard["seconds"] = elapsed(guard_start)
+    diagnostics["foreground_guard"] = guard
+    if not guard.get("ok"):
+        return {
+            "ok": False,
+            "seconds": elapsed(start),
+            "diagnostics": diagnostics,
+            "guard": guard,
+            "reason": guard.get("reason"),
+        }
+    send_start = time.perf_counter()
+    try:
+        send_ctrl_s()
+    except Exception as exc:
+        diagnostics["send_ctrl_s"] = {
+            "ok": False,
+            "seconds": elapsed(send_start),
+            "reason": f"{type(exc).__name__}: {exc}",
+        }
+        return {
+            "ok": False,
+            "seconds": elapsed(start),
+            "diagnostics": diagnostics,
             "guard": guard,
             "reason": f"发送 Ctrl+S 失败：{type(exc).__name__}: {exc}",
         }
+    diagnostics["send_ctrl_s"] = {"ok": True, "seconds": elapsed(send_start)}
     time.sleep(0.8)
+    wait_start = time.perf_counter()
     waited = wait_new_visible(jab, timeout=SAVE_SUCCESS_TIMEOUT)
+    waited["outer_seconds"] = elapsed(wait_start)
+    diagnostics["wait_new_visible"] = waited
     return {
         "ok": bool(waited.get("ok")),
         "seconds": elapsed(start),
+        "diagnostics": diagnostics,
         "guard": guard,
         "wait_new": waited,
+        "reason": None if waited.get("ok") else waited.get("reason"),
     }
+
+
+def print_save_diagnostics(save):
+    if not save:
+        return
+    print("  保存诊断：")
+    print(f"    总耗时：{save.get('seconds')} 秒")
+    if save.get("reason"):
+        print(f"    原因：{save.get('reason')}")
+    diagnostics = save.get("diagnostics") or {}
+    table = diagnostics.get("prelocated_table") or {}
+    if table:
+        print(
+            "    保存前明细表："
+            f"{'定位成功' if table.get('ok') else '定位失败'} | "
+            f"row_count={table.get('row_count')} | col_count={table.get('col_count')} | "
+            f"window={table.get('window')}"
+        )
+    guard = diagnostics.get("foreground_guard") or save.get("guard") or {}
+    if guard:
+        print(
+            "    前台守卫："
+            f"{'通过' if guard.get('ok') else '失败'} | {guard.get('seconds')} 秒"
+        )
+        print(
+            "      foreground="
+            f"{guard.get('foreground')} {guard.get('foreground_class')!r} "
+            f"{guard.get('foreground_title')!r}"
+        )
+        print(
+            "      foreground_root="
+            f"{guard.get('foreground_root')} {guard.get('foreground_root_class')!r} "
+            f"{guard.get('foreground_root_title')!r}"
+        )
+        print(
+            "      table="
+            f"{guard.get('table_hwnd')} {guard.get('table_class')!r} "
+            f"root={guard.get('table_root')} {guard.get('table_root_class')!r} "
+            f"{guard.get('table_root_title')!r}"
+        )
+    sent = diagnostics.get("send_ctrl_s") or {}
+    if sent:
+        print(
+            "    发送Ctrl+S："
+            f"{'成功' if sent.get('ok') else '失败'} | {sent.get('seconds')} 秒"
+        )
+        if sent.get("reason"):
+            print(f"      原因：{sent.get('reason')}")
+    waited = diagnostics.get("wait_new_visible") or save.get("wait_new") or {}
+    if waited:
+        print(
+            "    等待新增："
+            f"{'成功' if waited.get('ok') else '失败'} | "
+            f"{waited.get('outer_seconds', waited.get('seconds'))} 秒 | "
+            f"count={waited.get('count')}"
+        )
+        if waited.get("reason"):
+            print(f"      原因：{waited.get('reason')}")
+
+
+def print_detail_steps(title, steps):
+    if not steps:
+        return
+    print(f"  {title}字段诊断：")
+    for step in steps:
+        print(
+            f"    {step.get('name')}: "
+            f"{'成功' if step.get('ok') else '失败' if step.get('ok') is False else '待提交'} | "
+            f"col={step.get('col')} | 期望={step.get('value')!r} | "
+            f"实际={step.get('actual')!r} | 输入={step.get('input_ok')} | "
+            f"target={step.get('target')}"
+        )
+        attempts = step.get("attempts") or []
+        if attempts:
+            print(f"      尝试次数：{len(attempts)}")
+            for attempt in attempts:
+                print(
+                    "      - "
+                    f"#{attempt.get('attempt')} "
+                    f"{'成功' if attempt.get('ok') else '失败'} | "
+                    f"{attempt.get('seconds')} 秒 | "
+                    f"input={attempt.get('input_ok')} | "
+                    f"commit_col={attempt.get('commit_col')} | "
+                    f"commit={attempt.get('commit_ok')} | "
+                    f"actual={attempt.get('actual')!r}"
+                )
+                reason = attempt.get("input_reason") or attempt.get("commit_reason")
+                if reason:
+                    print(f"        原因：{reason}")
+        if step.get("before") not in (None, ""):
+            print(f"      写前={step.get('before')!r}")
+        geometry = step.get("geometry") or {}
+        if geometry:
+            print(
+                "      几何："
+                f"bounds={geometry.get('table_bounds')} | "
+                f"rows={geometry.get('row_count')} cols={geometry.get('col_count')} | "
+                f"cell={geometry.get('cell_width')}x{geometry.get('cell_height')}"
+            )
+        commit = step.get("commit_click") or {}
+        if commit:
+            print(
+                "      提交点击："
+                f"{'成功' if commit.get('ok') else '失败'} | "
+                f"target={commit.get('target')} | reason={commit.get('reason')}"
+            )
+        if step.get("reason"):
+            print(f"      原因：{step.get('reason')}")
+
+
+def print_fee_diagnostics(fee_report):
+    if not fee_report:
+        return
+    print("  手续费诊断：")
+    print(
+        f"    总体：{'通过' if fee_report.get('ok') else '失败'} | "
+        f"跳过={fee_report.get('skipped')} | {fee_report.get('seconds')} 秒"
+    )
+    if fee_report.get("reason"):
+        print(f"    原因：{fee_report.get('reason')}")
+    add_row = fee_report.get("add_row") or {}
+    if add_row:
+        print(
+            "    增行："
+            f"{'成功' if add_row.get('ok') else '失败'} | "
+            f"before={add_row.get('before_rows')} after={add_row.get('after_rows')} | "
+            f"reason={add_row.get('reason')}"
+        )
+        pressed = add_row.get("pressed") or {}
+        if pressed:
+            print(f"      热键：{pressed}")
+    print_detail_steps("手续费行", fee_report.get("steps") or [])
+    clear_account = fee_report.get("clear_account") or {}
+    if clear_account:
+        print(
+            "    清手续费账户："
+            f"{'成功' if clear_account.get('ok') else '失败'} | "
+            f"skipped={clear_account.get('skipped')} | "
+            f"before={clear_account.get('before')!r} after={clear_account.get('after')!r} | "
+            f"reason={clear_account.get('reason')}"
+        )
+    delete_extra = fee_report.get("delete_extra") or {}
+    if delete_extra:
+        print(
+            "    清理多余行："
+            f"{'成功' if delete_extra.get('ok') else '失败'} | "
+            f"skipped={delete_extra.get('skipped')} | "
+            f"before={delete_extra.get('before_rows')} after={delete_extra.get('after_rows')} | "
+            f"reason={delete_extra.get('reason')}"
+        )
+        cleanup = delete_extra.get("cleanup") or delete_extra
+        for step in cleanup.get("steps") or []:
+            print(
+                "      - "
+                f"删除目标行={step.get('target_row')} | "
+                f"{step.get('before_rows')} -> {step.get('after_rows')} | "
+                f"{'成功' if step.get('ok') else '失败'} | "
+                f"reason={step.get('reason')}"
+            )
 
 
 def print_case_summary(case_report):
     print()
     print(f"案例：{case_report.get('name')}")
+    business = case_report.get("business") or {}
+    if business:
+        print(
+            f"  Excel行：{case_report.get('excel_row')} | "
+            f"客户={business.get('customer_code')} | 金额={business.get('amount')} | "
+            f"手续费={business.get('fee')} | 账号={business.get('bank_account')}"
+        )
     print(f"  总耗时：{case_report.get('seconds')} 秒")
     for item in case_report.get("timings", []):
         print(f"  - {item['name']}: {item['seconds']} 秒")
@@ -617,7 +1194,7 @@ def print_case_summary(case_report):
             print(
                 f"    {step.get('label')}: "
                 f"{'严格成功' if step.get('strict_ok') else '软通过' if step.get('soft_ok') else '失败'} "
-                f"| path={step.get('path')}"
+                f"| {step.get('seconds')} 秒 | path={step.get('path')}"
             )
             if step.get("fallback_path_used"):
                 print("      注意：本字段使用了固定 path 兜底。")
@@ -652,6 +1229,9 @@ def print_case_summary(case_report):
                     f"| text={fallback_check.get('text')!r}, "
                     f"description={fallback_check.get('description')!r}"
                 )
+            commit_check = step.get("commit_check") or {}
+            if commit_check:
+                print(f"      原地检测：跳过 | {commit_check.get('reason')}")
             if not step.get("strict_ok"):
                 state = step.get("backend_state") or {}
                 print(
@@ -674,22 +1254,51 @@ def print_case_summary(case_report):
                 print("      注意：本次读取使用了固定 path 兜底。")
             if not check.get("ok"):
                 print(f"      原因：{check.get('reason')}")
+    header_reviews = case_report.get("header_reviews") or []
+    if header_reviews:
+        print("  表头回看：")
+        for review in header_reviews:
+            print(f"    阶段：{review.get('stage')}")
+            for item in review.get("checks") or []:
+                print(
+                    f"      {item.get('label')}: "
+                    f"{'通过' if item.get('ok') else '失败'} | "
+                    f"mode={item.get('verification_mode')} | "
+                    f"expected={item.get('expected')!r} | "
+                    f"text={item.get('text')!r}, description={item.get('description')!r}"
+                )
+                if item.get("reason"):
+                    print(f"        原因：{item.get('reason')}")
+    print_detail_steps("主行", case_report.get("detail_steps") or [])
+    print_fee_diagnostics(case_report.get("fee"))
     if case_report.get("ok"):
-        print("  结果：成功，保存后已看到【新增】。")
+        if case_report.get("save_skipped"):
+            print("  结果：填写诊断通过，按本轮要求未保存。")
+        else:
+            print("  结果：成功，保存后已看到【新增】。")
     else:
         print(f"  结果：失败，停止位置={case_report.get('failed_step')}")
         reason = case_report.get("reason")
         if reason:
             print(f"  原因：{reason}")
+    print_save_diagnostics(case_report.get("save"))
 
 
 def run_one_case(config, case, allow_existing_entry=False):
     case_start = time.perf_counter()
-    case_report = {"name": case.name, "timings": []}
+    case_report = {"name": case.name, "excel_row": case.excel_row, "timings": []}
     jab = JABOperator(config)
     try:
+        start = time.perf_counter()
         jab.ensure_started()
+        case_report["timings"].append(
+            {"name": "起始检测.JAB启动", "seconds": elapsed(start)}
+        )
+        start = time.perf_counter()
         start_state = ensure_starts_from_new_state(jab)
+        case_report["timings"].append(
+            {"name": "起始检测.新增入口/自制态", "seconds": elapsed(start)}
+        )
         case_report["start_state"] = start_state
         if not start_state.get("ok"):
             case_report.update(
@@ -727,6 +1336,13 @@ def run_one_case(config, case, allow_existing_entry=False):
         opened = run_receipt_new_probe()
     case_report["open_self_made"] = opened
     case_report["timings"].append({"name": "新增->自制", "seconds": opened["seconds"]})
+    for item in opened.get("timings") or []:
+        case_report["timings"].append(
+            {
+                "name": f"新增->自制.{item.get('name')}",
+                "seconds": item.get("seconds"),
+            }
+        )
     if not opened.get("ok"):
         case_report.update(
             {
@@ -740,10 +1356,15 @@ def run_one_case(config, case, allow_existing_entry=False):
 
     jab = JABOperator(config)
     try:
+        start = time.perf_counter()
         jab.ensure_started()
+        case_report["timings"].append(
+            {"name": "填写阶段.JAB启动", "seconds": elapsed(start)}
+        )
         business = business_for_case(config, case)
         case_report["business"] = business
         case_report["customer_checks"] = []
+        case_report["header_reviews"] = []
 
         header_start = time.perf_counter()
         header_steps = fill_minimal_header(jab, business)
@@ -762,14 +1383,18 @@ def run_one_case(config, case, allow_existing_entry=False):
             )
             return case_report
 
-        customer_after_header = check_customer_non_empty(jab, "表头写完后")
-        case_report["customer_checks"].append(customer_after_header)
-        if not customer_after_header.get("ok"):
+        start = time.perf_counter()
+        finance_org_after_fill = review_finance_org_after_fill(jab, business)
+        case_report["header_reviews"].append(finance_org_after_fill)
+        case_report["timings"].append(
+            {"name": "财务组织回看.写完后", "seconds": elapsed(start)}
+        )
+        if not finance_org_after_fill.get("ok"):
             case_report.update(
                 {
                     "ok": False,
-                    "failed_step": "check-customer-after-header",
-                    "reason": "客户字段为空，未进入明细和保存",
+                    "failed_step": "review-finance-org-after-fill",
+                    "reason": finance_org_after_fill.get("reason"),
                     "seconds": elapsed(case_start),
                 }
             )
@@ -794,6 +1419,17 @@ def run_one_case(config, case, allow_existing_entry=False):
         case_report["timings"].append(
             {"name": "手续费", "seconds": fee_report.get("seconds", 0.0)}
         )
+        for item in (
+            ((fee_report.get("delete_extra") or {}).get("timings") or [])
+            if isinstance(fee_report, dict)
+            else []
+        ):
+            case_report["timings"].append(
+                {
+                    "name": f"手续费.{item.get('name')}",
+                    "seconds": item.get("seconds"),
+                }
+            )
         if not fee_report.get("ok"):
             case_report.update(
                 {
@@ -805,14 +1441,47 @@ def run_one_case(config, case, allow_existing_entry=False):
             )
             return case_report
 
-        customer_before_save = check_customer_non_empty(jab, "保存前")
-        case_report["customer_checks"].append(customer_before_save)
-        if not customer_before_save.get("ok"):
+        start = time.perf_counter()
+        header_review = review_header_before_save(jab, business)
+        case_report["header_reviews"].append(header_review)
+        case_report["header_review"] = header_review
+        case_report["timings"].append(
+            {"name": "保存前表头回看", "seconds": elapsed(start)}
+        )
+        if not header_review.get("ok"):
             case_report.update(
                 {
                     "ok": False,
-                    "failed_step": "check-customer-before-save",
-                    "reason": "保存前客户字段为空，未发送 Ctrl+S",
+                    "failed_step": "review-header-before-save",
+                    "reason": header_review.get("reason"),
+                    "seconds": elapsed(case_start),
+                }
+            )
+            return case_report
+
+        if not SAVE_ENABLED:
+            if READ_DETAIL_BEFORE_SAVE_SKIPPED:
+                start = time.perf_counter()
+                after_table = read_body_table(jab, "before_save_skipped")
+                case_report["timings"].append(
+                    {"name": "保存前停止.读明细", "seconds": elapsed(start)}
+                )
+            else:
+                after_table = {
+                    "ok": True,
+                    "skipped": True,
+                    "reason": "速度测试跳过 no-save 保存前明细诊断读表",
+                }
+                case_report["timings"].append(
+                    {"name": "保存前停止.读明细", "seconds": 0.0}
+                )
+            case_report.update(
+                {
+                    "ok": True,
+                    "save_skipped": True,
+                    "failed_step": None,
+                    "reason": "本轮配置为不保存，已在保存前停止",
+                    "after_table": after_table,
                     "seconds": elapsed(case_start),
                 }
             )
@@ -836,29 +1505,49 @@ def run_one_case(config, case, allow_existing_entry=False):
 
 
 def main():
-    print_header()
-    print()
-    print(
-        f"请在 {START_DELAY_SECONDS} 秒内切到 NC【收款单录入】且能看到【新增】的页面..."
-    )
-    time.sleep(START_DELAY_SECONDS)
-    print("开始真实保存循环测试。")
-
+    run_start = time.perf_counter()
     report = {
         "launcher": "tmp_receipt_two_case_save_run.py",
         "start_delay_seconds": START_DELAY_SECONDS,
         "stop_hotkey": STOP_HOTKEY,
         "cases": [],
+        "timings": [],
     }
     try:
+        start = time.perf_counter()
+        config = load_config(str(ROOT / "config.json"))
+        report["timings"].append({"name": "全局.读取配置", "seconds": elapsed(start)})
+        start = time.perf_counter()
+        test_cases = build_latest_test_cases(config)
+        report["timings"].append(
+            {"name": "全局.读取Excel并选择测试行", "seconds": elapsed(start)}
+        )
+        report["selected_cases"] = [case.__dict__ for case in test_cases]
+        print_header(test_cases)
+        print()
+        print(
+            f"请在 {START_DELAY_SECONDS} 秒内切到 NC【收款单录入】且能看到【新增】的页面..."
+        )
+        start = time.perf_counter()
+        time.sleep(START_DELAY_SECONDS)
+        report["timings"].append({"name": "全局.启动等待", "seconds": elapsed(start)})
+        print("开始真实保存循环测试。")
+
         if is_stop_hotkey_pressed():
             print(f"检测到紧急停止键 {STOP_HOTKEY}，未开始。")
             return 1
-        config = load_config(str(ROOT / "config.json"))
         health_jab = JABOperator(config)
         try:
+            start = time.perf_counter()
             health_jab.ensure_started()
+            report["timings"].append(
+                {"name": "全局.健康检查JAB启动", "seconds": elapsed(start)}
+            )
+            start = time.perf_counter()
             health = check_jab_ready(health_jab)
+            report["timings"].append(
+                {"name": "全局.JAB健康检查", "seconds": elapsed(start)}
+            )
             report["jab_health"] = health
             if not health.get("ok"):
                 print("JAB 启动状态：")
@@ -867,13 +1556,21 @@ def main():
         finally:
             health_jab.close()
 
-        for index, case in enumerate(TEST_CASES):
+        for index, case in enumerate(test_cases):
             if is_stop_hotkey_pressed():
                 print(f"检测到紧急停止键 {STOP_HOTKEY}，停止后续案例。")
                 break
-            case_report = run_one_case(config, case, allow_existing_entry=(index == 0))
+            case_report = run_one_case(
+                config,
+                case,
+                allow_existing_entry=(
+                    index == 0 and ALLOW_EXISTING_ENTRY_FOR_FIRST_CASE
+                ),
+            )
             report["cases"].append(case_report)
             print_case_summary(case_report)
+            if case_report.get("save_skipped"):
+                break
             if not case_report.get("ok"):
                 break
             time.sleep(0.8)
@@ -886,14 +1583,22 @@ def main():
         print(f"  {type(exc).__name__}: {exc}")
         return 1
 
-    ok = len(report["cases"]) == len(TEST_CASES) and all(
-        item.get("ok") for item in report["cases"]
-    )
+    if SAVE_ENABLED:
+        ok = len(report["cases"]) == len(report.get("selected_cases", [])) and all(
+            item.get("ok") for item in report["cases"]
+        )
+    else:
+        ok = bool(report["cases"]) and all(item.get("ok") for item in report["cases"])
     print()
     print("总结果：")
     print(f"  {'成功' if ok else '失败'}")
     total = sum(float(item.get("seconds") or 0) for item in report["cases"])
     print(f"  两案例累计耗时：{round(total, 3)} 秒")
+    print(f"  脚本总耗时：{elapsed(run_start)} 秒")
+    if report.get("timings"):
+        print("  全局计时：")
+        for item in report["timings"]:
+            print(f"  - {item['name']}: {item['seconds']} 秒")
     return 0 if ok else 1
 
 

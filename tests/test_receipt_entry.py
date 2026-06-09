@@ -260,7 +260,9 @@ def test_build_local_plan_reports_precise_local_issues(tmp_path):
     wb.save(path)
     wb.close()
 
-    rows, issues, summary = ReceiptEntryWorkbook(receipt_config(path)).build_local_plan()
+    rows, issues, summary = ReceiptEntryWorkbook(
+        receipt_config(path)
+    ).build_local_plan()
 
     assert [row.row for row in rows] == [2, 3]
     assert summary["runnable_rows"] == 0

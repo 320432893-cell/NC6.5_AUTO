@@ -353,7 +353,9 @@ def _validate_receipt_excel(excel_cfg, errors):
     ):
         _require_non_empty_str(excel_cfg, key, errors, prefix="receipt_entry.excel")
     if "fee_column" in excel_cfg:
-        _require_non_empty_str(excel_cfg, "fee_column", errors, prefix="receipt_entry.excel")
+        _require_non_empty_str(
+            excel_cfg, "fee_column", errors, prefix="receipt_entry.excel"
+        )
     if "result_sheet_name" in excel_cfg:
         _require_non_empty_str(
             excel_cfg, "result_sheet_name", errors, prefix="receipt_entry.excel"

@@ -186,7 +186,7 @@ def test_self_made_choose_cleanup_runs_after_success(monkeypatch):
     assert cleaned["called"] is True
 
 
-def test_cleanup_awt_popup_residue_includes_visible_small_windows(monkeypatch):
+def test_cleanup_awt_popup_residue_moves_small_awt_windows(monkeypatch):
     calls = []
 
     def hwnd_value(hwnd):
@@ -209,6 +209,13 @@ def test_cleanup_awt_popup_residue_includes_visible_small_windows(monkeypatch):
         def PostMessageW(self, hwnd, *args):
             calls.append(("PostMessageW", hwnd_value(hwnd)))
 
+        def GetDesktopWindow(self):
+            return 999
+
+        def RedrawWindow(self, hwnd, rect, region, flags):
+            calls.append(("RedrawWindow", hwnd, flags))
+            return True
+
     monkeypatch.setattr(receipt_new_probe.os, "name", "nt")
     monkeypatch.setattr(
         receipt_new_probe.ctypes,
@@ -228,7 +235,7 @@ def test_cleanup_awt_popup_residue_includes_visible_small_windows(monkeypatch):
         lambda user32, hwnd: {
             "exists": True,
             "hwnd": int(hwnd.value),
-            "visible": True,
+            "visible": False,
             "class_name": "SunAwtWindow",
             "title": "",
             "width": 139,
@@ -239,7 +246,10 @@ def test_cleanup_awt_popup_residue_includes_visible_small_windows(monkeypatch):
     result = receipt_new_probe.cleanup_awt_popup_residue()
 
     assert result["targets"][0]["hwnd"] == 111
+    assert ("ShowWindow", 111, 0) in calls
+    assert ("SetWindowPos", 111) in calls
     assert ("PostMessageW", 111) in calls
+    assert any(call[0] == "RedrawWindow" for call in calls)
 
 
 def test_account_reference_stops_after_open_by_default(monkeypatch):

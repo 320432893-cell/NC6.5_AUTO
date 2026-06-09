@@ -21,6 +21,17 @@ SELF_MADE_NAMES = {"自制"}
 ENTRY_STATE_NAMES = {"保存(Ctrl+S)", "暂存", "取消(Ctrl+Q)"}
 
 
+def elapsed(start):
+    return round(time.perf_counter() - start, 3)
+
+
+def measure(timings, name, func, *args, **kwargs):
+    start = time.perf_counter()
+    result = func(*args, **kwargs)
+    timings.append({"name": name, "seconds": elapsed(start)})
+    return result
+
+
 def build_parser():
     parser = argparse.ArgumentParser(
         description="Open and inspect the NC receipt New/Self-made entry menu."
@@ -77,47 +88,114 @@ def main():
 
 
 def run(args):
+    timings = []
     cfg = load_config(args.config)
     jab = JABOperator(cfg)
     jab.hide_blank_awt_windows_enabled = False
     try:
-        jab.ensure_started()
-        before = collect_receipt_new_windows(jab)
-        matches = find_named_controls(
-            jab, args.name, args.role, args.class_name, require_action=False
+        measure(timings, "new-probe.jab.ensure-started", jab.ensure_started)
+        before = measure(
+            timings, "new-probe.collect-before", collect_receipt_new_windows, jab
         )
-        buttons = find_named_controls(
-            jab, args.name, args.role, args.class_name, require_action=True
+        matches = measure(
+            timings,
+            "new-probe.find-matches",
+            find_named_controls_in_windows,
+            before,
+            args.name,
+            args.role,
+            args.class_name,
+            require_action=False,
         )
-        open_report = open_new_menu(jab, args)
-        time.sleep(args.wait)
-        after_open = collect_receipt_new_windows(jab)
-        tracked_popup = find_new_visible_popup(before, after_open)
+        buttons = measure(
+            timings,
+            "new-probe.find-buttons",
+            find_named_controls_in_windows,
+            before,
+            args.name,
+            args.role,
+            args.class_name,
+            require_action=True,
+        )
+        buttons.sort(key=new_button_priority)
+        open_report = measure(
+            timings,
+            "new-probe.open-new-menu",
+            open_new_menu_with_known_buttons,
+            jab,
+            args,
+            buttons,
+        )
+        popup_wait = measure(
+            timings,
+            "new-probe.wait-for-popup",
+            wait_for_self_made_popup,
+            jab,
+            before,
+            args.wait,
+        )
+        after_open = popup_wait.get("windows") or []
+        tracked_popup = popup_wait.get("popup")
         choose_report = None
         after_choose = None
+        entry_wait = None
         popup_cleanup = None
         residue_cleanup = None
         if args.choose_self_made and open_report.get("ok"):
-            choose_report = choose_self_made_menu_item(
+            choose_report = measure(
+                timings,
+                "new-probe.choose-self-made",
+                choose_self_made_menu_item,
                 jab,
                 after_open,
                 args.self_made_index,
                 popup_hwnd=tracked_popup.get("hwnd") if tracked_popup else None,
             )
-            time.sleep(args.wait)
-            if tracked_popup and choose_report.get("ok"):
-                popup_cleanup = close_popup_hwnd(tracked_popup["hwnd"])
-                time.sleep(0.1)
             if choose_report.get("ok"):
-                residue_cleanup = cleanup_awt_popup_residue()
-                time.sleep(0.1)
-            after_choose = collect_receipt_new_windows(jab)
+                entry_wait = measure(
+                    timings,
+                    "new-probe.wait-for-entry-state",
+                    wait_for_self_made_entry_state,
+                    jab,
+                    args.wait,
+                )
+                after_choose = entry_wait.get("windows") or []
+            if (
+                tracked_popup
+                and choose_report.get("ok")
+                and not (entry_wait or {}).get("ok")
+            ):
+                popup_cleanup = measure(
+                    timings,
+                    "new-probe.popup-cleanup",
+                    close_popup_hwnd,
+                    tracked_popup["hwnd"],
+                )
+            if (
+                choose_report.get("ok")
+                and entry_wait
+                and (entry_wait.get("ok") or entry_wait.get("partial_ok"))
+            ):
+                residue_cleanup = measure(
+                    timings,
+                    "new-probe.residue-cleanup",
+                    cleanup_awt_popup_residue,
+                )
         elif args.choose_self_made:
             choose_report = {
                 "ok": False,
                 "reason": "new menu was not opened; self-made selection skipped",
             }
-        entry_state = detect_self_made_entry_state(after_choose or after_open)
+        entry_state = (
+            entry_wait.get("state")
+            if entry_wait
+            else measure(
+                timings,
+                "new-probe.detect-entry-state",
+                detect_self_made_entry_state,
+                after_choose or after_open,
+            )
+        )
     finally:
         jab.hide_blank_awt_windows_enabled = False
         jab.close()
@@ -134,8 +212,23 @@ def run(args):
         "choose_self_made": choose_report,
         "windows_after_choose": after_choose,
         "entry_state": entry_state,
+        "timings": timings,
     }
     return report
+
+
+def open_new_menu_with_known_buttons(jab, args, buttons):
+    if args.method == "button" and buttons:
+        target = buttons[0]
+        return trigger_button_async(
+            jab,
+            target["window"]["hwnd"],
+            target["control"]["path"],
+            action_name=args.action,
+            return_timeout=args.return_timeout,
+            target=target,
+        )
+    return open_new_menu(jab, args)
 
 
 def open_new_menu(jab, args):
@@ -171,6 +264,166 @@ def open_new_menu(jab, args):
     return {"ok": bool(ok), "method": "action-path", "path": args.path}
 
 
+def wait_for_self_made_popup(jab, before, timeout=0.8, interval=0.08):
+    start = time.perf_counter()
+    deadline = time.perf_counter() + max(float(timeout or 0), 0)
+    attempts = 0
+    last_windows = []
+    while True:
+        attempts += 1
+        last_windows = collect_new_visible_popup_windows(jab, before)
+        popup = find_new_visible_popup(before, last_windows)
+        if popup:
+            return {
+                "ok": True,
+                "attempts": attempts,
+                "wait_seconds": elapsed(start),
+                "popup": popup,
+                "windows": last_windows,
+            }
+        remaining = deadline - time.perf_counter()
+        if remaining <= 0:
+            break
+        time.sleep(min(interval, remaining))
+    full_windows = collect_receipt_new_windows(jab)
+    popup = find_new_visible_popup(before, full_windows)
+    return {
+        "ok": bool(popup),
+        "attempts": attempts,
+        "wait_seconds": max(float(timeout or 0), 0),
+        "popup": popup,
+        "windows": full_windows if popup else last_windows,
+    }
+
+
+def wait_for_self_made_entry_state(jab, timeout=0.8, interval=0.08):
+    start = time.perf_counter()
+    deadline = time.perf_counter() + max(float(timeout or 0), 0)
+    attempts = 0
+    last_windows = []
+    last_state = None
+    while True:
+        attempts += 1
+        last_windows = collect_receipt_new_windows_compat(
+            jab, max_depth=12, max_children=400
+        )
+        last_state = detect_self_made_entry_state(last_windows)
+        if last_state.get("ok") or last_state.get("partial_ok"):
+            return {
+                "ok": True,
+                "partial_ok": bool(last_state.get("partial_ok"))
+                and not bool(last_state.get("ok")),
+                "attempts": attempts,
+                "wait_seconds": elapsed(start),
+                "state": last_state,
+                "windows": last_windows,
+            }
+        remaining = deadline - time.perf_counter()
+        if remaining <= 0:
+            break
+        time.sleep(min(interval, remaining))
+    full_windows = collect_receipt_new_windows(jab)
+    full_state = detect_self_made_entry_state(full_windows)
+    if full_state.get("ok") or full_state.get("partial_ok"):
+        return {
+            "ok": True,
+            "partial_ok": bool(full_state.get("partial_ok"))
+            and not bool(full_state.get("ok")),
+            "attempts": attempts,
+            "wait_seconds": elapsed(start),
+            "state": full_state,
+            "windows": full_windows,
+        }
+    return {
+        "ok": False,
+        "attempts": attempts,
+        "wait_seconds": max(float(timeout or 0), 0),
+        "state": last_state or {"ok": False, "names": [], "hits": []},
+        "windows": last_windows,
+    }
+
+
+def quick_check_self_made_entry_state(jab):
+    windows = collect_receipt_new_windows_compat(jab, max_depth=8, max_children=250)
+    state = detect_self_made_entry_state(windows)
+    confirmed = bool(state.get("ok") or state.get("partial_ok"))
+    if not confirmed:
+        state = {
+            **state,
+            "partial_ok": True,
+            "reason": "quick check did not see entry buttons; trusting successful self-made action and deferring to header fill",
+        }
+    return {
+        "ok": True,
+        "confirmed": confirmed,
+        "state": state,
+        "windows": windows,
+    }
+
+
+def collect_new_visible_popup_windows(jab, before, max_depth=8, max_children=120):
+    if os.name != "nt" or not hasattr(ctypes, "WinDLL"):
+        return collect_receipt_new_windows(jab)
+
+    before_signatures = {window_key(item): window_signature(item) for item in before}
+    windows = []
+    for hwnd, title, class_name, pid, visible in enum_windows(include_children=True):
+        if class_name != "SunAwtWindow" or not visible:
+            continue
+        if not jab.dll.isJavaWindow(hwnd):
+            continue
+
+        vm_id = ctypes.c_long()
+        root_context = JOBJECT()
+        if not jab.dll.getAccessibleContextFromHWND(
+            hwnd,
+            ctypes.byref(vm_id),
+            ctypes.byref(root_context),
+        ):
+            continue
+        window = {
+            "hwnd": int(hwnd),
+            "title": title,
+            "class_name": class_name,
+            "pid": pid,
+            "visible": visible,
+            "is_java": True,
+            "root": summarize_context(jab, vm_id.value, root_context.value, "0"),
+            "controls": [],
+            "all_controls": [],
+        }
+        key = window_key(window)
+        if not is_visible_sun_awt_popup(window):
+            windows.append(window)
+            continue
+        collect_controls(
+            jab,
+            vm_id.value,
+            root_context.value,
+            path="0",
+            controls=window["controls"],
+            all_controls=window["all_controls"],
+            depth=0,
+            max_depth=max_depth,
+            max_children=max_children,
+        )
+        if key in before_signatures and before_signatures[key] == window_signature(
+            window
+        ):
+            continue
+        windows.append(window)
+    return windows
+
+
+def collect_receipt_new_windows_compat(jab, **kwargs):
+    try:
+        return collect_receipt_new_windows(jab, **kwargs)
+    except TypeError as exc:
+        if "unexpected keyword argument" not in str(exc):
+            raise
+        return collect_receipt_new_windows(jab)
+
+
 def find_new_buttons(jab, name_query="新增", role=None, class_name=None):
     buttons = find_named_controls(
         jab,
@@ -181,6 +434,42 @@ def find_new_buttons(jab, name_query="新增", role=None, class_name=None):
     )
     buttons.sort(key=new_button_priority)
     return buttons
+
+
+def find_named_controls_in_windows(
+    windows,
+    name_query="新增",
+    role=None,
+    class_name=None,
+    require_action=True,
+):
+    results = []
+    name_query = str(name_query or "").lower()
+    role = role.lower() if role else None
+    for window in windows or []:
+        if class_name and window.get("class_name") != class_name:
+            continue
+        if not window.get("is_java"):
+            continue
+        for control in window.get("all_controls", []):
+            control_role = control.get("role", "").lower()
+            if role and control_role != role:
+                continue
+            text = f"{control.get('name', '')} {control.get('description', '')}".lower()
+            if name_query and name_query not in text:
+                continue
+            if require_action and not control.get("accessibleAction"):
+                continue
+            results.append(
+                {
+                    "window": {
+                        key: window.get(key)
+                        for key in ("hwnd", "title", "class_name", "visible")
+                    },
+                    "control": control,
+                }
+            )
+    return results
 
 
 def new_button_priority(item):
@@ -472,10 +761,13 @@ def choose_self_made_menu_item(jab, windows, fallback_index, popup_hwnd=None):
 
 
 def find_new_visible_popup(before, after):
-    before_keys = {window_key(item) for item in before}
+    before_signatures = {window_key(item): window_signature(item) for item in before}
     candidates = []
     for item in after:
-        if window_key(item) in before_keys:
+        key = window_key(item)
+        if key in before_signatures and before_signatures[key] == window_signature(
+            item
+        ):
             continue
         if not is_visible_sun_awt_popup(item):
             continue
@@ -567,6 +859,13 @@ def cleanup_awt_popup_residue():
         )
         user32.PostMessageW(hwnd_obj, 0x0010, 0, 0)
         item["after"] = describe_hwnd(user32, hwnd_obj)
+    if targets:
+        user32.RedrawWindow(
+            user32.GetDesktopWindow(),
+            None,
+            0,
+            0x0001 | 0x0004 | 0x0080 | 0x0100,
+        )
     return {"ok": True, "targets": targets}
 
 
@@ -682,6 +981,7 @@ def summarize_report(report):
         ],
         "choose_self_made": summarize_action_report(report.get("choose_self_made")),
         "entry_state": report.get("entry_state"),
+        "timings": report.get("timings") or [],
     }
 
 
@@ -758,6 +1058,7 @@ def detect_self_made_entry_state(windows):
                 )
     return {
         "ok": ENTRY_STATE_NAMES.issubset(names),
+        "partial_ok": bool(names),
         "names": sorted(names),
         "hits": hits,
     }

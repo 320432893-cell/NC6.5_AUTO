@@ -762,6 +762,14 @@ class ReceiptEntryWorkbook:
 
         if row_issues:
             return None, row_issues
+        if (
+            receipt_date is None
+            or amount is None
+            or account is None
+            or organization is None
+            or currency_name is None
+        ):
+            raise WorkflowStateError("收款单本地预检内部状态不完整，无法生成运行计划")
         duplicate_key = make_receipt_duplicate_key(
             organization.code,
             receipt_date,
@@ -837,7 +845,8 @@ class ReceiptEntryWorkbook:
             "duplicate_rows": sorted(duplicate_rows),
             "organizations": {key: value for key, value in sorted(grouped.items())},
             "validation_policy": self.config.validation_policy,
-            "can_run": not issues or self.config.validation_policy == "skip_invalid_rows",
+            "can_run": not issues
+            or self.config.validation_policy == "skip_invalid_rows",
         }
 
     def _write_plan_sheet(self, wb, rows, issues):
@@ -1328,7 +1337,9 @@ def make_receipt_duplicate_key(
 ):
     return (
         str(organization_code or "").strip(),
-        receipt_date.isoformat() if isinstance(receipt_date, date) else str(receipt_date),
+        receipt_date.isoformat()
+        if isinstance(receipt_date, date)
+        else str(receipt_date),
         normalize_lookup_key(bank),
         str(currency or "").strip(),
         normalize_lookup_key(customer_code),
