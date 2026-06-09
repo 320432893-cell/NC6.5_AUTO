@@ -165,7 +165,7 @@ def run_receipt_new_probe():
         role=None,
         action=None,
         return_timeout=0.2,
-        wait=0.8,
+        wait=0.55,
         choose_self_made=True,
         self_made_index=0,
         json=False,
@@ -610,7 +610,7 @@ def read_header_field_non_empty(jab, label):
         jab.release_contexts(vm_id, owned_contexts)
 
 
-def wait_header_field_non_empty(jab, label, timeout=3.0):
+def wait_header_field_non_empty(jab, label, timeout=0.9):
     deadline = time.time() + timeout
     last = None
     while time.time() < deadline:
@@ -618,7 +618,7 @@ def wait_header_field_non_empty(jab, label, timeout=3.0):
         if last.get("ok"):
             last["wait_seconds"] = round(timeout - max(deadline - time.time(), 0), 3)
             return last
-        time.sleep(0.3)
+        time.sleep(0.12)
     if last is None:
         return {
             "ok": False,
@@ -663,7 +663,7 @@ def read_finance_org_field(jab):
         jab.release_contexts(vm_id, owned_contexts)
 
 
-def wait_finance_org_field_non_empty(jab, timeout=1.5):
+def wait_finance_org_field_non_empty(jab, timeout=1.2):
     deadline = time.time() + timeout
     last = None
     while time.time() < deadline:
@@ -671,7 +671,7 @@ def wait_finance_org_field_non_empty(jab, timeout=1.5):
         if last.get("ok"):
             last["wait_seconds"] = round(timeout - max(deadline - time.time(), 0), 3)
             return last
-        time.sleep(0.2)
+        time.sleep(0.1)
     if last is None:
         return {
             "ok": False,
@@ -683,7 +683,7 @@ def wait_finance_org_field_non_empty(jab, timeout=1.5):
     return last
 
 
-def wait_header_field_has_text(jab, label, value, timeout=2.0):
+def wait_header_field_has_text(jab, label, value, timeout=1.0):
     expected = str(value or "").strip()
     deadline = time.time() + timeout
     last = None
@@ -694,7 +694,7 @@ def wait_header_field_has_text(jab, label, value, timeout=2.0):
         if last and last.get("ok") and (text == expected or description == expected):
             last["wait_seconds"] = round(timeout - max(deadline - time.time(), 0), 3)
             return last
-        time.sleep(0.2)
+        time.sleep(0.1)
     if last is None:
         return {
             "ok": False,
@@ -793,7 +793,7 @@ def review_header_before_save(jab, business):
 
 
 def review_finance_org_exact(jab, business):
-    result = wait_finance_org_field_non_empty(jab, timeout=1.5)
+    result = wait_finance_org_field_non_empty(jab, timeout=1.2)
     ok = bool(result.get("ok")) and finance_org_matches_exact(result, business)
     expected = {
         "code": business.get("finance_org_code"),
@@ -811,7 +811,7 @@ def review_finance_org_exact(jab, business):
 
 
 def review_customer_resolved(jab, business):
-    result = wait_header_field_non_empty(jab, "客户", timeout=1.5)
+    result = wait_header_field_non_empty(jab, "客户", timeout=0.9)
     ok = bool(result.get("ok"))
     expected = {
         "input_code": business.get("customer_code"),
@@ -830,7 +830,7 @@ def review_customer_resolved(jab, business):
 
 
 def review_header_has_text(jab, label, value):
-    result = wait_header_field_has_text(jab, label, value, timeout=1.5)
+    result = wait_header_field_has_text(jab, label, value, timeout=1.0)
     return {
         **result,
         "required": True,

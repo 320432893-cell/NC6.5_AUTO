@@ -155,9 +155,8 @@ def run(args):
                 entry_wait = measure(
                     timings,
                     "new-probe.wait-for-entry-state",
-                    wait_for_self_made_entry_state,
+                    quick_check_self_made_entry_state,
                     jab,
-                    args.wait,
                 )
                 after_choose = entry_wait.get("windows") or []
             if (
@@ -296,7 +295,7 @@ def wait_for_self_made_popup(jab, before, timeout=0.8, interval=0.08):
     }
 
 
-def wait_for_self_made_entry_state(jab, timeout=0.8, interval=0.08):
+def wait_for_self_made_entry_state(jab, timeout=0.45, interval=0.04):
     start = time.perf_counter()
     deadline = time.perf_counter() + max(float(timeout or 0), 0)
     attempts = 0
@@ -305,7 +304,7 @@ def wait_for_self_made_entry_state(jab, timeout=0.8, interval=0.08):
     while True:
         attempts += 1
         last_windows = collect_receipt_new_windows_compat(
-            jab, max_depth=12, max_children=400
+            jab, max_depth=9, max_children=260
         )
         last_state = detect_self_made_entry_state(last_windows)
         if last_state.get("ok") or last_state.get("partial_ok"):
@@ -322,7 +321,9 @@ def wait_for_self_made_entry_state(jab, timeout=0.8, interval=0.08):
         if remaining <= 0:
             break
         time.sleep(min(interval, remaining))
-    full_windows = collect_receipt_new_windows(jab)
+    full_windows = collect_receipt_new_windows_compat(
+        jab, max_depth=12, max_children=400
+    )
     full_state = detect_self_made_entry_state(full_windows)
     if full_state.get("ok") or full_state.get("partial_ok"):
         return {

@@ -57,6 +57,8 @@ DETAIL_FIELDS = [
 ACCOUNT_COL = 4
 MAX_FIELD_RETRIES = 3
 KEYBOARD_INPUT_COMMIT_KEY = "Right"
+KEY_WAIT_SECONDS = 0.035
+REFERENCE_ACCEPT_SETTLE_SECONDS = 0.04
 VK_KEYS = {
     "F2": 0x71,
     "Right": 0x27,
@@ -675,7 +677,7 @@ def guarded_press_virtual_key(table_window, key_name):
             "mode": f"SendInput({key_name})",
             "reason": f"{type(exc).__name__}: {exc}",
         }
-    time.sleep(0.06)
+    time.sleep(KEY_WAIT_SECONDS)
     return {
         **guard,
         "ok": True,
@@ -718,6 +720,7 @@ def keyboard_write_selected_cell(
                     "commit_key": commit_key,
                     "reason": accept.get("reason"),
                 }
+            time.sleep(REFERENCE_ACCEPT_SETTLE_SECONDS)
         commit = guarded_press_virtual_key(table_window, commit_key)
     except Exception as exc:
         return {
@@ -850,7 +853,7 @@ def apply_readback_to_steps(steps, cells):
 
 
 def refresh_unmatched_settlement_steps(
-    jab, steps, row_index, timeout=0.6, interval=0.15
+    jab, steps, row_index, timeout=0.35, interval=0.07
 ):
     if not any(step.get("name") == "结算方式" and not step.get("ok") for step in steps):
         return None
@@ -1494,7 +1497,7 @@ def read_table_row_count_by_path(jab, located):
 
 
 def wait_table_row_count_by_path(
-    jab, located, expected_rows, label, timeout=0.8, interval=0.05
+    jab, located, expected_rows, label, timeout=0.45, interval=0.035
 ):
     started_at = time.perf_counter()
     deadline = time.perf_counter() + timeout
@@ -1524,7 +1527,7 @@ def wait_table_row_count_by_path(
         time.sleep(interval)
 
 
-def wait_body_row_count(jab, expected_rows, label, timeout=1.2, interval=0.1):
+def wait_body_row_count(jab, expected_rows, label, timeout=0.75, interval=0.06):
     started_at = time.perf_counter()
     deadline = time.perf_counter() + timeout
     last = {}
