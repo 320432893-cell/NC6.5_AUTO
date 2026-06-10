@@ -24,9 +24,13 @@ RESULT_SHEET_HEADERS = [
     "实收金额",
     "手续费",
     "总金额",
-    "账户配置ID",
     "收款银行账户",
     "本地预检状态",
+    "异常原因",
+]
+
+DEPRECATED_RESULT_SHEET_HEADERS = {
+    "账户配置ID",
     "异常阶段",
     "异常类型",
     "异常字段",
@@ -37,7 +41,7 @@ RESULT_SHEET_HEADERS = [
     "录入结果",
     "保存结果",
     "后验查询结果",
-]
+}
 
 
 @dataclass(frozen=True)
@@ -1387,7 +1391,7 @@ def make_receipt_duplicate_key(
 
 def plan_sheet_row(row, issue, status):
     if row is None:
-        base = [""] * 14
+        base = [""] * 13
     else:
         total_amount = row.raw_amount + row.fee
         base = [
@@ -1403,32 +1407,38 @@ def plan_sheet_row(row, issue, status):
             str(row.raw_amount),
             str(row.fee),
             str(total_amount),
-            row.account_id,
             row.account_no,
         ]
-    if issue is None:
-        issue_cells = ["", "", "", "", "", "", ""]
-    else:
-        issue_cells = [
-            issue.stage,
-            issue.issue_type,
-            issue.field,
-            issue.raw_value,
-            issue.config_node,
-            issue.message,
-            issue.action,
-        ]
+    issue_reason = format_plan_issue_reason(issue)
     return [
         *base,
         status,
-        *issue_cells,
-        "",
-        "",
-        "",
+        issue_reason,
     ]
 
 
+def format_plan_issue_reason(issue):
+    if issue is None:
+        return ""
+    parts = []
+    if issue.message:
+        parts.append(str(issue.message))
+    if issue.field:
+        parts.append(f"字段={issue.field}")
+    if issue.raw_value:
+        parts.append(f"原值={issue.raw_value}")
+    if issue.action:
+        parts.append(f"处理={issue.action}")
+    return "；".join(parts)
+
+
 def ensure_result_sheet_headers(ws, header_row):
+    for column in range(ws.max_column, 0, -1):
+        value = ws.cell(header_row, column).value
+        text = str(value or "").strip()
+        if text in DEPRECATED_RESULT_SHEET_HEADERS:
+            ws.delete_cols(column)
+
     columns = {}
     for column in range(1, ws.max_column + 1):
         value = ws.cell(header_row, column).value

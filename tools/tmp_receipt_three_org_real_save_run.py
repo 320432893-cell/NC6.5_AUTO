@@ -139,9 +139,7 @@ def append_case_result_to_sheet2(config, case_report, query_result):
     local_status = "通过" if case_report.get("ok") else "异常"
     values = plan_sheet_row(row, None, local_status)
     row_by_header = dict(zip(RESULT_SHEET_HEADERS, values, strict=True))
-    row_by_header["录入结果"] = format_entry_result(case_report)
-    row_by_header["保存结果"] = format_save_result(case_report)
-    row_by_header["后验查询结果"] = query_result
+    row_by_header["异常原因"] = format_exception_reason(case_report, query_result)
 
     wb = openpyxl.load_workbook(workbook.excel_path, read_only=False)
     try:
@@ -159,27 +157,41 @@ def append_case_result_to_sheet2(config, case_report, query_result):
         wb.close()
 
 
-def format_entry_result(case_report):
-    if case_report.get("ok") or case_report.get("save"):
-        return f"录入通过；耗时={case_report.get('seconds')}s"
-    return (
-        f"录入失败；阶段={case_report.get('failed_step')}; "
-        f"原因={case_report.get('reason')}; 耗时={case_report.get('seconds')}s"
-    )
+def format_exception_reason(case_report, query_result):
+    if not case_report.get("save"):
+        return format_entry_failure(case_report)
+    save = case_report.get("save") or {}
+    if not save.get("ok"):
+        return format_save_failure(case_report)
+    if query_result and not query_result.get("ok"):
+        return query_result.get("business_reason") or "查询未匹配到唯一单据"
+    return ""
 
 
-def format_save_result(case_report):
+def format_entry_failure(case_report):
+    if case_report.get("ok"):
+        return ""
+    failed_step = case_report.get("failed_step") or "未知阶段"
+    reason = case_report.get("reason") or "未返回具体原因"
+    return f"录入失败：阶段={failed_step}；原因={reason}"
+
+
+def format_save_failure(case_report):
     save = case_report.get("save") or {}
     if not save:
-        return f"未保存；原因={case_report.get('reason')}"
-    if save.get("ok"):
-        return f"保存成功；等待新增成功；耗时={save.get('seconds')}s"
-    return f"保存失败；原因={save.get('reason')}; 耗时={save.get('seconds')}s"
+        reason = case_report.get("reason") or "保存步骤未执行"
+        return f"保存失败：{reason}"
+    reason = save.get("reason") or "未返回具体原因"
+    return f"保存失败：{reason}"
 
 
 def run_post_query(config, case_report):
     if not case_report.get("ok"):
-        return "未查询：保存未成功"
+        return {
+            "ok": False,
+            "business_reason": "未查询：保存未成功",
+            "debug": "未查询：保存未成功",
+        }
     business = case_report.get("business") or {}
     start = time.perf_counter()
     try:
@@ -205,19 +217,37 @@ def run_post_query(config, case_report):
             f"{item['name']}={item['seconds']}s" for item in result.get("timings") or []
         )
         if len(matches) == 1:
-            return (
+            debug = (
                 f"查询匹配成功；NC行={matches[0].row_index}; "
                 f"耗时={elapsed(start)}s; {timing_text}"
             )
+            return {"ok": True, "business_reason": "", "debug": debug}
         if matches:
-            return f"查询重复匹配{len(matches)}条；耗时={elapsed(start)}s; {timing_text}"
+            debug = f"查询重复匹配{len(matches)}条；耗时={elapsed(start)}s; {timing_text}"
+            return {
+                "ok": False,
+                "business_reason": f"查询重复匹配：按主体/日期/金额/客户匹配到 {len(matches)} 条",
+                "debug": debug,
+            }
         amount_hits = [row for row in rows if row.original_amount == amount]
-        return (
+        debug = (
             f"查询未唯一匹配；金额命中={len(amount_hits)}; 结果行={len(rows)}; "
             f"耗时={elapsed(start)}s; {timing_text}"
         )
+        return {
+            "ok": False,
+            "business_reason": (
+                f"查询未找到唯一单据：结果行={len(rows)}，金额命中={len(amount_hits)}"
+            ),
+            "debug": debug,
+        }
     except Exception as exc:
-        return f"查询异常：{type(exc).__name__}: {exc}; 耗时={elapsed(start)}s"
+        debug = f"查询异常：{type(exc).__name__}: {exc}; 耗时={elapsed(start)}s"
+        return {
+            "ok": False,
+            "business_reason": f"查询异常：{type(exc).__name__}: {exc}",
+            "debug": debug,
+        }
 
 
 def print_selected(cases):
@@ -269,7 +299,11 @@ def main():
                 f"  Sheet1行={report.get('excel_row')} | "
                 "保存未成功，跳过后验查询，Sheet2 追加失败结果"
             )
-            report["post_query_result"] = "未查询：保存未成功"
+            report["post_query_result"] = {
+                "ok": False,
+                "business_reason": "未查询：保存未成功",
+                "debug": "未查询：保存未成功",
+            }
             append_case_result_to_sheet2(config, report, report["post_query_result"])
             print("  Sheet2：已追加本案例失败结果")
             continue
@@ -278,7 +312,7 @@ def main():
         append_case_result_to_sheet2(config, report, query_result)
         print(
             f"  Sheet1行={report.get('excel_row')} | "
-            f"后验查询结果：{query_result}"
+            f"后验查询结果：{query_result.get('debug')}"
         )
         print("  Sheet2：已追加本案例结果")
 
