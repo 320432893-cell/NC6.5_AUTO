@@ -1291,9 +1291,13 @@ class JABOperator:
 
         labels.sort(key=lambda item: (item[1].y, item[1].x))
         for label_context, label_info in labels:
+            if not self.context_info_has_valid_bounds(label_info):
+                continue
             label_mid_y = label_info.y + label_info.height / 2
             candidates = []
             for text_context, text_info in texts:
+                if not self.context_info_has_valid_bounds(text_info):
+                    continue
                 text_mid_y = text_info.y + text_info.height / 2
                 if text_info.x <= label_info.x + label_info.width:
                     continue
@@ -1358,12 +1362,14 @@ class JABOperator:
                 child_role == "label"
                 and child_info.name.strip() == target_label
                 and (not require_showing or showing)
+                and self.context_info_has_valid_bounds(child_info)
             ):
                 labels.append((child, child_info))
             elif (
                 child_role == "text"
                 and "editable" in child_states
                 and (not require_showing or showing)
+                and self.context_info_has_valid_bounds(child_info)
             ):
                 texts.append((child, child_info))
 

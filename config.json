@@ -371,6 +371,7 @@
                 "display_name": "移为-大陆花旗",
                 "account_label": "大陆花旗",
                 "account_no": "1783854003",
+                "header_currency_code": "USD",
                 "excel_bank_aliases": [
                     "大陆花旗"
                 ],
@@ -389,6 +390,7 @@
                 "display_name": "移为-大陆交行",
                 "account_label": "大陆交行",
                 "account_no": "FTE310066674143603000377",
+                "header_currency_code": "USD",
                 "excel_bank_aliases": [
                     "大陆交行"
                 ],
@@ -407,6 +409,7 @@
                 "display_name": "移为-大陆浦发",
                 "account_label": "大陆浦发",
                 "account_no": "97460154740002297",
+                "header_currency_code": "CNY",
                 "excel_bank_aliases": [
                     "大陆浦发"
                 ],
@@ -425,6 +428,7 @@
                 "display_name": "移为-大陆中行",
                 "account_label": "大陆中行",
                 "account_no": "446881174884",
+                "header_currency_code": "USD",
                 "excel_bank_aliases": [
                     "大陆中行"
                 ],
@@ -443,6 +447,7 @@
                 "display_name": "移为-PayPal",
                 "account_label": "PayPal",
                 "account_no": "paypal",
+                "header_currency_code": "USD",
                 "excel_bank_aliases": [
                     "PayPal",
                     "Paypal"
@@ -462,23 +467,10 @@
                 "display_name": "移为-招行",
                 "account_label": "招行",
                 "account_no": "FTE1219165931831",
+                "header_currency_code": "USD",
                 "excel_bank_aliases": [
                     "招行"
                 ],
-                "nc_candidates_by_currency": {
-                    "人民币": [
-                        "FTE1219165931831RMB",
-                        "FTE1219165931831CNY",
-                        "FTE1219165931831"
-                    ],
-                    "美元": [
-                        "FTE1219165931831USD",
-                        "FTE1219165931831"
-                    ],
-                    "*": [
-                        "FTE1219165931831"
-                    ]
-                },
                 "entry_policy": {
                     "account_input": "detail_first",
                     "success_rule": "non_empty",
@@ -494,6 +486,7 @@
                 "display_name": "移航-招行",
                 "account_label": "移航招行",
                 "account_no": "755927177210901",
+                "header_currency_code": "USD",
                 "excel_bank_aliases": [
                     "移航招行"
                 ],
@@ -512,6 +505,7 @@
                 "display_name": "移为香港-香港花旗",
                 "account_label": "香港花旗",
                 "account_no": "1778667904",
+                "header_currency_code": "USD",
                 "excel_bank_aliases": [
                     "香港花旗"
                 ],
@@ -530,6 +524,7 @@
                 "display_name": "布谷-布谷",
                 "account_label": "布谷",
                 "account_no": "121985369310088",
+                "header_currency_code": "USD",
                 "excel_bank_aliases": [
                     "布谷"
                 ],

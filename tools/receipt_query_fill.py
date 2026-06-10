@@ -32,6 +32,20 @@ class ReceiptPageGuardError(RuntimeError):
     pass
 
 
+class TimingRecorder:
+    def __init__(self):
+        self.items = []
+
+    def measure(self, timing_name, func, *args, **kwargs):
+        start = time.perf_counter()
+        result = func(*args, **kwargs)
+        self.add(timing_name, time.perf_counter() - start)
+        return result
+
+    def add(self, name, seconds):
+        self.items.append({"name": name, "seconds": round(float(seconds), 3)})
+
+
 def resolve_today(value):
     return date.today().isoformat() if value == "{today}" else value
 
@@ -118,25 +132,33 @@ def fill_receipt_query(
     end = date_to or query_cfg["date_to"]
     start = parse_date(resolve_today(start)).isoformat()
     end = parse_date(resolve_today(end)).isoformat()
+    timings = TimingRecorder()
+    total_start = time.perf_counter()
 
     jab = JABOperator(config)
     try:
-        guard_receipt_parent_page(jab, config, query_cfg)
-        if not ensure_query_window(
+        timings.measure("page_guard", guard_receipt_parent_page, jab, config, query_cfg)
+        query_window_ok = timings.measure(
+            "ensure_query_window",
+            ensure_query_window,
             jab,
             config,
             query_cfg,
             jab_cfg,
             skip_open=skip_open_query,
-        ):
+        )
+        if not query_window_ok:
             raise RuntimeError("未检测到收款单查询条件窗口")
 
-        if not set_finance_org_text(
+        finance_org_ok = timings.measure(
+            "set_finance_org",
+            set_finance_org_text,
             jab,
             jab_cfg,
             fields["finance_org"],
             org_code,
-        ):
+        )
+        if not finance_org_ok:
             raise RuntimeError(f"收款查询条件写入失败: finance_org={org_code}")
 
         steps = [
@@ -144,11 +166,13 @@ def fill_receipt_query(
             ("document_date_to", fields["document_date"]["to_text_path"], end),
         ]
         for name, path, value in steps:
-            if not set_text(jab, jab_cfg, path, value):
+            if not timings.measure(name, set_text, jab, jab_cfg, path, value):
                 raise RuntimeError(f"收款查询条件写入失败: {name}={value}")
 
         if confirm:
-            ok = jab.do_action_by_path(
+            ok = timings.measure(
+                "confirm_query",
+                jab.do_action_by_path,
                 jab_cfg["confirm_button_path"],
                 title=jab_cfg["dialog_title"],
                 class_name=jab_cfg["dialog_class"],
@@ -165,12 +189,20 @@ def fill_receipt_query(
         result = {"organization_code": org_code, "date_from": start, "date_to": end}
         if set_page_size_only:
             if confirm:
+                wait_start = time.perf_counter()
                 time.sleep(float(query_cfg.get("result_wait", 1.0)))
-            result["page_report"] = set_receipt_page_size(jab, query_cfg)
+                timings.add("result_wait_before_page_size", time.perf_counter() - wait_start)
+            result["page_report"] = timings.measure(
+                "set_receipt_page_size", set_receipt_page_size, jab, query_cfg
+            )
         if read_results or dry_run_match:
             if confirm:
+                wait_start = time.perf_counter()
                 time.sleep(float(query_cfg.get("result_wait", 1.0)))
-            tables, page_report = read_receipt_result_pages(
+                timings.add("result_wait_before_read", time.perf_counter() - wait_start)
+            tables, page_report = timings.measure(
+                "read_receipt_result_pages",
+                read_receipt_result_pages,
                 jab,
                 query_cfg,
                 max_rows=max_rows,
@@ -189,14 +221,21 @@ def fill_receipt_query(
                 for table in tables
             ]
             result["page_report"] = page_report
-            guard_receipt_result_tables(tables, query_cfg)
+            timings.measure(
+                "guard_receipt_result_tables",
+                guard_receipt_result_tables,
+                tables,
+                query_cfg,
+            )
             extractor = ReceiptNCResultExtractor(config)
             if read_results:
-                rows, issues = extractor.extract(tables)
+                rows, issues = timings.measure("extract_nc_rows", extractor.extract, tables)
                 result["nc_rows"] = rows
                 result["extract_issues"] = issues
             if dry_run_match:
-                result["dry_run_match"] = build_dry_run_match_report(
+                result["dry_run_match"] = timings.measure(
+                    "build_dry_run_match_report",
+                    build_dry_run_match_report,
                     config,
                     extractor,
                     tables,
@@ -204,6 +243,8 @@ def fill_receipt_query(
                     business_date=parse_date(end),
                     write_back=write_back,
                 )
+        timings.add("total", time.perf_counter() - total_start)
+        result["timings"] = timings.items
         return result
     finally:
         jab.close()
@@ -992,6 +1033,11 @@ def main():
         f"date_from={result['date_from']} date_to={result['date_to']} "
         f"confirm={confirm}"
     )
+    timings = result.get("timings") or []
+    if timings:
+        print("receipt query timings:")
+        for item in timings:
+            print(f"  {item['name']}: {item['seconds']}s")
     if args.probe_stage:
         print(
             json.dumps(

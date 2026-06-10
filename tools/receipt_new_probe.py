@@ -105,6 +105,8 @@ def run(args, jab=None, before=None, buttons=None):
             )
         else:
             timings.append({"name": "new-probe.collect-before", "seconds": 0.0})
+        foreground = measure(timings, "new-probe.foreground", foreground_info)
+        annotate_foreground_root(before, foreground)
         matches = measure(
             timings,
             "new-probe.find-matches",
@@ -128,23 +130,46 @@ def run(args, jab=None, before=None, buttons=None):
             )
         else:
             timings.append({"name": "new-probe.find-buttons", "seconds": 0.0})
-        buttons.sort(key=new_button_priority)
-        open_report = measure(
+        annotate_foreground_root_for_targets(buttons, foreground)
+        usable_buttons = filter_usable_new_buttons(buttons, foreground)
+        usable_buttons.sort(key=new_button_priority)
+        initial_entry_state = measure(
             timings,
-            "new-probe.open-new-menu",
-            open_new_menu_with_known_buttons,
-            jab,
-            args,
-            buttons,
-        )
-        popup_wait = measure(
-            timings,
-            "new-probe.wait-for-popup",
-            wait_for_self_made_popup,
-            jab,
+            "new-probe.detect-initial-entry-state",
+            detect_self_made_entry_state,
             before,
-            args.wait,
         )
+        if args.choose_self_made and initial_entry_state.get("ok"):
+            open_report = {
+                "ok": True,
+                "method": "already-self-made-entry",
+                "reason": "self-made entry state already visible before opening New",
+            }
+            popup_wait = {
+                "ok": False,
+                "reason": "self-made entry state already visible; popup not needed",
+                "popup": None,
+                "windows": before,
+            }
+        else:
+            open_report = measure(
+                timings,
+                "new-probe.open-new-menu",
+                open_new_menu_with_known_buttons,
+                jab,
+                args,
+                usable_buttons,
+                buttons,
+                foreground,
+            )
+            popup_wait = measure(
+                timings,
+                "new-probe.wait-for-popup",
+                wait_for_self_made_popup,
+                jab,
+                before,
+                args.wait,
+            )
         after_open = popup_wait.get("windows") or []
         tracked_popup = popup_wait.get("popup")
         choose_report = None
@@ -152,24 +177,59 @@ def run(args, jab=None, before=None, buttons=None):
         entry_wait = None
         popup_cleanup = None
         residue_cleanup = None
-        if args.choose_self_made and open_report.get("ok"):
-            choose_report = measure(
-                timings,
-                "new-probe.choose-self-made",
-                choose_self_made_menu_item,
-                jab,
-                after_open,
-                args.self_made_index,
-                popup_hwnd=tracked_popup.get("hwnd") if tracked_popup else None,
-            )
-            if choose_report.get("ok"):
-                entry_wait = measure(
+        if args.choose_self_made and initial_entry_state.get("ok"):
+            choose_report = {
+                "ok": True,
+                "method": "already-self-made-entry",
+                "reason": "self-made entry state already visible before opening New",
+            }
+            entry_wait = {
+                "ok": True,
+                "confirmed": True,
+                "state": initial_entry_state,
+                "windows": before,
+            }
+            after_choose = before
+        elif args.choose_self_made and open_report.get("ok"):
+            pre_choose_entry = None
+            if not tracked_popup:
+                pre_choose_entry = measure(
                     timings,
-                    "new-probe.wait-for-entry-state",
-                    quick_check_self_made_entry_state,
+                    "new-probe.pre-choose-entry-state",
+                    wait_for_self_made_entry_state,
                     jab,
+                    0.35,
+                    0.04,
                 )
+            if pre_choose_entry and (
+                pre_choose_entry.get("ok") or pre_choose_entry.get("partial_ok")
+            ):
+                choose_report = {
+                    "ok": True,
+                    "method": "entry-state-already-open",
+                    "reason": "self-made entry state detected without visible popup",
+                }
+                entry_wait = pre_choose_entry
                 after_choose = entry_wait.get("windows") or []
+            else:
+                choose_report = measure(
+                    timings,
+                    "new-probe.choose-self-made",
+                    choose_self_made_menu_item,
+                    jab,
+                    after_open,
+                    args.self_made_index,
+                    popup_hwnd=tracked_popup.get("hwnd") if tracked_popup else None,
+                )
+            if choose_report.get("ok"):
+                if entry_wait is None:
+                    entry_wait = measure(
+                        timings,
+                        "new-probe.wait-for-entry-state",
+                        quick_check_self_made_entry_state,
+                        jab,
+                    )
+                    after_choose = entry_wait.get("windows") or []
             if (
                 tracked_popup
                 and choose_report.get("ok")
@@ -212,8 +272,10 @@ def run(args, jab=None, before=None, buttons=None):
             jab.close()
 
     report = {
+        "foreground": foreground,
         "matches": matches,
         "buttons": buttons,
+        "usable_buttons": usable_buttons,
         "open": open_report,
         "tracked_popup": tracked_popup,
         "popup_cleanup": popup_cleanup,
@@ -228,10 +290,10 @@ def run(args, jab=None, before=None, buttons=None):
     return report
 
 
-def open_new_menu_with_known_buttons(jab, args, buttons):
+def open_new_menu_with_known_buttons(jab, args, buttons, all_buttons=None, foreground=None):
     if args.method == "button" and buttons:
         target = buttons[0]
-        return trigger_button_async(
+        action_report = trigger_button_async(
             jab,
             target["window"]["hwnd"],
             target["control"]["path"],
@@ -239,24 +301,101 @@ def open_new_menu_with_known_buttons(jab, args, buttons):
             return_timeout=args.return_timeout,
             target=target,
         )
+        if action_report.get("ok"):
+            return action_report
+        fallback = open_new_menu_with_ctrl_n(foreground)
+        fallback["button_action"] = action_report
+        return fallback
+    if args.method == "button" and all_buttons:
+        fallback = open_new_menu_with_ctrl_n(foreground)
+        fallback.update(
+            {
+                "button_reason": "new button candidates were found, but none were usable in the foreground NC window",
+                "rejected_count": len(all_buttons),
+                "rejected": summarize_candidates(all_buttons[:20]),
+            }
+        )
+        return fallback
+    if args.method == "button":
+        fallback = open_new_menu_with_ctrl_n(foreground)
+        fallback.update(
+            {
+                "button_reason": "new button not found",
+                "rejected_count": 0,
+                "rejected": [],
+            }
+        )
+        return fallback
     return open_new_menu(jab, args)
+
+
+def open_new_menu_with_ctrl_n(foreground):
+    guard = foreground_nc_guard(foreground)
+    if not guard.get("ok"):
+        return {
+            "ok": False,
+            "method": "ctrl+n-fallback",
+            "reason": "foreground is not NC; Ctrl+N not sent",
+            "foreground_guard": guard,
+        }
+    try:
+        send_ctrl_n()
+    except Exception as exc:
+        return {
+            "ok": False,
+            "method": "ctrl+n-fallback",
+            "reason": f"Ctrl+N send failed: {exc!r}",
+            "foreground_guard": guard,
+        }
+    return {
+        "ok": True,
+        "method": "ctrl+n-fallback",
+        "foreground_guard": guard,
+    }
+
+
+def foreground_nc_guard(foreground):
+    if os.name != "nt":
+        return {"ok": False, "reason": "Windows only", "foreground": foreground}
+    if not foreground:
+        return {"ok": False, "reason": "missing foreground window", "foreground": foreground}
+    ok = bool(
+        foreground.get("class_name") == "YonyouUWnd"
+        or foreground.get("root_class_name") == "YonyouUWnd"
+    )
+    return {
+        "ok": ok,
+        "reason": None if ok else "foreground root is not YonyouUWnd",
+        "foreground": foreground,
+    }
+
+
+def send_ctrl_n():
+    user32 = ctypes.windll.user32
+    vk_control = 0x11
+    vk_n = 0x4E
+    try:
+        user32.keybd_event(vk_control, 0, 0, 0)
+        time.sleep(0.02)
+        user32.keybd_event(vk_n, 0, 0, 0)
+        time.sleep(0.03)
+        user32.keybd_event(vk_n, 0, 2, 0)
+    finally:
+        user32.keybd_event(vk_control, 0, 2, 0)
 
 
 def open_new_menu(jab, args):
     if args.method == "probe-button":
         return {"ok": True, "method": "probe-button"}
     if args.method == "button":
+        foreground = foreground_info()
         buttons = find_new_buttons(jab, args.name, args.role, args.class_name)
         if not buttons:
-            return {"ok": False, "method": "button", "reason": "new button not found"}
-        target = buttons[0]
-        return trigger_button_async(
-            jab,
-            target["window"]["hwnd"],
-            target["control"]["path"],
-            action_name=args.action,
-            return_timeout=args.return_timeout,
-            target=target,
+            fallback = open_new_menu_with_ctrl_n(foreground)
+            fallback.update({"button_reason": "new button not found"})
+            return fallback
+        return open_new_menu_with_known_buttons(
+            jab, args, buttons, all_buttons=buttons, foreground=foreground
         )
 
     ok = jab.do_action_by_path(
@@ -316,7 +455,7 @@ def wait_for_self_made_entry_state(jab, timeout=0.45, interval=0.04):
     while True:
         attempts += 1
         last_windows = collect_receipt_new_windows_compat(
-            jab, max_depth=9, max_children=260
+            jab, max_depth=12, max_children=320
         )
         last_state = detect_self_made_entry_state(last_windows)
         if last_state.get("ok") or last_state.get("partial_ok"):
@@ -334,7 +473,7 @@ def wait_for_self_made_entry_state(jab, timeout=0.45, interval=0.04):
             break
         time.sleep(min(interval, remaining))
     full_windows = collect_receipt_new_windows_compat(
-        jab, max_depth=12, max_children=400
+        jab, max_depth=18, max_children=520
     )
     full_state = detect_self_made_entry_state(full_windows)
     if full_state.get("ok") or full_state.get("partial_ok"):
@@ -357,9 +496,13 @@ def wait_for_self_made_entry_state(jab, timeout=0.45, interval=0.04):
 
 
 def quick_check_self_made_entry_state(jab):
-    windows = collect_receipt_new_windows_compat(jab, max_depth=8, max_children=250)
+    windows = collect_receipt_new_windows_compat(jab, max_depth=12, max_children=320)
     state = detect_self_made_entry_state(windows)
     confirmed = bool(state.get("ok") or state.get("partial_ok"))
+    if not confirmed:
+        windows = collect_receipt_new_windows_compat(jab, max_depth=18, max_children=520)
+        state = detect_self_made_entry_state(windows)
+        confirmed = bool(state.get("ok") or state.get("partial_ok"))
     if not confirmed:
         state = {
             **state,
@@ -445,6 +588,9 @@ def find_new_buttons(jab, name_query="新增", role=None, class_name=None):
         class_name=class_name,
         require_action=True,
     )
+    foreground = foreground_info()
+    annotate_foreground_root_for_targets(buttons, foreground)
+    buttons = filter_usable_new_buttons(buttons, foreground)
     buttons.sort(key=new_button_priority)
     return buttons
 
@@ -489,11 +635,90 @@ def new_button_priority(item):
     control = item.get("control") or {}
     states = control.get("states", "")
     bounds = control.get("bounds") or []
-    has_valid_size = len(bounds) == 4 and bounds[2] > 0 and bounds[3] > 0
-    is_showing = "showing" in states
+    is_foreground_root = bool((item.get("window") or {}).get("is_foreground_root"))
+    has_valid_size = has_valid_bounds(bounds)
+    is_showing = "showing" in states.lower()
     desc = control.get("description") or ""
     is_plain_new = desc == "新增(Ctrl+N)"
-    return (not is_showing, not has_valid_size, not is_plain_new)
+    return (not is_foreground_root, not is_showing, not has_valid_size, not is_plain_new)
+
+
+def filter_usable_new_buttons(buttons, foreground=None):
+    buttons = [item for item in buttons or [] if is_current_visible_control(item.get("control") or {})]
+    if not buttons:
+        return []
+    if foreground and foreground.get("root"):
+        foreground_buttons = [
+            item for item in buttons if (item.get("window") or {}).get("is_foreground_root")
+        ]
+        if foreground_buttons:
+            return foreground_buttons
+    return buttons
+
+
+def annotate_foreground_root_for_targets(targets, foreground):
+    for item in targets or []:
+        window = item.get("window") or {}
+        window["root_hwnd"] = root_hwnd(window.get("hwnd"))
+        window["is_foreground_root"] = bool(
+            foreground
+            and foreground.get("root")
+            and window.get("root_hwnd") == foreground.get("root")
+        )
+
+
+def annotate_foreground_root(windows, foreground):
+    for window in windows or []:
+        window["root_hwnd"] = root_hwnd(window.get("hwnd"))
+        window["is_foreground_root"] = bool(
+            foreground
+            and foreground.get("root")
+            and window.get("root_hwnd") == foreground.get("root")
+        )
+
+
+def foreground_info():
+    if os.name != "nt" or not hasattr(ctypes, "windll"):
+        return {}
+    user32 = ctypes.windll.user32
+    hwnd = user32.GetForegroundWindow()
+    if not hwnd:
+        return {}
+    root = root_hwnd(hwnd)
+    return {
+        "hwnd": int(hwnd),
+        "root": root,
+        "class_name": window_class_name(hwnd),
+        "title": window_text(hwnd),
+        "root_class_name": window_class_name(root),
+        "root_title": window_text(root),
+    }
+
+
+def root_hwnd(hwnd):
+    if os.name != "nt" or not hasattr(ctypes, "windll") or not hwnd:
+        return 0
+    root = ctypes.windll.user32.GetAncestor(wintypes.HWND(int(hwnd)), 2)
+    return int(root or 0)
+
+
+def window_text(hwnd):
+    if os.name != "nt" or not hasattr(ctypes, "windll") or not hwnd:
+        return ""
+    user32 = ctypes.windll.user32
+    hwnd_obj = wintypes.HWND(int(hwnd))
+    length = user32.GetWindowTextLengthW(hwnd_obj)
+    buffer = ctypes.create_unicode_buffer(length + 1)
+    user32.GetWindowTextW(hwnd_obj, buffer, length + 1)
+    return buffer.value
+
+
+def window_class_name(hwnd):
+    if os.name != "nt" or not hasattr(ctypes, "windll") or not hwnd:
+        return ""
+    buffer = ctypes.create_unicode_buffer(256)
+    ctypes.windll.user32.GetClassNameW(wintypes.HWND(int(hwnd)), buffer, 256)
+    return buffer.value
 
 
 def find_named_controls(
@@ -913,15 +1138,24 @@ def describe_hwnd(user32, hwnd):
     }
 
 
+def has_valid_bounds(bounds):
+    return (
+        isinstance(bounds, list)
+        and len(bounds) == 4
+        and bounds[0] >= 0
+        and bounds[1] >= 0
+        and bounds[2] > 0
+        and bounds[3] > 0
+    )
+
+
 def is_current_visible_control(control):
     states = control.get("states", "")
     bounds = control.get("bounds") or []
-    if "visible" not in states or "showing" not in states:
+    normalized_states = states.lower()
+    if "visible" not in normalized_states or "showing" not in normalized_states:
         return False
-    if len(bounds) != 4:
-        return False
-    _x, _y, width, height = bounds
-    return width > 0 and height > 0
+    return has_valid_bounds(bounds)
 
 
 def choose_click_action(actions):
@@ -962,7 +1196,14 @@ def summarize_candidates(candidates):
                 "index": index,
                 "window": {
                     key: item["window"].get(key)
-                    for key in ("hwnd", "class_name", "title", "visible")
+                    for key in (
+                        "hwnd",
+                        "class_name",
+                        "title",
+                        "visible",
+                        "root_hwnd",
+                        "is_foreground_root",
+                    )
                 },
                 "control": item["control"],
             }
@@ -972,8 +1213,12 @@ def summarize_candidates(candidates):
 
 def summarize_report(report):
     return {
+        "foreground": report.get("foreground"),
         "matches": [summarize_target(item) for item in report.get("matches", [])[:20]],
         "buttons": [summarize_target(item) for item in report.get("buttons", [])[:20]],
+        "usable_buttons": [
+            summarize_target(item) for item in report.get("usable_buttons", [])[:20]
+        ],
         "open": summarize_action_report(report.get("open")),
         "tracked_popup": report.get("tracked_popup"),
         "popup_cleanup": report.get("popup_cleanup"),
@@ -1013,6 +1258,7 @@ def summarize_action_report(action_report):
             "candidate_count",
             "action_returned_within_timeout",
             "action_status",
+            "rejected_count",
         }
     }
     if "target" in action_report:
@@ -1030,7 +1276,14 @@ def summarize_target(item):
     return {
         "window": {
             key: item.get("window", {}).get(key)
-            for key in ("hwnd", "class_name", "title", "visible")
+            for key in (
+                "hwnd",
+                "class_name",
+                "title",
+                "visible",
+                "root_hwnd",
+                "is_foreground_root",
+            )
         },
         "control": summarize_control(item.get("control", {})),
     }

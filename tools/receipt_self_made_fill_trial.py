@@ -42,6 +42,12 @@ HEADER_FORM_TEXT_INDEXES = {
     "客户": 17,
     "结算方式": 31,
 }
+HEADER_LABEL_ALIASES = {
+    "财务组织": ("财务组织", "财务组织(O)"),
+    "客户": ("客户",),
+    "单据日期": ("单据日期",),
+    "币种": ("币种",),
+}
 
 
 def print_json(data):
@@ -176,6 +182,7 @@ def build_business_values(config, row_data):
         "document_date": receipt_date_text,
         "customer_code": str(row_data.get("客户编码") or "").strip(),
         "currency": CURRENCY_NAMES.get(currency_code, currency_code),
+        "header_currency_code": account.header_currency_code,
         "bank_label": bank,
         "bank_account": account.account_no,
         "amount": str(amount),
@@ -282,7 +289,7 @@ def fill_header(
         },
         {
             "label": "币种",
-            "value": business["currency"],
+            "value": business["header_currency_code"],
             "header_form": True,
         },
         {
@@ -706,10 +713,11 @@ def set_receipt_header_form_field(jab, label, value, commit_key=None):
         jab.release_contexts(vm_id, owned_contexts)
 
 
-def find_receipt_header_form_field(jab, label):
+def find_receipt_header_form_field(jab, label, scope_hwnd=None):
     # 收款单页签路径会随已打开 NC 页面数量漂移；表头字段优先按 label
     # 在当前可见 SunAwtCanvas 中语义定位，固定 path 只作为现场兜底。
-    for window in jab.get_scoped_windows(None, include_children=True):
+    aliases = HEADER_LABEL_ALIASES.get(label, (label,))
+    for window in header_scope_windows(jab, scope_hwnd):
         hwnd, title, class_name, pid, visible = window
         if (
             not visible
@@ -727,19 +735,26 @@ def find_receipt_header_form_field(jab, label):
             ctypes.byref(root_context),
         ):
             continue
-        result = find_label_following_text(
-            jab,
-            vm_id_ref.value,
-            root_context.value,
-            label,
-            path="0",
-            depth=0,
-            owned_contexts=[root_context.value],
-        )
+        result = None
+        matched_alias = None
+        for alias in aliases:
+            result = find_label_following_text(
+                jab,
+                vm_id_ref.value,
+                root_context.value,
+                alias,
+                path="0",
+                depth=0,
+                owned_contexts=[root_context.value],
+            )
+            if result:
+                matched_alias = alias
+                break
         if result:
             context, owned_contexts, path, label_path = result
             return {
                 "ok": True,
+                "matched_alias": matched_alias,
                 "context": context,
                 "vm_id": vm_id_ref.value,
                 "owned_contexts": owned_contexts,
@@ -752,16 +767,46 @@ def find_receipt_header_form_field(jab, label):
                     "pid": pid,
                     "visible": visible,
                 },
-            }
+        }
         jab.release_contexts(vm_id_ref.value, [root_context.value])
-    fallback = find_receipt_header_form_field_by_path(jab, label)
+    fallback = find_receipt_header_form_field_by_path(jab, label, scope_hwnd=scope_hwnd)
     if fallback.get("ok"):
         fallback["fallback_path_used"] = True
         return fallback
     return {"ok": False, "reason": "header form field not found", "label": label}
 
 
-def find_receipt_header_form_field_by_path(jab, label):
+def header_scope_windows(jab, scope_hwnd=None):
+    if scope_hwnd is None or os.name != "nt" or not hasattr(ctypes, "windll"):
+        return jab.get_scoped_windows(scope_hwnd, include_children=True)
+    item = describe_hwnd_for_scope(scope_hwnd)
+    if not item:
+        return []
+    return [item]
+
+
+def describe_hwnd_for_scope(hwnd):
+    user32 = ctypes.windll.user32
+    hwnd_obj = wintypes.HWND(int(hwnd))
+    if not user32.IsWindow(hwnd_obj):
+        return None
+    title_len = user32.GetWindowTextLengthW(hwnd_obj)
+    title_buffer = ctypes.create_unicode_buffer(title_len + 1)
+    user32.GetWindowTextW(hwnd_obj, title_buffer, title_len + 1)
+    class_buffer = ctypes.create_unicode_buffer(256)
+    user32.GetClassNameW(hwnd_obj, class_buffer, 256)
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd_obj, ctypes.byref(pid))
+    return (
+        int(hwnd),
+        title_buffer.value,
+        class_buffer.value,
+        int(pid.value),
+        bool(user32.IsWindowVisible(hwnd_obj)),
+    )
+
+
+def find_receipt_header_form_field_by_path(jab, label, scope_hwnd=None):
     index = HEADER_FORM_TEXT_INDEXES.get(label)
     if index is None:
         return {
@@ -774,6 +819,7 @@ def find_receipt_header_form_field_by_path(jab, label):
     context, vm_id, owned_contexts, window_info = jab.find_context_by_path_once(
         text_path,
         class_name="SunAwtCanvas",
+        scope_hwnd=scope_hwnd,
         role="text",
         require_showing=True,
         require_valid_bounds=True,
@@ -794,6 +840,67 @@ def find_receipt_header_form_field_by_path(jab, label):
         "label_path": label_path,
         "window": window_info,
     }
+
+
+def locate_receipt_header_scope(jab):
+    foreground_root = foreground_root_hwnd()
+    if foreground_root:
+        fast_matches = collect_complete_header_scope_matches(
+            jab, foreground_root=foreground_root
+        )
+        if len(fast_matches) == 1:
+            return {
+                "ok": True,
+                "scope_hwnd": fast_matches[0]["hwnd"],
+                "matches": fast_matches,
+                "mode": "foreground-fast",
+            }
+
+    matches = collect_complete_header_scope_matches(jab)
+    if len(matches) == 1:
+        return {
+            "ok": True,
+            "scope_hwnd": matches[0]["hwnd"],
+            "matches": matches,
+            "mode": "full-scan",
+        }
+    return {
+        "ok": False,
+        "matches": matches,
+        "reason": f"完整表头 scope 数量不是 1：{len(matches)}",
+    }
+
+
+def collect_complete_header_scope_matches(jab, foreground_root=None):
+    matches = []
+    for window in jab.get_scoped_windows(None, include_children=True):
+        hwnd, _title, class_name, _pid, visible = window
+        if foreground_root and window_root_hwnd(hwnd) != foreground_root:
+            continue
+        if not visible or class_name != "SunAwtCanvas" or not jab.dll.isJavaWindow(hwnd):
+            continue
+        ok_labels = []
+        for label in HEADER_LABEL_ALIASES:
+            found = find_receipt_header_form_field(jab, label, scope_hwnd=hwnd)
+            if found.get("ok"):
+                ok_labels.append(label)
+                jab.release_contexts(found["vm_id"], found["owned_contexts"])
+        if len(ok_labels) == len(HEADER_LABEL_ALIASES):
+            matches.append({"hwnd": int(hwnd), "labels": ok_labels})
+    return matches
+
+
+def foreground_root_hwnd():
+    if os.name != "nt" or not hasattr(ctypes, "windll"):
+        return 0
+    hwnd = ctypes.windll.user32.GetForegroundWindow()
+    return window_root_hwnd(hwnd)
+
+
+def window_root_hwnd(hwnd):
+    if os.name != "nt" or not hasattr(ctypes, "windll") or not hwnd:
+        return 0
+    return int(ctypes.windll.user32.GetAncestor(wintypes.HWND(int(hwnd)), 2) or 0)
 
 
 def find_label_following_text(jab, vm_id, context, label, path, depth, owned_contexts):
@@ -847,7 +954,7 @@ def find_label_following_text(jab, vm_id, context, label, path, depth, owned_con
                             text_path,
                             child_path,
                         )
-                    break
+                    continue
 
         for _index, child, _child_info, child_path in child_infos:
             result = find_label_following_text(
@@ -874,7 +981,14 @@ def first_text_descendant(jab, vm_id, context, path, depth):
         return None, [], None
     role = (info.role_en_US.strip() or info.role.strip()).lower()
     states = (info.states_en_US.strip() or info.states.strip()).lower()
-    if role == "text" and "visible" in states:
+    if (
+        role == "text"
+        and "visible" in states
+        and info.x >= 0
+        and info.y >= 0
+        and info.width > 0
+        and info.height > 0
+    ):
         return context, [], path
     if depth >= jab.max_depth:
         return None, [], None
@@ -1260,7 +1374,6 @@ def fill_detail_line(jab, business):
     steps = []
     for col, name, value in [
         (1, "收款业务类型", business["main_business_type"]),
-        (3, "币种", business["currency"]),
         (4, "收款银行账户", business["bank_account"]),
         (5, "科目", business["main_subject"]),
         (7, "贷方原币金额", business["amount"]),

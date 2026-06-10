@@ -201,6 +201,14 @@ def _validate_receipt_entry(receipt_cfg, errors):
             account_no = _require_non_empty_str(
                 account, "account_no", errors, prefix=prefix
             )
+            header_currency_code = _require_non_empty_str(
+                account, "header_currency_code", errors, prefix=prefix
+            )
+            if header_currency_code and header_currency_code not in {"USD", "CNY"}:
+                errors.append(
+                    f"{prefix}.header_currency_code must be USD or CNY, "
+                    f"got {header_currency_code!r}"
+                )
             bank_id = account.get("bank_id")
             if bank_id is not None:
                 bank_id = _require_non_empty_str(

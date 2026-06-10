@@ -5,6 +5,7 @@
 
 import ctypes
 from dataclasses import dataclass
+import os
 import re
 import sys
 import time
@@ -33,6 +34,7 @@ from tools.receipt_self_made_fill_trial import (  # noqa: E402
     find_context_with_window,
     find_receipt_header_form_field,
     find_receipt_header_form_field_by_path,
+    locate_receipt_header_scope,
     read_body_table,
 )
 from tools.tmp_receipt_cell_probe_run import (  # noqa: E402
@@ -52,12 +54,17 @@ START_DELAY_SECONDS = 2
 SAVE_SUCCESS_TIMEOUT = 12.0
 SAVE_ENABLED = False
 READ_DETAIL_BEFORE_SAVE_SKIPPED = False
-ALLOW_EXISTING_ENTRY_FOR_FIRST_CASE = False
+ALLOW_EXISTING_ENTRY_FOR_FIRST_CASE = (
+    os.environ.get("RECEIPT_ALLOW_EXISTING_ENTRY", "").strip().lower()
+    in {"1", "true", "yes", "y"}
+)
 TEST_CASE_LIMIT = 2
-TEST_ORG_CODE = "A001"
-TEST_PREFERRED_CURRENCY = "人民币"
-TEST_BANK_LABEL = "招行"
-TEST_BANK_ACCOUNT_NO = "FTE1219165931831RMB"
+TEST_ORG_CODE = os.environ.get("RECEIPT_TEST_ORG_CODE", "A001")
+TEST_PREFERRED_CURRENCY = os.environ.get("RECEIPT_TEST_CURRENCY", "美元")
+TEST_BANK_LABEL = os.environ.get("RECEIPT_TEST_BANK_LABEL", "招行")
+TEST_BANK_ACCOUNT_NO = os.environ.get(
+    "RECEIPT_TEST_BANK_ACCOUNT_NO", "FTE1219165931831"
+)
 TEST_FEE_OVERRIDES = ("20.00", "33.00")
 
 
@@ -97,8 +104,8 @@ def print_header(test_cases):
     print()
     print("本脚本会做：")
     print("1. 每条从【新增】入口进入【自制】")
-    print("2. 写表头：财务组织、客户、单据日期")
-    print("3. 写明细主行：货款、币种、收款银行账户、科目、金额、网银")
+    print("2. 写表头：财务组织、客户、单据日期、币种")
+    print("3. 写明细主行：货款、收款银行账户、科目、金额、网银")
     print("4. 手续费非零时：Ctrl+I 增行，写手续费行，清账户，删多余空行")
     if SAVE_ENABLED:
         print("5. 前台守卫通过后发送 Ctrl+S 保存")
@@ -252,14 +259,14 @@ def business_for_case(config, case):
     org = receipt_config.organizations.get(account.organization_code)
     if not org:
         raise RuntimeError(f"账号 {case.bank_label} 绑定的财务组织不存在")
-    candidates = account.nc_candidates(case.currency)
-    bank_account = case.bank_account_no or (
-        candidates[0] if candidates else account.account_no
-    )
-    if bank_account != TEST_BANK_ACCOUNT_NO:
+    bank_account = case.bank_account_no or account.account_no
+    if TEST_BANK_ACCOUNT_NO and bank_account != TEST_BANK_ACCOUNT_NO:
         raise RuntimeError(
             f"本轮测试只允许账号 {TEST_BANK_ACCOUNT_NO}，实际将使用 {bank_account}"
         )
+    header_currency_code = account.header_currency_code
+    if not header_currency_code:
+        raise RuntimeError(f"账号 {bank_account} 未配置表头币种代码")
     return {
         "finance_org_code": org.code,
         "finance_org_name": org.name,
@@ -268,6 +275,7 @@ def business_for_case(config, case):
         "customer_code": case.customer_code,
         "payer_name": case.payer_name,
         "currency": case.currency,
+        "header_currency_code": header_currency_code,
         "bank_label": case.bank_label,
         "source_bank": case.source_bank,
         "bank_account": bank_account,
@@ -279,24 +287,28 @@ def business_for_case(config, case):
     }
 
 
-def fill_minimal_header(jab, business, header_cache=None):
+def fill_minimal_header(jab, business, header_cache=None, scope_hwnd=None):
     header_cache = header_cache if header_cache is not None else {}
     steps = []
     for item in [
         ("财务组织", business["finance_org_code"], "header_form", True),
-        ("单据日期", business["document_date"], "header_form", True),
         ("客户", business["customer_code"], "header_form", True),
+        ("单据日期", business["document_date"], "header_form", True),
+        ("币种", business["header_currency_code"], "header_form", True),
+        ("结算方式", business["settlement"], "header_form", True),
     ]:
         label, value, method, require_strict = item
         start = time.perf_counter()
         if label == "财务组织":
-            result = set_finance_org_header_field(jab, value, header_cache)
+            result = set_finance_org_header_field(jab, value, header_cache, scope_hwnd)
         elif label == "客户":
-            result = set_customer_header_field(jab, value, header_cache)
+            result = set_customer_header_field(jab, value, header_cache, scope_hwnd)
         elif label == "单据日期":
-            result = set_document_date_header_field(jab, value, header_cache)
+            result = set_document_date_header_field(jab, value, header_cache, scope_hwnd)
+        elif label == "币种":
+            result = set_currency_header_field(jab, value, header_cache, scope_hwnd)
         else:
-            result = screen_write_header_field(jab, label, value, header_cache)
+            result = screen_write_header_field(jab, label, value, header_cache, scope_hwnd)
         result = dict(result)
         result.update(
             {
@@ -324,8 +336,8 @@ def header_step_soft_ok(result):
     return False
 
 
-def set_finance_org_header_field(jab, value, header_cache=None):
-    result = screen_write_control_by_name(jab, "财务组织(O)", value, header_cache)
+def set_finance_org_header_field(jab, value, header_cache=None, scope_hwnd=None):
+    result = screen_write_header_field(jab, "财务组织", value, header_cache, scope_hwnd)
     result.update(
         {
             "label": "财务组织",
@@ -336,8 +348,8 @@ def set_finance_org_header_field(jab, value, header_cache=None):
     return result
 
 
-def set_customer_header_field(jab, value, header_cache=None):
-    fallback = screen_write_header_field(jab, "客户", value, header_cache)
+def set_customer_header_field(jab, value, header_cache=None, scope_hwnd=None):
+    fallback = screen_write_header_field(jab, "客户", value, header_cache, scope_hwnd)
     result = {
         "ok": bool(fallback.get("ok")),
         "label": "客户",
@@ -362,8 +374,8 @@ def set_customer_header_field(jab, value, header_cache=None):
     return result
 
 
-def set_document_date_header_field(jab, value, header_cache=None):
-    fallback = screen_write_header_field(jab, "单据日期", value, header_cache)
+def set_document_date_header_field(jab, value, header_cache=None, scope_hwnd=None):
+    fallback = screen_write_header_field(jab, "单据日期", value, header_cache, scope_hwnd)
     result = {
         "ok": bool(fallback.get("ok")),
         "label": "单据日期",
@@ -388,8 +400,34 @@ def set_document_date_header_field(jab, value, header_cache=None):
     return result
 
 
-def screen_write_header_field(jab, label, value, header_cache=None):
-    found = find_cached_header_field(jab, label, header_cache)
+def set_currency_header_field(jab, value, header_cache=None, scope_hwnd=None):
+    fallback = screen_write_header_field(jab, "币种", value, header_cache, scope_hwnd)
+    result = {
+        "ok": bool(fallback.get("ok")),
+        "label": "币种",
+        "value": value,
+        "method": "screen_input_enter",
+        "path": fallback.get("path"),
+        "fallback_path_used": bool(fallback.get("fallback_path_used")),
+        "backend_write": {
+            "skipped": True,
+            "reason": "币种必须写表头，明细币种不会同步回表头",
+        },
+        "screen_fallback": fallback,
+    }
+    if not fallback.get("ok"):
+        result["ok"] = False
+        result["reason"] = fallback.get("reason") or "币种屏幕输入失败"
+        return result
+    result["commit_check"] = {
+        "skipped": True,
+        "reason": "币种写入后不原地等待，保存前统一回看",
+    }
+    return result
+
+
+def screen_write_header_field(jab, label, value, header_cache=None, scope_hwnd=None):
+    found = find_cached_header_field(jab, label, header_cache, scope_hwnd)
     if not found.get("ok"):
         return {
             "ok": False,
@@ -568,7 +606,7 @@ def normalize_window_info(window):
     return window
 
 
-def find_cached_header_field(jab, label, header_cache=None):
+def find_cached_header_field(jab, label, header_cache=None, scope_hwnd=None):
     cached = (header_cache or {}).get(label) or {}
     path = cached.get("path")
     window = normalize_window_info(cached.get("window"))
@@ -576,7 +614,7 @@ def find_cached_header_field(jab, label, header_cache=None):
         context, vm_id, owned_contexts, window_info = jab.find_context_by_path_once(
             path,
             class_name=window.get("class_name") or "SunAwtCanvas",
-            scope_hwnd=window.get("hwnd"),
+            scope_hwnd=scope_hwnd or window.get("hwnd"),
             role="text",
             require_showing=True,
             require_valid_bounds=True,
@@ -591,11 +629,7 @@ def find_cached_header_field(jab, label, header_cache=None):
                 "window": normalize_window_info(window_info),
                 "cache_hit": True,
             }
-    found = (
-        find_receipt_header_form_field_by_path(jab, label)
-        if label in {"单据日期", "客户"}
-        else find_receipt_header_form_field(jab, label)
-    )
+    found = find_receipt_header_form_field(jab, label, scope_hwnd=scope_hwnd)
     if found.get("ok"):
         found["cache_hit"] = False
         return found
@@ -653,8 +687,8 @@ def click_header_field_center(jab, label):
         jab.release_contexts(vm_id, owned_contexts)
 
 
-def read_header_field_non_empty(jab, label, header_cache=None):
-    found = find_cached_header_field(jab, label, header_cache)
+def read_header_field_non_empty(jab, label, header_cache=None, scope_hwnd=None):
+    found = find_cached_header_field(jab, label, header_cache, scope_hwnd)
     if not found.get("ok"):
         return {
             "ok": False,
@@ -686,11 +720,11 @@ def read_header_field_non_empty(jab, label, header_cache=None):
         jab.release_contexts(vm_id, owned_contexts)
 
 
-def wait_header_field_non_empty(jab, label, timeout=0.9, header_cache=None):
+def wait_header_field_non_empty(jab, label, timeout=0.9, header_cache=None, scope_hwnd=None):
     deadline = time.time() + timeout
     last = None
     while time.time() < deadline:
-        last = read_header_field_non_empty(jab, label, header_cache)
+        last = read_header_field_non_empty(jab, label, header_cache, scope_hwnd)
         if last.get("ok"):
             last["wait_seconds"] = round(timeout - max(deadline - time.time(), 0), 3)
             return last
@@ -706,8 +740,8 @@ def wait_header_field_non_empty(jab, label, timeout=0.9, header_cache=None):
     return last
 
 
-def read_finance_org_field(jab, header_cache=None):
-    cached = find_cached_header_field(jab, "财务组织", header_cache)
+def read_finance_org_field(jab, header_cache=None, scope_hwnd=None):
+    cached = find_cached_header_field(jab, "财务组织", header_cache, scope_hwnd)
     if cached.get("ok"):
         context = cached["context"]
         vm_id = cached["vm_id"]
@@ -725,6 +759,7 @@ def read_finance_org_field(jab, header_cache=None):
                 require_showing=True,
                 window_class="SunAwtCanvas",
                 visible_only=True,
+                scope_hwnd=scope_hwnd,
             )
         )
         path = "0" + "".join(f".{index}" for index in owned_indexes)
@@ -752,11 +787,11 @@ def read_finance_org_field(jab, header_cache=None):
         jab.release_contexts(vm_id, owned_contexts)
 
 
-def wait_finance_org_field_non_empty(jab, timeout=1.2, header_cache=None):
+def wait_finance_org_field_non_empty(jab, timeout=1.2, header_cache=None, scope_hwnd=None):
     deadline = time.time() + timeout
     last = None
     while time.time() < deadline:
-        last = read_finance_org_field(jab, header_cache)
+        last = read_finance_org_field(jab, header_cache, scope_hwnd)
         if last.get("ok"):
             last["wait_seconds"] = round(timeout - max(deadline - time.time(), 0), 3)
             return last
@@ -772,12 +807,12 @@ def wait_finance_org_field_non_empty(jab, timeout=1.2, header_cache=None):
     return last
 
 
-def wait_header_field_has_text(jab, label, value, timeout=1.0, header_cache=None):
+def wait_header_field_has_text(jab, label, value, timeout=1.0, header_cache=None, scope_hwnd=None):
     expected = str(value or "").strip()
     deadline = time.time() + timeout
     last = None
     while time.time() < deadline:
-        last = read_header_field_non_empty(jab, label, header_cache)
+        last = read_header_field_non_empty(jab, label, header_cache, scope_hwnd)
         text = str((last or {}).get("text") or "").strip()
         description = str((last or {}).get("description") or "").strip()
         if last and last.get("ok") and (text == expected or description == expected):
@@ -795,6 +830,46 @@ def wait_header_field_has_text(jab, label, value, timeout=1.0, header_cache=None
     last["wait_seconds"] = timeout
     last["reason"] = f"表头【{label}】未匹配期望值 {expected!r}"
     return last
+
+
+def wait_header_field_matches_any(
+    jab, label, accepted_values, timeout=1.0, header_cache=None, scope_hwnd=None
+):
+    accepted = [
+        normalize_review_value(value)
+        for value in accepted_values
+        if str(value or "").strip()
+    ]
+    deadline = time.time() + timeout
+    last = None
+    while time.time() < deadline:
+        last = read_header_field_non_empty(jab, label, header_cache, scope_hwnd)
+        observed = [
+            normalize_review_value(value) for value in header_observed_values(last or {})
+        ]
+        if last and last.get("ok") and any(value in accepted for value in observed):
+            last["wait_seconds"] = round(timeout - max(deadline - time.time(), 0), 3)
+            return last
+        time.sleep(0.1)
+    if last is None:
+        return {
+            "ok": False,
+            "label": label,
+            "reason": f"表头【{label}】没有取得结果",
+            "wait_seconds": timeout,
+        }
+    last["ok"] = False
+    last["wait_seconds"] = timeout
+    last["reason"] = f"表头【{label}】未匹配任一期望值 {accepted_values!r}"
+    return last
+
+
+def currency_review_aliases(currency_code):
+    aliases = {
+        "USD": ("USD", "美元"),
+        "CNY": ("CNY", "人民币"),
+    }
+    return aliases.get(str(currency_code or "").strip().upper(), (currency_code,))
 
 
 def normalize_review_value(value):
@@ -841,8 +916,8 @@ def finance_org_matches_exact(result, business):
     return False
 
 
-def review_finance_org_after_fill(jab, business, header_cache=None):
-    checks = [review_finance_org_exact(jab, business, header_cache)]
+def review_finance_org_after_fill(jab, business, header_cache=None, scope_hwnd=None):
+    checks = [review_finance_org_exact(jab, business, header_cache, scope_hwnd)]
     failed_required = [
         item
         for item in checks
@@ -859,13 +934,31 @@ def review_finance_org_after_fill(jab, business, header_cache=None):
     }
 
 
-def review_header_before_save(jab, business, header_cache=None):
+def review_header_before_save(jab, business, header_cache=None, scope_hwnd=None):
     checks = [
-        review_finance_org_exact(jab, business, header_cache),
+        review_finance_org_exact(jab, business, header_cache, scope_hwnd),
         review_header_has_text(
-            jab, "单据日期", business["document_date"], header_cache
+            jab,
+            "单据日期",
+            business["document_date"],
+            header_cache=header_cache,
+            scope_hwnd=scope_hwnd,
         ),
-        review_customer_resolved(jab, business, header_cache),
+        review_header_matches_any(
+            jab,
+            "币种",
+            currency_review_aliases(business["header_currency_code"]),
+            header_cache=header_cache,
+            scope_hwnd=scope_hwnd,
+        ),
+        review_header_has_text(
+            jab,
+            "结算方式",
+            business["settlement"],
+            header_cache=header_cache,
+            scope_hwnd=scope_hwnd,
+        ),
+        review_customer_resolved(jab, business, header_cache, scope_hwnd),
     ]
     failed_required = [
         item
@@ -883,9 +976,9 @@ def review_header_before_save(jab, business, header_cache=None):
     }
 
 
-def review_finance_org_exact(jab, business, header_cache=None):
+def review_finance_org_exact(jab, business, header_cache=None, scope_hwnd=None):
     result = wait_finance_org_field_non_empty(
-        jab, timeout=1.2, header_cache=header_cache
+        jab, timeout=1.2, header_cache=header_cache, scope_hwnd=scope_hwnd
     )
     ok = bool(result.get("ok")) and finance_org_matches_exact(result, business)
     expected = {
@@ -903,9 +996,9 @@ def review_finance_org_exact(jab, business, header_cache=None):
     }
 
 
-def review_customer_resolved(jab, business, header_cache=None):
+def review_customer_resolved(jab, business, header_cache=None, scope_hwnd=None):
     result = wait_header_field_non_empty(
-        jab, "客户", timeout=0.9, header_cache=header_cache
+        jab, "客户", timeout=0.9, header_cache=header_cache, scope_hwnd=scope_hwnd
     )
     ok = bool(result.get("ok"))
     expected = {
@@ -924,15 +1017,32 @@ def review_customer_resolved(jab, business, header_cache=None):
     }
 
 
-def review_header_has_text(jab, label, value, header_cache=None):
+def review_header_has_text(jab, label, value, header_cache=None, scope_hwnd=None):
     result = wait_header_field_has_text(
-        jab, label, value, timeout=1.0, header_cache=header_cache
+        jab, label, value, timeout=1.0, header_cache=header_cache, scope_hwnd=scope_hwnd
     )
     return {
         **result,
         "required": True,
         "expected": value,
         "verification_mode": "exact_text",
+    }
+
+
+def review_header_matches_any(jab, label, accepted_values, header_cache=None, scope_hwnd=None):
+    result = wait_header_field_matches_any(
+        jab,
+        label,
+        accepted_values,
+        timeout=1.0,
+        header_cache=header_cache,
+        scope_hwnd=scope_hwnd,
+    )
+    return {
+        **result,
+        "required": True,
+        "expected": list(accepted_values),
+        "verification_mode": "any_alias",
     }
 
 
@@ -1455,6 +1565,24 @@ def run_one_case(config, case, allow_existing_entry=False):
             )
             return case_report
 
+        scope_start = time.perf_counter()
+        header_scope = locate_receipt_header_scope(jab)
+        case_report["header_scope"] = header_scope
+        case_report["timings"].append(
+            {"name": "表头scope定位", "seconds": elapsed(scope_start)}
+        )
+        if not header_scope.get("ok"):
+            case_report.update(
+                {
+                    "ok": False,
+                    "failed_step": "locate-header-scope",
+                    "reason": header_scope.get("reason"),
+                    "seconds": elapsed(case_start),
+                }
+            )
+            return case_report
+        scope_hwnd = header_scope["scope_hwnd"]
+
         case_report["timings"].append(
             {"name": "填写阶段.JAB启动", "seconds": 0.0, "reused": True}
         )
@@ -1465,7 +1593,7 @@ def run_one_case(config, case, allow_existing_entry=False):
         header_cache = {}
 
         header_start = time.perf_counter()
-        header_steps = fill_minimal_header(jab, business, header_cache)
+        header_steps = fill_minimal_header(jab, business, header_cache, scope_hwnd)
         case_report["header_steps"] = header_steps
         case_report["header_cache"] = header_cache
         case_report["timings"].append(
@@ -1484,7 +1612,7 @@ def run_one_case(config, case, allow_existing_entry=False):
 
         start = time.perf_counter()
         finance_org_after_fill = review_finance_org_after_fill(
-            jab, business, header_cache
+            jab, business, header_cache, scope_hwnd
         )
         case_report["header_reviews"].append(finance_org_after_fill)
         case_report["timings"].append(
@@ -1543,7 +1671,9 @@ def run_one_case(config, case, allow_existing_entry=False):
             return case_report
 
         start = time.perf_counter()
-        header_review = review_header_before_save(jab, business, header_cache)
+        header_review = review_header_before_save(
+            jab, business, header_cache, scope_hwnd
+        )
         case_report["header_reviews"].append(header_review)
         case_report["header_review"] = header_review
         case_report["timings"].append(

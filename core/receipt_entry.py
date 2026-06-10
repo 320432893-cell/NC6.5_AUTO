@@ -11,6 +11,34 @@ from core.errors import ExcelLockedError, WorkflowStateError
 
 PUNCTUATION_RE = re.compile(r"[^0-9A-Z\u4e00-\u9fff]+")
 
+RESULT_SHEET_HEADERS = [
+    "原Sheet1行号",
+    "执行主体编码",
+    "执行主体名称",
+    "执行主体简称",
+    "银行",
+    "到款日期",
+    "客户编码",
+    "币种",
+    "银行来款名",
+    "实收金额",
+    "手续费",
+    "总金额",
+    "账户配置ID",
+    "收款银行账户",
+    "本地预检状态",
+    "异常阶段",
+    "异常类型",
+    "异常字段",
+    "原始值",
+    "配置节点",
+    "异常说明",
+    "处理动作",
+    "录入结果",
+    "保存结果",
+    "后验查询结果",
+]
+
 
 @dataclass(frozen=True)
 class ReceiptOrganization:
@@ -33,6 +61,7 @@ class ReceiptAccount:
     organization_short_name: str
     account_label: str
     account_no: str
+    header_currency_code: str = ""
     id: str = ""
     bank_id: str = ""
     display_name: str = ""
@@ -89,6 +118,7 @@ class ReceiptPlanRow:
     account_id: str
     account_label: str
     account_no: str
+    header_currency_code: str
     duplicate_key: tuple[str, ...]
 
 
@@ -167,6 +197,7 @@ class ReceiptEntryConfig:
                 organization_short_name=item["organization_short_name"],
                 account_label=item["account_label"],
                 account_no=item["account_no"],
+                header_currency_code=item.get("header_currency_code", ""),
                 id=item.get("id") or default_account_id(item),
                 bank_id=item.get("bank_id", ""),
                 display_name=item.get("display_name", ""),
@@ -794,7 +825,8 @@ class ReceiptEntryWorkbook:
                 organization_short_name=organization.short_name,
                 account_id=account.id,
                 account_label=account.account_label,
-                account_no=account.nc_candidates(currency_name)[0],
+                account_no=account.account_no,
+                header_currency_code=account.header_currency_code,
                 duplicate_key=duplicate_key,
             ),
             [],
@@ -851,35 +883,14 @@ class ReceiptEntryWorkbook:
 
     def _write_plan_sheet(self, wb, rows, issues):
         name = self.config.result_sheet_name
-        if name in wb.sheetnames:
-            del wb[name]
-        ws = wb.create_sheet(name)
-        headers = [
-            "原行号",
-            "主体编码",
-            "主体名称",
-            "银行",
-            "到款日期",
-            "客户编码",
-            "币种",
-            "银行来款名",
-            "金额",
-            "手续费",
-            "账户配置ID",
-            "收款银行账户",
-            "本地预检状态",
-            "异常阶段",
-            "异常类型",
-            "异常字段",
-            "原始值",
-            "配置节点",
-            "异常说明",
-            "处理动作",
-            "录入结果",
-            "保存结果",
-            "后验查询结果",
-        ]
-        ws.append(headers)
+        if name not in wb.sheetnames:
+            ws = wb.create_sheet(name)
+        else:
+            ws = wb[name]
+        columns = ensure_result_sheet_headers(ws, self.config.header_row)
+        append_start_row = ws.max_row + 1
+        if append_start_row <= self.config.header_row:
+            append_start_row = self.config.header_row + 1
         issues_by_row = {}
         global_issues = []
         for issue in issues:
@@ -889,21 +900,47 @@ class ReceiptEntryWorkbook:
                 issues_by_row.setdefault(issue.excel_row, []).append(issue)
         rows_by_number = {row.row: row for row in rows}
         emitted_rows = set()
-        for row in rows:
+        for row in sorted(rows, key=plan_sheet_sort_key):
             emitted_rows.add(row.row)
             row_issues = issues_by_row.get(row.row, [])
             if row_issues:
                 for issue in row_issues:
-                    ws.append(plan_sheet_row(row, issue, "异常"))
+                    append_start_row = append_plan_sheet_row(
+                        ws,
+                        columns,
+                        append_start_row,
+                        plan_sheet_row(row, issue, "异常"),
+                    )
             else:
-                ws.append(plan_sheet_row(row, None, "通过"))
-        for row_number, row_issues in sorted(issues_by_row.items()):
+                append_start_row = append_plan_sheet_row(
+                    ws,
+                    columns,
+                    append_start_row,
+                    plan_sheet_row(row, None, "通过"),
+                )
+        orphan_issue_items = [
+            (row_number, row_issues)
+            for row_number, row_issues in issues_by_row.items()
+            if row_number not in emitted_rows
+        ]
+        orphan_issue_items.sort(key=lambda item: orphan_issue_sort_key(item, rows_by_number))
+        for row_number, row_issues in orphan_issue_items:
             if row_number in emitted_rows:
                 continue
             for issue in row_issues:
-                ws.append(plan_sheet_row(rows_by_number.get(row_number), issue, "异常"))
+                append_start_row = append_plan_sheet_row(
+                    ws,
+                    columns,
+                    append_start_row,
+                    plan_sheet_row(rows_by_number.get(row_number), issue, "异常"),
+                )
         for issue in global_issues:
-            ws.append(plan_sheet_row(None, issue, "异常"))
+            append_start_row = append_plan_sheet_row(
+                ws,
+                columns,
+                append_start_row,
+                plan_sheet_row(None, issue, "异常"),
+            )
         wb.save(self.excel_path)
 
     def _read_header(self, ws):
@@ -1350,12 +1387,14 @@ def make_receipt_duplicate_key(
 
 def plan_sheet_row(row, issue, status):
     if row is None:
-        base = [""] * 12
+        base = [""] * 14
     else:
+        total_amount = row.raw_amount + row.fee
         base = [
             row.row,
             row.organization_code,
             row.organization_name,
+            row.organization_short_name,
             row.bank,
             row.receipt_date.isoformat(),
             row.customer_code,
@@ -1363,6 +1402,7 @@ def plan_sheet_row(row, issue, status):
             row.payer_name,
             str(row.raw_amount),
             str(row.fee),
+            str(total_amount),
             row.account_id,
             row.account_no,
         ]
@@ -1386,6 +1426,46 @@ def plan_sheet_row(row, issue, status):
         "",
         "",
     ]
+
+
+def ensure_result_sheet_headers(ws, header_row):
+    columns = {}
+    for column in range(1, ws.max_column + 1):
+        value = ws.cell(header_row, column).value
+        text = str(value or "").strip()
+        if text:
+            columns[text] = column
+    next_column = ws.max_column + 1
+    for header in RESULT_SHEET_HEADERS:
+        if header in columns:
+            continue
+        ws.cell(row=header_row, column=next_column, value=header)
+        columns[header] = next_column
+        next_column += 1
+    return columns
+
+
+def append_plan_sheet_row(ws, columns, row_number, values):
+    row_by_header = dict(zip(RESULT_SHEET_HEADERS, values, strict=True))
+    for header, value in row_by_header.items():
+        ws.cell(row=row_number, column=columns[header], value=value)
+    return row_number + 1
+
+
+def plan_sheet_sort_key(row):
+    return (
+        str(row.organization_code or ""),
+        str(row.organization_name or ""),
+        int(row.row or 0),
+    )
+
+
+def orphan_issue_sort_key(item, rows_by_number):
+    row_number, _row_issues = item
+    row = rows_by_number.get(row_number)
+    if row is not None:
+        return plan_sheet_sort_key(row)
+    return ("ZZZ", "", int(row_number or 0))
 
 
 def subtract_months(value, months):

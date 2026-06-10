@@ -6,6 +6,7 @@
 import argparse
 import ctypes
 from decimal import Decimal, InvalidOperation
+import os
 import sys
 import time
 import traceback
@@ -37,22 +38,16 @@ from tools.tmp_receipt_cell_probe_run import (  # noqa: E402
 )
 
 DEFAULT_TEST_BANK_LABEL = "招行"
-DEFAULT_TEST_CURRENCY = "人民币"
+DEFAULT_TEST_CURRENCY = "美元"
 START_DELAY_SECONDS = 2
 ADD_FEE_ROW_HOTKEY = "Ctrl+I"
 DETAIL_FIELDS = [
     {"col": 1, "name": "收款业务类型", "value_key": "main_business_type"},
-    {"col": 3, "name": "币种", "value_key": "currency"},
     {"col": 4, "name": "收款银行账户", "value_key": "bank_account"},
     {"col": 5, "name": "科目", "value_key": "main_subject", "kind": "code_prefix"},
     {"col": 7, "name": "贷方原币金额", "value_key": "amount", "kind": "amount"},
-    # 结算方式放最后：它是后置字段，不再用它提交其他字段。
-    {
-        "col": 11,
-        "name": "结算方式",
-        "value_key": "settlement",
-        "commit_key": "Enter",
-    },
+    # 结算方式用 Enter 提交，避免联想窗口残留。
+    {"col": 11, "name": "结算方式", "value_key": "settlement", "commit_key": "Enter"},
 ]
 ACCOUNT_COL = 4
 MAX_FIELD_RETRIES = 3
@@ -68,16 +63,10 @@ VK_KEYS = {
 }
 FEE_FIELDS = [
     {"col": 1, "name": "收款业务类型", "value_key": "fee_business_type"},
-    {"col": 4, "name": "收款银行账户", "value_key": "fee_account", "kind": "blank"},
     {"col": 5, "name": "科目", "value_key": "fee_subject", "kind": "code_prefix"},
     {"col": 7, "name": "贷方原币金额", "value_key": "fee_amount", "kind": "amount"},
-    # 手续费行也需要结算方式，且结算方式放最后。
-    {
-        "col": 11,
-        "name": "结算方式",
-        "value_key": "settlement",
-        "commit_key": "Enter",
-    },
+    # 结算方式用 Enter 提交，避免联想窗口残留。
+    {"col": 11, "name": "结算方式", "value_key": "settlement", "commit_key": "Enter"},
 ]
 
 
@@ -95,6 +84,24 @@ class StepTimer:
         self.items.append({"name": name, "seconds": round(float(seconds), 3)})
 
 
+def skip_fee_extra_row_delete_enabled():
+    return os.environ.get("RECEIPT_SKIP_FEE_EXTRA_ROW_DELETE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+    }
+
+
+def skip_fee_account_clear_enabled():
+    return os.environ.get("RECEIPT_SKIP_FEE_ACCOUNT_CLEAR", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+    }
+
+
 def get_test_account(config, bank_label):
     receipt_config = ReceiptEntryConfig(config)
     account = receipt_config.account_for_bank(bank_label)
@@ -104,8 +111,7 @@ def get_test_account(config, bank_label):
 
 
 def detail_bank_account_no(account, currency=DEFAULT_TEST_CURRENCY):
-    candidates = account.nc_candidates(currency)
-    return candidates[0] if candidates else account.account_no
+    return account.account_no
 
 
 def build_business(account):
@@ -170,7 +176,7 @@ def print_header(account, args):
     if args.fee_only:
         print(f"3. 手续费行：手续费 / 660305 / {args.fee_amount} / 网银")
     else:
-        print(f"3. 明细主行：货款 / {DEFAULT_TEST_CURRENCY} / 1002 / 1090 / 网银")
+        print("3. 明细主行：货款 / 账号 / 1002 / 1090 / 网银")
     print()
     print("前置条件：")
     print("1. NC 已停在收款单自制录入界面")
@@ -190,7 +196,7 @@ def print_header(account, args):
     else:
         print("1. 读取表头【收款银行账户】状态")
         print("2. 定位 25 列明细表")
-        print("3. 用 JAB 选中目标单元格后键盘写入明细主行")
+        print("3. 用 JAB 选中目标单元格后键盘写入明细主行；明细不写币种")
         print("4. 写完后统一读回明细表关键列；失败字段最多修复 3 次")
     print()
     print("不会做：保存、暂存、关闭收款单")
@@ -1110,21 +1116,36 @@ def run_fee_only(jab, located, fee_amount):
         fields=FEE_FIELDS,
         row_index=target_row,
     )
-    clear_account = timings.measure(
-        "fee.clear-account-if-filled",
-        clear_fee_account_if_filled,
-        jab,
-        refreshed,
-        target_row,
-        known_cells=cells_from_steps(steps),
-    )
-    delete_extra = timings.measure(
-        "fee.delete-extra-after-write",
-        delete_extra_row_if_present,
-        jab,
-        refreshed,
-        expected_rows=2,
-    )
+    if skip_fee_account_clear_enabled():
+        clear_account = {
+            "ok": True,
+            "skipped": True,
+            "reason": "RECEIPT_SKIP_FEE_ACCOUNT_CLEAR=1，试验不清手续费账户",
+        }
+    else:
+        clear_account = timings.measure(
+            "fee.clear-account-if-filled",
+            clear_fee_account_if_filled,
+            jab,
+            refreshed,
+            target_row,
+            known_cells=cells_from_steps(steps),
+        )
+    if skip_fee_extra_row_delete_enabled():
+        delete_extra = {
+            "ok": True,
+            "skipped": True,
+            "reason": "RECEIPT_SKIP_FEE_EXTRA_ROW_DELETE=1，试验保留空白行直接保存",
+            "timings": timings.items,
+        }
+    else:
+        delete_extra = timings.measure(
+            "fee.delete-extra-after-write",
+            delete_extra_row_if_present,
+            jab,
+            refreshed,
+            expected_rows=2,
+        )
     delete_extra["timings"] = timings.items
     return add_row, steps, clear_account, delete_extra
 
@@ -1261,6 +1282,7 @@ def clear_fee_account_if_filled(jab, located, row_index, known_cells=None):
             "before": before,
             "after": before,
             "source": "known_cells" if known_cells is not None else "read_row_cells",
+            "reason": "手续费账户列为空，不切换焦点",
         }
 
     best = located.get("best") or {}
@@ -1290,6 +1312,19 @@ def clear_fee_account_if_filled(jab, located, row_index, known_cells=None):
 
 
 def delete_extra_row_if_present(jab, located, expected_rows):
+    fast_count = read_table_row_count_by_path(jab, located)
+    if fast_count.get("ok") and int(fast_count.get("row_count") or 0) <= expected_rows:
+        row_count = int(fast_count.get("row_count") or 0)
+        return {
+            "ok": True,
+            "skipped": True,
+            "fast_path": True,
+            "before_rows": row_count,
+            "after_rows": row_count,
+            "steps": [],
+            "seconds": 0.0,
+            "reason": f"当前 {row_count} 行，无需删行，不切换焦点",
+        }
     fast = fast_delete_extra_rows_by_row_count(jab, located, expected_rows)
     if fast.get("ok") or fast.get("skipped"):
         return fast
