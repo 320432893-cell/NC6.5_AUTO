@@ -21,7 +21,10 @@ from core.receipt_entry import ReceiptEntryConfig  # noqa: E402
 from core.utils import load_config  # noqa: E402
 from tools.jab_health_check import check_jab_ready, print_jab_health_failure  # noqa: E402
 from tools.receipt_account_reference_try import STOP_HOTKEY, is_stop_hotkey_pressed  # noqa: E402
-from tools.receipt_body_table_locator import locate_receipt_body_table  # noqa: E402
+from tools.receipt_body_table_locator import (  # noqa: E402
+    locate_receipt_body_table_cached,
+    read_receipt_body_table_by_cached_path,
+)
 from tools.receipt_self_made_fill_trial import (  # noqa: E402
     read_body_table,
     wait_header_account_description,
@@ -414,8 +417,16 @@ def field_matches(actual, expected, kind=None):
     return normalize_text(actual) == normalize_text(expected)
 
 
-def read_first_row_cells(jab):
-    snapshot = read_body_table(jab, "field_readback")
+def read_first_row_cells(jab, located=None):
+    snapshot = read_body_table_by_path(jab, located, "field_readback")
+    if not snapshot.get("ok"):
+        snapshot = read_body_table(
+            jab,
+            "field_readback",
+            scope_hwnd=(((located or {}).get("best") or {}).get("window") or {}).get(
+                "hwnd"
+            ),
+        )
     if not snapshot.get("ok"):
         return snapshot, {}
     rows = snapshot.get("rows") or []
@@ -423,8 +434,16 @@ def read_first_row_cells(jab):
     return snapshot, cells
 
 
-def read_row_cells(jab, row_index):
-    snapshot = read_body_table(jab, f"row_{row_index}_readback")
+def read_row_cells(jab, row_index, located=None):
+    snapshot = read_body_table_by_path(jab, located, f"row_{row_index}_readback")
+    if not snapshot.get("ok"):
+        snapshot = read_body_table(
+            jab,
+            f"row_{row_index}_readback",
+            scope_hwnd=(((located or {}).get("best") or {}).get("window") or {}).get(
+                "hwnd"
+            ),
+        )
     if not snapshot.get("ok"):
         return snapshot, {}
     rows = snapshot.get("rows") or []
@@ -434,9 +453,31 @@ def read_row_cells(jab, row_index):
     return snapshot, {}
 
 
-def guarded_add_fee_row_by_ctrl_i(jab, located):
+def read_body_table_by_path(jab, located, step, max_rows=5):
+    result = read_receipt_body_table_by_cached_path(
+        jab,
+        located,
+        max_rows=max(
+            max_rows,
+            int(((located or {}).get("best") or {}).get("row_count") or 0),
+        ),
+    )
+    if result.get("ok"):
+        return {
+            "step": step,
+            "ok": True,
+            "fast_path": True,
+            "path": result.get("path"),
+            "row_count": result.get("row_count"),
+            "col_count": result.get("col_count"),
+            "rows": result.get("rows"),
+        }
+    return {"step": step, "ok": False, "reason": result.get("reason")}
+
+
+def guarded_add_fee_row_by_ctrl_i(jab, located, scope_hwnd=None):
     started_at = time.perf_counter()
-    before = read_body_table(jab, "before_fee_row_add")
+    before = read_located_body_table(jab, located, "before_fee_row_add", scope_hwnd)
     if not before.get("ok"):
         return {
             "ok": False,
@@ -448,7 +489,13 @@ def guarded_add_fee_row_by_ctrl_i(jab, located):
     best = located.get("best") or {}
     table_window = best.get("window") or {}
     pressed = guarded_send_ctrl_i(table_window)
-    after = read_body_table(jab, "after_fee_row_add")
+    after = wait_body_row_count(
+        jab,
+        located,
+        expected_rows=int(before.get("row_count") or 0) + 1,
+        label="after_fee_row_add",
+        scope_hwnd=scope_hwnd,
+    ).get("snapshot") or {}
     before_rows = int(before.get("row_count") or 0)
     after_rows = int(after.get("row_count") or 0)
     ok = (
@@ -859,7 +906,7 @@ def apply_readback_to_steps(steps, cells):
 
 
 def refresh_unmatched_settlement_steps(
-    jab, steps, row_index, timeout=0.35, interval=0.07
+    jab, steps, row_index, timeout=0.35, interval=0.07, located=None
 ):
     if not any(step.get("name") == "结算方式" and not step.get("ok") for step in steps):
         return None
@@ -867,7 +914,7 @@ def refresh_unmatched_settlement_steps(
     last_snapshot = None
     last_cells = None
     while True:
-        snapshot, cells = read_row_cells(jab, row_index)
+        snapshot, cells = read_row_cells(jab, row_index, located)
         last_snapshot = snapshot
         last_cells = cells
         if snapshot.get("ok"):
@@ -962,9 +1009,14 @@ def write_detail_line_by_screen(jab, business, located, fields=None, row_index=0
         if not attempt.get("ok"):
             break
     else:
-        _snapshot, cells = read_row_cells(jab, row_index)
+        _snapshot, cells = read_row_cells(jab, row_index, located)
         apply_readback_to_steps(steps, cells)
-        settle_refresh = refresh_unmatched_settlement_steps(jab, steps, row_index)
+        settle_refresh = refresh_unmatched_settlement_steps(
+            jab,
+            steps,
+            row_index,
+            located=located,
+        )
         if settle_refresh:
             for step in steps:
                 if step.get("name") == "结算方式":
@@ -983,7 +1035,12 @@ def write_detail_line_by_screen(jab, business, located, fields=None, row_index=0
                     else fields[0]
                 )
                 # 只在修复重试时重新定位，避免正常路径每个字段都扫控件树。
-                refreshed = locate_receipt_body_table(jab, max_rows=max(5, row_count))
+                refreshed = locate_receipt_body_table_cached(
+                    jab,
+                    cached=located,
+                    max_rows=max(5, row_count),
+                    scope_hwnd=(table_window or {}).get("hwnd"),
+                )
                 attempt = write_field_once(
                     jab,
                     refreshed,
@@ -1003,7 +1060,7 @@ def write_detail_line_by_screen(jab, business, located, fields=None, row_index=0
                     "target": attempt.get("commit_target"),
                     "reason": attempt.get("commit_reason"),
                 }
-                _snapshot, cells = read_row_cells(jab, row_index)
+                _snapshot, cells = read_row_cells(jab, row_index, refreshed)
                 actual = cells.get(str(step["col"]))
                 step["actual"] = actual
                 ok = bool(attempt.get("ok")) and field_matches(
@@ -1025,10 +1082,14 @@ def write_detail_line_by_screen(jab, business, located, fields=None, row_index=0
     return steps
 
 
-def run_fee_only(jab, located, fee_amount):
+def run_fee_only(jab, located, fee_amount, scope_hwnd=None):
     timings = StepTimer()
     before = timings.measure(
-        "fee.read-before-prepare", read_fee_prepare_row_count, jab, located
+        "fee.read-before-prepare",
+        read_fee_prepare_row_count,
+        jab,
+        located,
+        scope_hwnd,
     )
     before_rows = int(before.get("row_count") or 0)
     if not before.get("ok"):
@@ -1044,6 +1105,7 @@ def run_fee_only(jab, located, fee_amount):
             jab,
             located,
             expected_rows=2,
+            scope_hwnd=scope_hwnd,
         )
         if not cleanup_extra.get("ok"):
             cleanup_extra["timings"] = timings.items
@@ -1058,7 +1120,13 @@ def run_fee_only(jab, located, fee_amount):
                 cleanup_extra,
             )
         located = timings.measure(
-            "fee.locate-after-cleanup", locate_receipt_body_table, jab, max_rows=5
+            "fee.locate-after-cleanup",
+            locate_receipt_body_table_cached,
+            jab,
+            cached=located,
+            max_rows=5,
+            scope_hwnd=scope_hwnd
+            or ((located.get("best") or {}).get("window") or {}).get("hwnd"),
         )
         before_rows = 2
         add_row = {
@@ -1071,7 +1139,7 @@ def run_fee_only(jab, located, fee_amount):
             "before": before,
         }
     elif before_rows == 1:
-        add_row = guarded_add_fee_row_by_ctrl_i(jab, located)
+        add_row = guarded_add_fee_row_by_ctrl_i(jab, located, scope_hwnd=scope_hwnd)
         timings.add("fee.add-row", add_row.get("seconds") or 0)
     elif before_rows == 2:
         add_row = {
@@ -1145,12 +1213,13 @@ def run_fee_only(jab, located, fee_amount):
             jab,
             refreshed,
             expected_rows=2,
+            scope_hwnd=scope_hwnd,
         )
     delete_extra["timings"] = timings.items
     return add_row, steps, clear_account, delete_extra
 
 
-def read_fee_prepare_row_count(jab, located):
+def read_fee_prepare_row_count(jab, located, scope_hwnd=None):
     fast = read_table_row_count_by_path(jab, located)
     if fast.get("ok"):
         return {
@@ -1159,7 +1228,12 @@ def read_fee_prepare_row_count(jab, located):
             "row_count": fast.get("row_count"),
             "source": "read_table_row_count_by_path",
         }
-    fallback = read_body_table(jab, "before_fee_row_prepare")
+    fallback = read_located_body_table(
+        jab,
+        located,
+        "before_fee_row_prepare",
+        scope_hwnd=scope_hwnd,
+    )
     fallback["fast_path"] = False
     fallback["fast_reason"] = fast.get("reason")
     return fallback
@@ -1172,9 +1246,14 @@ def located_with_row_count(located, row_count):
     return {**located, "best": best}
 
 
-def cleanup_rows_after_first(jab, located):
+def cleanup_rows_after_first(jab, located, scope_hwnd=None):
     started_at = time.perf_counter()
-    before = read_body_table(jab, "before_cleanup_rows_after_first")
+    before = read_located_body_table(
+        jab,
+        located,
+        "before_cleanup_rows_after_first",
+        scope_hwnd,
+    )
     if not before.get("ok"):
         return {
             "ok": False,
@@ -1198,7 +1277,13 @@ def cleanup_rows_after_first(jab, located):
     current_rows = before_rows
     while current_rows > 1:
         step_started_at = time.perf_counter()
-        refreshed = locate_receipt_body_table(jab, max_rows=5)
+        refreshed = locate_receipt_body_table_cached(
+            jab,
+            cached=located,
+            max_rows=5,
+            scope_hwnd=scope_hwnd
+            or ((located.get("best") or {}).get("window") or {}).get("hwnd"),
+        )
         best = refreshed.get("best") or {}
         table_window = best.get("window") or {}
         target_row = current_rows - 1
@@ -1216,8 +1301,10 @@ def cleanup_rows_after_first(jab, located):
         sent = guarded_send_ctrl_d(table_window)
         waited = wait_body_row_count(
             jab,
+            refreshed,
             expected_rows=current_rows - 1,
             label="after_cleanup_one_extra_row",
+            scope_hwnd=scope_hwnd,
         )
         after = waited.get("snapshot") or {}
         after_rows = int(after.get("row_count") or 0)
@@ -1268,7 +1355,7 @@ def clear_fee_account_if_filled(jab, located, row_index, known_cells=None):
     cells = known_cells or {}
     before = normalize_text(cells.get(str(ACCOUNT_COL)))
     if known_cells is None:
-        snapshot, cells = read_row_cells(jab, row_index)
+        snapshot, cells = read_row_cells(jab, row_index, located)
         before = normalize_text(cells.get(str(ACCOUNT_COL)))
         if not snapshot.get("ok"):
             return {
@@ -1297,7 +1384,7 @@ def clear_fee_account_if_filled(jab, located, row_index, known_cells=None):
         }
 
     sent = keyboard_write_selected_cell(table_window, "", clear_only=True)
-    _after_snapshot, after_cells = read_row_cells(jab, row_index)
+    _after_snapshot, after_cells = read_row_cells(jab, row_index, located)
     after = normalize_text(after_cells.get(str(ACCOUNT_COL)))
     return {
         "ok": bool(sent.get("ok")) and not after,
@@ -1311,7 +1398,7 @@ def clear_fee_account_if_filled(jab, located, row_index, known_cells=None):
     }
 
 
-def delete_extra_row_if_present(jab, located, expected_rows):
+def delete_extra_row_if_present(jab, located, expected_rows, scope_hwnd=None):
     fast_count = read_table_row_count_by_path(jab, located)
     if fast_count.get("ok") and int(fast_count.get("row_count") or 0) <= expected_rows:
         row_count = int(fast_count.get("row_count") or 0)
@@ -1330,7 +1417,12 @@ def delete_extra_row_if_present(jab, located, expected_rows):
         return fast
 
     started_at = time.perf_counter()
-    before = read_body_table(jab, "before_extra_row_delete")
+    before = read_located_body_table(
+        jab,
+        located,
+        "before_extra_row_delete",
+        scope_hwnd,
+    )
     if not before.get("ok"):
         return {
             "ok": False,
@@ -1351,7 +1443,13 @@ def delete_extra_row_if_present(jab, located, expected_rows):
     current_rows = before_rows
     while current_rows > expected_rows:
         step_started_at = time.perf_counter()
-        refreshed = locate_receipt_body_table(jab, max_rows=max(5, current_rows))
+        refreshed = locate_receipt_body_table_cached(
+            jab,
+            cached=located,
+            max_rows=max(5, current_rows),
+            scope_hwnd=scope_hwnd
+            or ((located.get("best") or {}).get("window") or {}).get("hwnd"),
+        )
         best = refreshed.get("best") or {}
         table_window = best.get("window") or {}
         target_row = current_rows - 1
@@ -1370,8 +1468,10 @@ def delete_extra_row_if_present(jab, located, expected_rows):
         sent = guarded_send_ctrl_d(table_window)
         waited = wait_body_row_count(
             jab,
+            refreshed,
             expected_rows=current_rows - 1,
             label="after_extra_row_delete",
+            scope_hwnd=scope_hwnd,
         )
         after = waited.get("snapshot") or {}
         after_rows = int(after.get("row_count") or 0)
@@ -1508,27 +1608,14 @@ def fast_delete_extra_rows_by_row_count(jab, located, expected_rows):
 
 
 def read_table_row_count_by_path(jab, located):
-    best = located.get("best") or {}
-    context, vm_id, owned, _window_info = jab.find_context_by_path_once(
-        best.get("path"),
-        class_name=(best.get("window") or {}).get("class_name"),
-        scope_hwnd=(best.get("window") or {}).get("hwnd"),
-        require_showing=False,
-        require_valid_bounds=False,
-    )
-    if not context:
-        return {"ok": False, "reason": "按 path 重新取得明细表 context 失败"}
-    try:
-        table_info = jab.get_table_info(vm_id, context)
-        if not table_info:
-            return {"ok": False, "reason": "getAccessibleTableInfo 失败"}
-        return {
-            "ok": True,
-            "row_count": int(table_info.rowCount),
-            "col_count": int(table_info.columnCount),
-        }
-    finally:
-        jab.release_contexts(vm_id, owned)
+    result = read_receipt_body_table_by_cached_path(jab, located, max_rows=0)
+    if not result.get("ok"):
+        return {"ok": False, "reason": result.get("reason")}
+    return {
+        "ok": True,
+        "row_count": result.get("row_count"),
+        "col_count": result.get("col_count"),
+    }
 
 
 def wait_table_row_count_by_path(
@@ -1562,12 +1649,52 @@ def wait_table_row_count_by_path(
         time.sleep(interval)
 
 
-def wait_body_row_count(jab, expected_rows, label, timeout=0.75, interval=0.06):
+def read_located_body_table(jab, located, step, scope_hwnd=None, max_rows=3):
+    snapshot = read_body_table_by_path(jab, located, step, max_rows=max_rows)
+    if snapshot.get("ok"):
+        return snapshot
+    refreshed = locate_receipt_body_table_cached(
+        jab,
+        cached=located,
+        max_rows=max_rows,
+        scope_hwnd=scope_hwnd
+        or (((located or {}).get("best") or {}).get("window") or {}).get("hwnd"),
+    )
+    best = refreshed.get("best")
+    if not best:
+        return {
+            "step": step,
+            "ok": False,
+            "reason": snapshot.get("reason") or "body table not found",
+            "path_validation": refreshed.get("path_validation"),
+            "candidates": refreshed.get("candidates", [])[:3],
+        }
+    return {
+        "step": step,
+        "ok": True,
+        "path": best.get("path"),
+        "row_count": best.get("row_count"),
+        "col_count": best.get("col_count"),
+        "rows": best.get("rows"),
+        "cache_hit": refreshed.get("cache_hit"),
+        "fallback_used": refreshed.get("fallback_used"),
+    }
+
+
+def wait_body_row_count(
+    jab,
+    located,
+    expected_rows,
+    label,
+    scope_hwnd=None,
+    timeout=0.75,
+    interval=0.06,
+):
     started_at = time.perf_counter()
     deadline = time.perf_counter() + timeout
     last = {}
     while True:
-        last = read_body_table(jab, label)
+        last = read_located_body_table(jab, located, label, scope_hwnd=scope_hwnd)
         rows = int(last.get("row_count") or 0) if last.get("ok") else 0
         if last.get("ok") and rows == expected_rows:
             return {
@@ -1653,7 +1780,10 @@ def main():
                 timeout=2.0,
             )
             located = timings.measure(
-                "body.locate-initial", locate_receipt_body_table, jab, max_rows=3
+                "body.locate-initial",
+                locate_receipt_body_table_cached,
+                jab,
+                max_rows=3,
             )
             report["table_candidates"] = located.get("candidates", [])[:5]
             if not located.get("best"):
@@ -1720,8 +1850,9 @@ def main():
                     )
                     refreshed_after_main = timings.measure(
                         "main.locate-after-write",
-                        locate_receipt_body_table,
+                        locate_receipt_body_table_cached,
                         jab,
+                        cached=located,
                         max_rows=5,
                     )
                     delete_extra = timings.measure(

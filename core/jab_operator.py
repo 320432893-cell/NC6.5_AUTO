@@ -2059,9 +2059,16 @@ class JABOperator:
         finally:
             self.release_contexts(vm_id, owned_contexts)
 
-    def read_all_table_cells(self, max_rows=None, max_cols=None, timeout=None):
+    def read_all_table_cells(
+        self,
+        max_rows=None,
+        max_cols=None,
+        timeout=None,
+        scope_hwnd=None,
+        exact_cols=None,
+    ):
         self.ensure_started()
-        tables = self.find_tables_once()
+        tables = self.find_tables_once(scope_hwnd=scope_hwnd)
         result = []
 
         for table_index, (
@@ -2072,6 +2079,10 @@ class JABOperator:
             window_info,
         ) in enumerate(tables):
             try:
+                if exact_cols is not None and table_info.columnCount != int(
+                    exact_cols
+                ):
+                    continue
                 result.append(
                     self.read_table_cells_from_context(
                         table_index,
@@ -2089,9 +2100,11 @@ class JABOperator:
         log.debug(f"JAB 读取所有表格: count={len(result)}")
         return result
 
-    def read_table_summaries(self, min_rows=1, min_cols=None):
+    def read_table_summaries(
+        self, min_rows=1, min_cols=None, scope_hwnd=None, exact_cols=None
+    ):
         self.ensure_started()
-        tables = self.find_tables_once()
+        tables = self.find_tables_once(scope_hwnd=scope_hwnd)
         result = []
 
         for table_index, (
@@ -2105,6 +2118,10 @@ class JABOperator:
                 if table_info.rowCount < min_rows:
                     continue
                 if min_cols is not None and table_info.columnCount < min_cols:
+                    continue
+                if exact_cols is not None and table_info.columnCount != int(
+                    exact_cols
+                ):
                     continue
                 result.append(
                     {
@@ -2179,13 +2196,15 @@ class JABOperator:
         max_rows=None,
         min_rows=1,
         min_cols=None,
+        scope_hwnd=None,
+        exact_cols=None,
     ):
         self.ensure_started()
         selected_columns = sorted({int(column) for column in columns})
         if not selected_columns:
             return []
         min_col_count = max(selected_columns) + 1 if min_cols is None else int(min_cols)
-        tables = self.find_tables_once()
+        tables = self.find_tables_once(scope_hwnd=scope_hwnd)
         result = []
 
         for table_index, (
@@ -2199,6 +2218,10 @@ class JABOperator:
                 if (
                     table_info.rowCount < min_rows
                     or table_info.columnCount < min_col_count
+                ):
+                    continue
+                if exact_cols is not None and table_info.columnCount != int(
+                    exact_cols
                 ):
                     continue
                 result.append(
@@ -2809,11 +2832,14 @@ class JABOperator:
 
         return None, None, [], None
 
-    def find_tables_once(self):
+    def find_tables_once(self, scope_hwnd=None):
         tables = []
         windows = enum_windows(include_children=True)
+        scoped_hwnds = self.window_descendant_hwnds(scope_hwnd)
 
         for hwnd, title, class_name, pid, visible in windows:
+            if scoped_hwnds is not None and int(hwnd) not in scoped_hwnds:
+                continue
             if not self.dll.isJavaWindow(hwnd):
                 continue
 
@@ -2843,6 +2869,24 @@ class JABOperator:
             )
 
         return tables
+
+    def window_descendant_hwnds(self, scope_hwnd):
+        if scope_hwnd is None or os.name != "nt":
+            return None
+
+        scoped = {int(scope_hwnd)}
+        if not hasattr(ctypes, "windll"):
+            return scoped
+
+        user32 = ctypes.windll.user32
+        enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+        def child_callback(hwnd, _lparam):
+            scoped.add(int(hwnd))
+            return True
+
+        user32.EnumChildWindows(wintypes.HWND(scope_hwnd), enum_proc(child_callback), 0)
+        return scoped
 
     def find_tables_in_tree(self, vm_id, context, depth, owned_path, window_info=None):
         info = self.get_context_info(vm_id, context)

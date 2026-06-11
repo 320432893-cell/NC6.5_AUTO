@@ -259,6 +259,7 @@ def test_validate_receipt_entry_rejects_one_based_nc_amount_column():
                     "finance_org": {
                         "label": "收款财务组织",
                         "operator": "等于",
+                        "text_path": "0.0.1.0.1.0.0.1.0.0.0.0.0.1.0.1.1.2.0.0.0.0",
                     },
                     "document_date": {
                         "label": "单据日期",
@@ -290,7 +291,7 @@ def test_validate_receipt_entry_rejects_one_based_nc_amount_column():
     ) in validate_config(config)
 
 
-def test_validate_receipt_entry_rejects_finance_org_text_path():
+def test_validate_receipt_entry_allows_finance_org_text_path():
     config = base_config()
     config["receipt_entry"] = {
         "state_label": "收款单录入",
@@ -342,10 +343,7 @@ def test_validate_receipt_entry_rejects_finance_org_text_path():
         ],
     }
 
-    assert (
-        "receipt_entry.query.jab.fields.finance_org.text_path "
-        "is not allowed; use label-based input" in validate_config(config)
-    )
+    assert validate_config(config) == []
 
 
 def test_validate_receipt_entry_rejects_unknown_account_organization():

@@ -314,24 +314,24 @@ def test_build_local_plan_writes_machine_sheet2(tmp_path):
     saved = load_workbook(path)
     ws = saved["收款单自动化结果"]
     headers = [ws.cell(1, column).value for column in range(1, ws.max_column + 1)]
-    assert headers[:13] == [
-        "原行号",
-        "主体编码",
-        "主体名称",
-        "银行",
+    assert headers[:12] == [
+        "原Sheet1行号",
+        "执行主体名称",
         "到款日期",
         "客户编码",
         "币种",
         "银行来款名",
-        "金额",
+        "实收金额",
         "手续费",
-        "账户配置ID",
+        "总金额",
         "收款银行账户",
         "本地预检状态",
+        "异常原因",
     ]
     assert ws.cell(2, 1).value == rows[0].row
-    assert ws.cell(2, 2).value == "A001"
-    assert ws.cell(2, 13).value == "通过"
+    assert ws.cell(2, 2).value == "上海移为通信技术股份有限公司"
+    assert ws.cell(2, 11).value == "通过"
+    assert ws.cell(2, 12).value in (None, "")
     saved.close()
 
 

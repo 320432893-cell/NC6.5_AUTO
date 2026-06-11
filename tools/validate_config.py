@@ -639,7 +639,7 @@ def _validate_receipt_query_jab_field(
         _require_non_empty_str(field, key, errors, prefix=prefix)
     if near_label_field:
         if "text_path" in field:
-            errors.append(f"{prefix}.text_path is not allowed; use label-based input")
+            _require_non_empty_str(field, "text_path", errors, prefix=prefix)
     elif range_field:
         for key in ("from_text_path", "to_text_path"):
             _require_non_empty_str(field, key, errors, prefix=prefix)

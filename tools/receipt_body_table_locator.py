@@ -34,12 +34,17 @@ def main():
     parser.add_argument("--config", default="config.json")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--max-rows", type=int, default=5)
+    parser.add_argument("--scope-hwnd", type=int, default=None)
     args = parser.parse_args()
 
     cfg = load_config(args.config)
     jab = JABOperator(cfg)
     try:
-        report = locate_receipt_body_table(jab, max_rows=args.max_rows)
+        report = locate_receipt_body_table(
+            jab,
+            max_rows=args.max_rows,
+            scope_hwnd=args.scope_hwnd,
+        )
     finally:
         jab.close()
 
@@ -50,10 +55,10 @@ def main():
     return 0 if report["best"] else 1
 
 
-def locate_receipt_body_table(jab, max_rows=5):
+def locate_receipt_body_table(jab, max_rows=5, scope_hwnd=None):
     jab.ensure_started()
     candidates = []
-    tables = find_tables_with_index_paths(jab)
+    tables = find_tables_with_index_paths(jab, scope_hwnd=scope_hwnd)
     for table_index, table in enumerate(tables):
         context = table["context"]
         vm_id = table["vm_id"]
@@ -87,12 +92,125 @@ def locate_receipt_body_table(jab, max_rows=5):
 
     ranked = sorted(candidates, key=lambda item: item["score"], reverse=True)
     best = ranked[0] if ranked and ranked[0]["score"] >= 5 else None
-    return {"best": best, "candidates": ranked}
+    return {"best": best, "candidates": ranked, "scope_hwnd": scope_hwnd}
 
 
-def find_tables_with_index_paths(jab):
+def locate_receipt_body_table_cached(
+    jab,
+    cached=None,
+    max_rows=5,
+    scope_hwnd=None,
+    required_cols=25,
+):
+    """Use a previously inferred table path first, then fall back to semantic scan."""
+    fast = read_receipt_body_table_by_cached_path(
+        jab,
+        cached,
+        max_rows=max_rows,
+        scope_hwnd=scope_hwnd,
+        required_cols=required_cols,
+    )
+    if fast.get("ok"):
+        previous_best = dict(((cached or {}).get("best") or {}))
+        best = {
+            **previous_best,
+            "path": fast.get("path"),
+            "window": fast.get("window") or previous_best.get("window"),
+            "row_count": fast.get("row_count"),
+            "col_count": fast.get("col_count"),
+            "rows": fast.get("rows"),
+            "cache_hit": True,
+            "validated_by_path": True,
+        }
+        return {
+            "best": best,
+            "candidates": [best],
+            "scope_hwnd": scope_hwnd or fast.get("scope_hwnd"),
+            "cache_hit": True,
+            "fallback_used": False,
+            "path_validation": fast,
+        }
+
+    fallback = locate_receipt_body_table(jab, max_rows=max_rows, scope_hwnd=scope_hwnd)
+    fallback["cache_hit"] = False
+    fallback["fallback_used"] = True
+    fallback["path_validation"] = fast
+    if fallback.get("best"):
+        fallback["best"]["cache_hit"] = False
+        fallback["best"]["validated_by_path"] = False
+    return fallback
+
+
+def read_receipt_body_table_by_cached_path(
+    jab,
+    located,
+    max_rows=5,
+    scope_hwnd=None,
+    required_cols=25,
+):
+    best = (located or {}).get("best") or {}
+    path = best.get("path")
+    if not path:
+        return {"ok": False, "reason": "未提供收款单明细表 path"}
+
+    cached_window = best.get("window") or {}
+    path_hwnd = cached_window.get("hwnd") or scope_hwnd
+    context, vm_id, owned, window_info = jab.find_context_by_path_once(
+        path,
+        class_name=cached_window.get("class_name"),
+        scope_hwnd=path_hwnd,
+        role="table",
+        require_showing=False,
+        require_valid_bounds=False,
+    )
+    if not context:
+        return {
+            "ok": False,
+            "path": path,
+            "scope_hwnd": path_hwnd,
+            "reason": "按 cached path 读取收款单明细表失败",
+        }
+
+    try:
+        table_info = jab.get_table_info(vm_id, context)
+        if not table_info:
+            return {
+                "ok": False,
+                "path": path,
+                "scope_hwnd": path_hwnd,
+                "reason": "cached path 命中控件但 table_info 不可读",
+            }
+        col_count = int(table_info.columnCount)
+        if required_cols is not None and col_count != int(required_cols):
+            return {
+                "ok": False,
+                "path": path,
+                "scope_hwnd": path_hwnd,
+                "row_count": int(table_info.rowCount),
+                "col_count": col_count,
+                "reason": f"cached path 命中表格列数不符：期望 {required_cols}，实际 {col_count}",
+            }
+        return {
+            "ok": True,
+            "path": path,
+            "scope_hwnd": path_hwnd,
+            "window": window_info or cached_window,
+            "row_count": int(table_info.rowCount),
+            "col_count": col_count,
+            "rows": read_key_rows(jab, vm_id, context, table_info, max_rows=max_rows),
+        }
+    finally:
+        jab.release_contexts(vm_id, owned)
+
+
+def find_tables_with_index_paths(jab, scope_hwnd=None):
     result = []
-    for hwnd, title, class_name, pid, visible in enum_windows(include_children=True):
+    windows = (
+        jab.get_scoped_windows(scope_hwnd, include_children=True)
+        if scope_hwnd is not None
+        else enum_windows(include_children=True)
+    )
+    for hwnd, title, class_name, pid, visible in windows:
         if not jab.dll.isJavaWindow(hwnd):
             continue
 

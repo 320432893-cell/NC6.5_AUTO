@@ -33,6 +33,16 @@ from tools.receipt_table_cell_probe import select_cell  # noqa: E402
 
 CURRENCY_NAMES = {"USD": "美元", "RMB": "人民币", "CNY": "人民币"}
 HEADER_FORM_BASE_PATH = "0.0.1.0.0.0.0.2.0.0.0.1.1.0.0.0.0.1.0.2.0.0.0.0.0.0.0"
+HEADER_DYNAMIC_PREFIX_BASE = "0.0.1.0.0.0.0"
+HEADER_DYNAMIC_MAX_INDEX = 8
+HEADER_COMMON_SUFFIX_TEMPLATE = (
+    "0.0.0.1.1.0.0.0.0.1.0.2.0.0.0.0.0.0.0.{index}.0"
+)
+HEADER_COMMON_LABEL_SUFFIX_TEMPLATE = (
+    "0.0.0.1.1.0.0.0.0.1.0.2.0.0.0.0.0.0.0.{index}"
+)
+FINANCE_ORG_SUFFIX = "0.0.0.1.1.0.0.0.0.1.1.1.0"
+FINANCE_ORG_LABEL_SUFFIX = "0.0.0.1.1.0.0.0.0.1.1.0"
 ACCOUNT_REFERENCE_BUTTON_PATH = f"{HEADER_FORM_BASE_PATH}.15.1"
 ACCOUNT_REF_SEARCH_TEXT_PATH = "0.0.1.0.0.0.1.0.0.0.0"
 HEADER_FORM_TEXT_INDEXES = {
@@ -42,12 +52,14 @@ HEADER_FORM_TEXT_INDEXES = {
     "客户": 17,
     "结算方式": 31,
 }
+HEADER_DYNAMIC_PROBE_LABELS = ("单据日期", "币种", "客户")
 HEADER_LABEL_ALIASES = {
     "财务组织": ("财务组织", "财务组织(O)"),
     "客户": ("客户",),
     "单据日期": ("单据日期",),
     "币种": ("币种",),
 }
+FAST_HEADER_SCOPE_LABEL = "财务组织"
 
 
 def print_json(data):
@@ -767,6 +779,14 @@ def find_receipt_header_form_field(jab, label, scope_hwnd=None):
                     "pid": pid,
                     "visible": visible,
                 },
+                "dynamic_index": extract_receipt_header_dynamic_index(path),
+                "dynamic_prefix": (
+                    receipt_header_dynamic_prefix(
+                        extract_receipt_header_dynamic_index(path)
+                    )
+                    if extract_receipt_header_dynamic_index(path) is not None
+                    else None
+                ),
         }
         jab.release_contexts(vm_id_ref.value, [root_context.value])
     fallback = find_receipt_header_form_field_by_path(jab, label, scope_hwnd=scope_hwnd)
@@ -783,6 +803,194 @@ def header_scope_windows(jab, scope_hwnd=None):
     if not item:
         return []
     return [item]
+
+
+def build_receipt_header_dynamic_path(dynamic_index, label):
+    if label == "财务组织":
+        return f"{HEADER_DYNAMIC_PREFIX_BASE}.{dynamic_index}.{FINANCE_ORG_SUFFIX}"
+    index = HEADER_FORM_TEXT_INDEXES.get(label)
+    if index is None:
+        return None
+    suffix = HEADER_COMMON_SUFFIX_TEMPLATE.format(index=index)
+    return f"{HEADER_DYNAMIC_PREFIX_BASE}.{dynamic_index}.{suffix}"
+
+
+def build_receipt_header_dynamic_label_path(dynamic_index, label):
+    if label == "财务组织":
+        return f"{HEADER_DYNAMIC_PREFIX_BASE}.{dynamic_index}.{FINANCE_ORG_LABEL_SUFFIX}"
+    index = HEADER_FORM_TEXT_INDEXES.get(label)
+    if index is None:
+        return None
+    suffix = HEADER_COMMON_LABEL_SUFFIX_TEMPLATE.format(index=index - 1)
+    return f"{HEADER_DYNAMIC_PREFIX_BASE}.{dynamic_index}.{suffix}"
+
+
+def receipt_header_dynamic_prefix(dynamic_index):
+    return f"{HEADER_DYNAMIC_PREFIX_BASE}.{dynamic_index}"
+
+
+def extract_receipt_header_dynamic_index(path):
+    prefix = f"{HEADER_DYNAMIC_PREFIX_BASE}."
+    if not path or not path.startswith(prefix):
+        return None
+    first = path[len(prefix) :].split(".", 1)[0]
+    try:
+        return int(first)
+    except ValueError:
+        return None
+
+
+def find_receipt_header_field_by_dynamic_path(
+    jab,
+    label,
+    dynamic_index,
+    scope_hwnd=None,
+    require_showing=True,
+    require_valid_bounds=True,
+):
+    text_path = build_receipt_header_dynamic_path(dynamic_index, label)
+    if not text_path:
+        return {
+            "ok": False,
+            "reason": "header dynamic path not configured",
+            "label": label,
+            "dynamic_index": dynamic_index,
+        }
+    context, vm_id, owned_contexts, window_info = jab.find_context_by_path_once(
+        text_path,
+        class_name="SunAwtCanvas",
+        scope_hwnd=scope_hwnd,
+        role="text",
+        require_showing=require_showing,
+        require_valid_bounds=require_valid_bounds,
+    )
+    if not context:
+        return {
+            "ok": False,
+            "reason": "header dynamic path not found",
+            "label": label,
+            "path": text_path,
+            "dynamic_index": dynamic_index,
+        }
+    return {
+        "ok": True,
+        "context": context,
+        "vm_id": vm_id,
+        "owned_contexts": owned_contexts,
+        "path": text_path,
+        "label_path": build_receipt_header_dynamic_label_path(dynamic_index, label),
+        "window": window_info,
+        "dynamic_index": dynamic_index,
+        "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
+    }
+
+
+def infer_receipt_header_dynamic_prefix(
+    jab,
+    scope_hwnd=None,
+    dynamic_max=HEADER_DYNAMIC_MAX_INDEX,
+    require_showing=True,
+    require_valid_bounds=True,
+):
+    attempts = []
+    for dynamic_index in range(dynamic_max + 1):
+        ok_labels = []
+        label_results = {}
+        for label in HEADER_DYNAMIC_PROBE_LABELS:
+            found = find_receipt_header_field_by_dynamic_path(
+                jab,
+                label,
+                dynamic_index,
+                scope_hwnd=scope_hwnd,
+                require_showing=require_showing,
+                require_valid_bounds=require_valid_bounds,
+            )
+            label_results[label] = {
+                "ok": bool(found.get("ok")),
+                "path": found.get("path"),
+                "reason": found.get("reason"),
+            }
+            if found.get("ok"):
+                ok_labels.append(label)
+                jab.release_contexts(found["vm_id"], found["owned_contexts"])
+        if ok_labels:
+            attempts.append(
+                {
+                    "dynamic_index": dynamic_index,
+                    "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
+                    "ok_labels": ok_labels,
+                    "ok_count": len(ok_labels),
+                    "labels": label_results,
+                }
+            )
+        if len(ok_labels) == len(HEADER_DYNAMIC_PROBE_LABELS):
+            return {
+                "ok": True,
+                "dynamic_index": dynamic_index,
+                "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
+                "matched_labels": ok_labels,
+                "attempts": attempts,
+            }
+    return {
+        "ok": False,
+        "reason": "header dynamic prefix not found",
+        "attempts": attempts,
+    }
+
+
+def infer_receipt_header_scope_fast(jab):
+    foreground_root = foreground_root_hwnd()
+    windows = jab.get_scoped_windows(None, include_children=True)
+    candidates = []
+    for window in windows:
+        hwnd, _title, class_name, _pid, visible = window
+        if not visible or class_name != "SunAwtCanvas" or not jab.dll.isJavaWindow(hwnd):
+            continue
+        if foreground_root and window_root_hwnd(hwnd) != foreground_root:
+            continue
+        prefix = infer_receipt_header_dynamic_prefix(
+            jab,
+            scope_hwnd=hwnd,
+            require_showing=False,
+            require_valid_bounds=False,
+        )
+        if not prefix.get("ok"):
+            continue
+        finance_org = find_receipt_header_field_by_dynamic_path(
+            jab,
+            FAST_HEADER_SCOPE_LABEL,
+            prefix["dynamic_index"],
+            scope_hwnd=hwnd,
+            require_showing=False,
+            require_valid_bounds=False,
+        )
+        if not finance_org.get("ok"):
+            continue
+        jab.release_contexts(finance_org["vm_id"], finance_org["owned_contexts"])
+        candidates.append(
+            {
+                "hwnd": int(hwnd),
+                "path": finance_org.get("path"),
+                "dynamic_index": prefix["dynamic_index"],
+                "dynamic_prefix": prefix["dynamic_prefix"],
+                "matched_labels": prefix.get("matched_labels"),
+            }
+        )
+    if len(candidates) == 1:
+        return {
+            "ok": True,
+            "scope_hwnd": candidates[0]["hwnd"],
+            "mode": "fast-path",
+            "dynamic_index": candidates[0]["dynamic_index"],
+            "dynamic_prefix": candidates[0]["dynamic_prefix"],
+            "candidates": candidates,
+        }
+    return {
+        "ok": False,
+        "mode": "fast-path",
+        "candidates": candidates,
+        "reason": f"快速表头 scope 候选数量不是 1：{len(candidates)}",
+    }
 
 
 def describe_hwnd_for_scope(hwnd):
@@ -806,7 +1014,19 @@ def describe_hwnd_for_scope(hwnd):
     )
 
 
-def find_receipt_header_form_field_by_path(jab, label, scope_hwnd=None):
+def find_receipt_header_form_field_by_path(
+    jab,
+    label,
+    scope_hwnd=None,
+    dynamic_index=None,
+):
+    if dynamic_index is not None:
+        return find_receipt_header_field_by_dynamic_path(
+            jab,
+            label,
+            dynamic_index,
+            scope_hwnd=scope_hwnd,
+        )
     index = HEADER_FORM_TEXT_INDEXES.get(label)
     if index is None:
         return {
@@ -843,30 +1063,43 @@ def find_receipt_header_form_field_by_path(jab, label, scope_hwnd=None):
 
 
 def locate_receipt_header_scope(jab):
+    fast = infer_receipt_header_scope_fast(jab)
+    if fast.get("ok"):
+        return fast
+
     foreground_root = foreground_root_hwnd()
     if foreground_root:
         fast_matches = collect_complete_header_scope_matches(
             jab, foreground_root=foreground_root
         )
         if len(fast_matches) == 1:
+            match = fast_matches[0]
             return {
                 "ok": True,
-                "scope_hwnd": fast_matches[0]["hwnd"],
+                "scope_hwnd": match["hwnd"],
                 "matches": fast_matches,
                 "mode": "foreground-fast",
+                "fast_path_attempt": fast,
+                "dynamic_index": match.get("dynamic_index"),
+                "dynamic_prefix": match.get("dynamic_prefix"),
             }
 
     matches = collect_complete_header_scope_matches(jab)
     if len(matches) == 1:
+        match = matches[0]
         return {
             "ok": True,
-            "scope_hwnd": matches[0]["hwnd"],
+            "scope_hwnd": match["hwnd"],
             "matches": matches,
             "mode": "full-scan",
+            "fast_path_attempt": fast,
+            "dynamic_index": match.get("dynamic_index"),
+            "dynamic_prefix": match.get("dynamic_prefix"),
         }
     return {
         "ok": False,
         "matches": matches,
+        "fast_path_attempt": fast,
         "reason": f"完整表头 scope 数量不是 1：{len(matches)}",
     }
 
@@ -880,13 +1113,25 @@ def collect_complete_header_scope_matches(jab, foreground_root=None):
         if not visible or class_name != "SunAwtCanvas" or not jab.dll.isJavaWindow(hwnd):
             continue
         ok_labels = []
+        dynamic_index = None
+        dynamic_prefix = None
         for label in HEADER_LABEL_ALIASES:
             found = find_receipt_header_form_field(jab, label, scope_hwnd=hwnd)
             if found.get("ok"):
                 ok_labels.append(label)
+                if dynamic_index is None and found.get("dynamic_index") is not None:
+                    dynamic_index = found.get("dynamic_index")
+                    dynamic_prefix = found.get("dynamic_prefix")
                 jab.release_contexts(found["vm_id"], found["owned_contexts"])
         if len(ok_labels) == len(HEADER_LABEL_ALIASES):
-            matches.append({"hwnd": int(hwnd), "labels": ok_labels})
+            matches.append(
+                {
+                    "hwnd": int(hwnd),
+                    "labels": ok_labels,
+                    "dynamic_index": dynamic_index,
+                    "dynamic_prefix": dynamic_prefix,
+                }
+            )
     return matches
 
 
@@ -1458,8 +1703,8 @@ def cell_changed(result, value):
     )
 
 
-def read_body_table(jab, step):
-    located = locate_receipt_body_table(jab, max_rows=3)
+def read_body_table(jab, step, scope_hwnd=None):
+    located = locate_receipt_body_table(jab, max_rows=3, scope_hwnd=scope_hwnd)
     best = located.get("best")
     if not best:
         return {

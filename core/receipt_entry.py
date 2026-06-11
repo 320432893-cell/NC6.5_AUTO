@@ -13,10 +13,7 @@ PUNCTUATION_RE = re.compile(r"[^0-9A-Z\u4e00-\u9fff]+")
 
 RESULT_SHEET_HEADERS = [
     "原Sheet1行号",
-    "执行主体编码",
     "执行主体名称",
-    "执行主体简称",
-    "银行",
     "到款日期",
     "客户编码",
     "币种",
@@ -30,6 +27,9 @@ RESULT_SHEET_HEADERS = [
 ]
 
 DEPRECATED_RESULT_SHEET_HEADERS = {
+    "执行主体编码",
+    "执行主体简称",
+    "银行",
     "账户配置ID",
     "异常阶段",
     "异常类型",
@@ -1391,15 +1391,12 @@ def make_receipt_duplicate_key(
 
 def plan_sheet_row(row, issue, status):
     if row is None:
-        base = [""] * 13
+        base = [""] * 10
     else:
         total_amount = row.raw_amount + row.fee
         base = [
             row.row,
-            row.organization_code,
             row.organization_name,
-            row.organization_short_name,
-            row.bank,
             row.receipt_date.isoformat(),
             row.customer_code,
             row.currency,
@@ -1420,16 +1417,30 @@ def plan_sheet_row(row, issue, status):
 def format_plan_issue_reason(issue):
     if issue is None:
         return ""
-    parts = []
-    if issue.message:
-        parts.append(str(issue.message))
-    if issue.field:
-        parts.append(f"字段={issue.field}")
-    if issue.raw_value:
-        parts.append(f"原值={issue.raw_value}")
-    if issue.action:
-        parts.append(f"处理={issue.action}")
-    return "；".join(parts)
+    return f"本地预检：{plan_issue_summary(issue)}"
+
+
+def plan_issue_summary(issue):
+    summaries = {
+        "EXCEL_REQUIRED_COLUMN_MISSING": "缺少必需列",
+        "EXCEL_START_ROW_INVALID": "起始行配置错误",
+        "DATE_INVALID": "到款日期格式错误",
+        "PAYER_NAME_EMPTY": "银行来款名为空",
+        "AMOUNT_ZERO_OR_NEGATIVE": "实收金额必须大于0",
+        "AMOUNT_INVALID": "实收金额格式错误",
+        "BANK_EMPTY": "银行为空",
+        "BANK_ACCOUNT_NOT_CONFIGURED": "银行未配置",
+        "BANK_ACCOUNT_DISABLED": "银行账户已禁用",
+        "ORG_NOT_CONFIGURED": "执行主体未配置",
+        "CURRENCY_EMPTY": "币种为空",
+        "CURRENCY_UNSUPPORTED": "币种不支持",
+        "CUSTOMER_CODE_EMPTY": "客户编码为空",
+        "FEE_NEGATIVE": "手续费不能小于0",
+        "FEE_INVALID": "手续费格式错误",
+        "DETAIL_ACCOUNT_CANDIDATE_MISSING": "收款银行账户候选缺失",
+        "DUPLICATE_EXCEL_ROWS": "本批存在重复行",
+    }
+    return summaries.get(issue.issue_type) or str(issue.message or "预检失败")
 
 
 def ensure_result_sheet_headers(ws, header_row):
@@ -1445,7 +1456,7 @@ def ensure_result_sheet_headers(ws, header_row):
         text = str(value or "").strip()
         if text:
             columns[text] = column
-    next_column = ws.max_column + 1
+    next_column = max(columns.values(), default=0) + 1
     for header in RESULT_SHEET_HEADERS:
         if header in columns:
             continue
