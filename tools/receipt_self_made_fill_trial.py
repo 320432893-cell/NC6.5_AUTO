@@ -15,7 +15,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from core.jab_operator import JABOperator  # noqa: E402
-from core.receipt_entry import ReceiptEntryConfig  # noqa: E402
+from core.receipt_config import ReceiptEntryConfig  # noqa: E402
 from core.utils import load_config  # noqa: E402
 from tools.read_receipt_excel_row import DEFAULT_FIELDS  # noqa: E402
 from tools.receipt_body_table_locator import locate_receipt_body_table  # noqa: E402
@@ -35,12 +35,8 @@ CURRENCY_NAMES = {"USD": "美元", "RMB": "人民币", "CNY": "人民币"}
 HEADER_FORM_BASE_PATH = "0.0.1.0.0.0.0.2.0.0.0.1.1.0.0.0.0.1.0.2.0.0.0.0.0.0.0"
 HEADER_DYNAMIC_PREFIX_BASE = "0.0.1.0.0.0.0"
 HEADER_DYNAMIC_MAX_INDEX = 8
-HEADER_COMMON_SUFFIX_TEMPLATE = (
-    "0.0.0.1.1.0.0.0.0.1.0.2.0.0.0.0.0.0.0.{index}.0"
-)
-HEADER_COMMON_LABEL_SUFFIX_TEMPLATE = (
-    "0.0.0.1.1.0.0.0.0.1.0.2.0.0.0.0.0.0.0.{index}"
-)
+HEADER_COMMON_SUFFIX_TEMPLATE = "0.0.0.1.1.0.0.0.0.1.0.2.0.0.0.0.0.0.0.{index}.0"
+HEADER_COMMON_LABEL_SUFFIX_TEMPLATE = "0.0.0.1.1.0.0.0.0.1.0.2.0.0.0.0.0.0.0.{index}"
 FINANCE_ORG_SUFFIX = "0.0.0.1.1.0.0.0.0.1.1.1.0"
 FINANCE_ORG_LABEL_SUFFIX = "0.0.0.1.1.0.0.0.0.1.1.0"
 ACCOUNT_REFERENCE_BUTTON_PATH = f"{HEADER_FORM_BASE_PATH}.15.1"
@@ -301,7 +297,7 @@ def fill_header(
         },
         {
             "label": "币种",
-            "value": business["header_currency_code"],
+            "value": business.get("header_currency_code") or business.get("currency"),
             "header_form": True,
         },
         {
@@ -787,7 +783,7 @@ def find_receipt_header_form_field(jab, label, scope_hwnd=None):
                     if extract_receipt_header_dynamic_index(path) is not None
                     else None
                 ),
-        }
+            }
         jab.release_contexts(vm_id_ref.value, [root_context.value])
     fallback = find_receipt_header_form_field_by_path(jab, label, scope_hwnd=scope_hwnd)
     if fallback.get("ok"):
@@ -817,7 +813,9 @@ def build_receipt_header_dynamic_path(dynamic_index, label):
 
 def build_receipt_header_dynamic_label_path(dynamic_index, label):
     if label == "财务组织":
-        return f"{HEADER_DYNAMIC_PREFIX_BASE}.{dynamic_index}.{FINANCE_ORG_LABEL_SUFFIX}"
+        return (
+            f"{HEADER_DYNAMIC_PREFIX_BASE}.{dynamic_index}.{FINANCE_ORG_LABEL_SUFFIX}"
+        )
     index = HEADER_FORM_TEXT_INDEXES.get(label)
     if index is None:
         return None
@@ -944,7 +942,11 @@ def infer_receipt_header_scope_fast(jab):
     candidates = []
     for window in windows:
         hwnd, _title, class_name, _pid, visible = window
-        if not visible or class_name != "SunAwtCanvas" or not jab.dll.isJavaWindow(hwnd):
+        if (
+            not visible
+            or class_name != "SunAwtCanvas"
+            or not jab.dll.isJavaWindow(hwnd)
+        ):
             continue
         if foreground_root and window_root_hwnd(hwnd) != foreground_root:
             continue
@@ -1110,7 +1112,11 @@ def collect_complete_header_scope_matches(jab, foreground_root=None):
         hwnd, _title, class_name, _pid, visible = window
         if foreground_root and window_root_hwnd(hwnd) != foreground_root:
             continue
-        if not visible or class_name != "SunAwtCanvas" or not jab.dll.isJavaWindow(hwnd):
+        if (
+            not visible
+            or class_name != "SunAwtCanvas"
+            or not jab.dll.isJavaWindow(hwnd)
+        ):
             continue
         ok_labels = []
         dynamic_index = None

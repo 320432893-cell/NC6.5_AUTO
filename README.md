@@ -4,6 +4,36 @@
 
 当前主线是 Java Access Bridge（JAB）。旧的 `pyautogui` 坐标点击、截图识别、固定坐标方案已经删除，不再作为新功能方向。
 
+本仓库当前不是桌面 GUI 应用，也没有正式图形界面入口。对 NC 的真实操作只通过 CLI 工具驱动 Windows Python + JAB；若后续要做可视化配置或前端，也必须复用现有配置对象、计划模型和 JAB 工作流，不能另起坐标/截图方案。
+
+## GUI / 前端接手口径
+
+当前没有正式 GUI，也不要把 `tools/tmp_*`、`.bat` 菜单或现场探测脚本理解成 GUI。它们只是 CLI/测试入口。未来如果要做桌面 GUI、Web 前端或 TypeScript 配置台，必须接现有业务对象，而不是重写自动化路径。
+
+可视化入口应该围绕这些对象设计：
+
+- 配置编辑：`config.json` 的 `receipt_entry.schema_version=2`，尤其是 `finance_organizations`、`banks`、`accounts`、账户候选值、录入策略和明细/手续费策略。
+- 本地预检：`core/receipt_entry.py`、`core/receipt_plan.py`、`core/receipt_plan_issue.py`、`core/receipt_sheet.py` 和 `tools/receipt_entry_check.py`。
+- 完整录入测试：`tools/receipt_full_flow_entry.py`，默认不保存，显式 `--save` 才真实保存。
+- 查询与后验：`tools/receipt_query_fill.py` 及拆分出的 `tools/receipt_query_*` 模块。
+- JAB 底层边界：`core/jab_operator.py`、`core/jab_window.py`、`core/jab_*` mixin/helper；全局键盘、前台窗口和 pyautogui 只能留在这里。
+- 工程检查：`tools/check.py`、`tools/validate_config.py`、`tools/check_architecture.py` 和对应测试。
+
+前端页面优先级：
+
+1. 配置对象编辑器：银行、账号、主体、别名、币种、录入策略。保存前必须跑 `tools/validate_config.py`。
+2. Excel 本地预检结果页：展示 `ReceiptPlanRow` 和 `ReceiptPlanIssue`，能按主体、银行、异常类型过滤。
+3. 执行计划确认页：只展示将要处理的行、主体、金额、手续费和风险提示；真实保存前仍要用户明确授权。
+4. 运行监控页：只展示 CLI/JAB 工作流事件、当前阶段、耗时和可恢复状态，不直接绕过后置校验。
+5. 后验查询和 Sheet2 结果页：按主体汇总查询结果、匹配状态和写回结果。
+
+禁止方向：
+
+- 不做坐标配置器、截图识别配置器或固定 path 编辑器。
+- 不把 `pyautogui.write`、剪贴板、全局快捷键暴露成普通按钮。
+- 不让前端直接拼临时脚本执行真实保存；必须调用正式入口并保留确认、日志和检查闭包。
+- 不把旧 `是否NC已做过` 写回工具重新包装成新批量录入的前置筛选主线。
+
 ## 开发和运行边界
 
 开发已经可以完全转到 WSL：
@@ -29,10 +59,13 @@
 - `core/nc_backfill_workflow.py`：已生成列表凭证号回填。
 - `core/nc_table_matcher.py`：NC 表格按金额、对手方、日期的匹配逻辑。
 - `core/receipt_entry.py`：收款单 Excel 本地预检、主体映射、Sheet2 机器结果表和 NC 后验匹配基础模型。
+- `core/receipt_sheet.py`：Sheet2 表头维护、旧噪音列删除和当前计划结果区重写。
 - `core/errors.py`：NC workflow 领域异常，区分页面状态、表格匹配、JAB 控件、JAB 动作、Excel 写入锁和流程契约失败。
 - `core/jab_operator.py`：JAB 底层封装，负责读表、选行、按钮动作、F3/F5、关闭窗口、受保护的 AWT 残留清理。
 - `core/data_handler.py`：Excel 读取、拼接 key 解析、结果写回、拆分 key。
 - `config.json`：Excel 路径、JAB DLL、列位和查询切换配置。
+- `tools/check.py`：统一检查入口，默认包含基础检查和 audit 门禁。
+- `.semgrep.yml` / `.importlinter` / `tools/check_detect_secrets.py`：`tools/check.py` audit profile 使用的安全、架构和密钥检查配置。
 - `TODO_JAB_HANDOFF.md`：后续开发 TODO。
 - `CHANGELOG.md`：已实现功能、验证记录和历史变更。
 
@@ -40,10 +73,20 @@
 
 - `tools/jab_probe.py`
 - `tools/receipt_body_table_locator.py`
-- `tools/receipt_reference_cell_probe.py`
+- `tools/nc_auto_test_menu.bat`：项目级测试菜单入口，按只读、写 Excel、真实 NC 不保存、真实保存分组启动现有功能。
+- `tools/receipt_full_flow_entry.py`：收款单完整流程测试入口，消费 `ReceiptPlanRow`，默认开单/表头/明细/手续费后停在保存前，显式 `--save` 才真实保存。
+- `tools/receipt_detail_test_menu.bat`：给测试人员使用的收款单明细测试菜单入口。
+- `tools/receipt_detail_entry.py`：收款单明细主行/手续费行正式 Python 入口；供脚本化测试明细写入能力，不保存、不暂存。
+- `tools/receipt_entry_check.py`
+- `tools/receipt_query_fill.py`
+- `tools/receipt_self_made_fill_trial.py`
+- `tools/close_awt_popup_residue.py`
 - `tools/query_jab.bat`
 - `tools/run_jab_probe.bat`
-- `tools/test_voucher_selection.py`
+
+仍存在的 `tools/tmp_*` 只作为现场探测、复盘或窄场景诊断参考，不是正式批量入口：`tmp_receipt_cell_probe_run.py`、`tmp_receipt_tables_probe.py`、`tmp_receipt_detail_main_line_run.py`、`tmp_receipt_account_run.py`、`tmp_jab_recovery_probe.py`。其中 `tmp_receipt_detail_main_line_run.py` 只是兼容壳，会转发到正式入口 `tools/receipt_detail_entry.py`；已删除的真实保存 T0 脚本只能从 git 历史恢复。
+
+历史探针和人工现场测试入口已收口到 `tools/archive/`。这些文件只作复盘证据，不是测试人员默认入口，也不能被正式流程 import；需要重新启用时先移回合适目录并补检查闭包。
 
 ## WSL 开发流程
 
@@ -80,6 +123,32 @@ cd /mnt/h/python脚本/.venv/nc_auto_v2
 ```
 
 ## 常用命令
+
+给测试人员使用的项目级菜单入口。双击或在 Windows 命令行运行后，可选择工程检查、凭证计划/生成/回填、收款单本地预检、写 Sheet2、完整流程不保存、完整流程真实保存、明细测试、查询读取和历史写回。菜单会打印开始时间、结束时间、退出码，并按风险分组提示；真实保存和写 Excel 项会在菜单层再次确认：
+
+```bat
+tools\nc_auto_test_menu.bat
+```
+
+收款单完整流程测试入口是 `tools/receipt_full_flow_entry.py`。它从 `ReceiptEntryWorkbook.build_local_plan()` 取通过本地预检的 `ReceiptPlanRow`，默认只跑一行，执行 `新增 -> 自制 -> 表头 -> 明细主行 -> 手续费分支` 后停在保存前，不发送保存：
+
+```bash
+/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_full_flow_entry.py --excel-row 1791 --limit 1
+```
+
+运行前先把本地预检结果写入 Sheet2：
+
+```bash
+/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_full_flow_entry.py --excel-row 1791 --limit 1 --write-plan-sheet
+```
+
+真实保存必须显式加 `--save`，并输入 `SAVE` 或在菜单层确认后由 bat 加 `--yes-i-understand`。保存 oracle 是点击 `保存(Ctrl+S)` 后自制录入态按钮消失；不要只信提示框：
+
+```bash
+/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_full_flow_entry.py --excel-row 1791 --limit 1 --save
+```
+
+注意：后验查询统一编排和保存/查询结果落 Sheet2 仍是下一步，当前入口先提供完整录入到保存前、以及可选真实保存测试。不要把已清理的 T0 真实保存脚本恢复后交给测试人员当主入口。
 
 只读规划，不点击 NC：
 
@@ -129,7 +198,7 @@ cd /mnt/h/python脚本/.venv/nc_auto_v2
 /mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_entry_check.py
 ```
 
-写入 Sheet2 结果表，默认表名为 `收款单自动化结果`。写入规则是：有表头就复用，缺表头就补齐，旧数据后追加；历史噪音列会按表头名删除，不再写录入/保存/查询调试明细：
+写入 Sheet2 结果表，默认表名为 `收款单自动化结果`。当前正式写入规则是：有表头就复用，缺表头就补齐，旧噪音列会按表头名删除，然后清空表头下方旧行并重写本次计划结果；不再写录入/保存/查询调试明细：
 
 ```bash
 /mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_entry_check.py --write
@@ -165,7 +234,7 @@ cd /mnt/h/python脚本/.venv/nc_auto_v2
 /mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_query_fill.py --org-code A001 --date-from 2026-03-31 --date-to 2026-05-31 --confirm --dry-run-match --max-rows 600 --max-cols 140
 ```
 
-收款单匹配结果写回 Excel；唯一匹配写 `已做过`。金额和对手方都没有命中时写 `金额和对手方均未匹配`；金额命中但名称不符、名称命中但金额不符会写明 Excel 值和 NC 候选值；重复命中按实际条数写 `重复N条：名称和金额相同，需人工确认`，重复行也会在 JSON 的 `duplicate_rows` 中报告。注意：该写回旧入口不再作为新批量录入主线的前置判断，当前用户口径是假定交给机器的行均未做过，录入完成后再按主体查询 NC 做后验验证：
+收款单匹配结果写回 Excel；唯一匹配写 `已做过`，完全未命中写 `未做过`。金额命中但名称不符、名称命中但金额不符会写明 Excel 值和 NC 候选值；重复命中按实际条数写 `重复N条：名称和金额相同，需人工确认`，重复行也会在 JSON 的 `duplicate_rows` 中报告。`金额和对手方均未匹配` 是诊断原因口径，不是当前最终写回状态。注意：该写回旧入口不再作为新批量录入主线的前置判断，当前用户口径是假定交给机器的行均未做过，录入完成后再按主体查询 NC 做后验验证：
 
 ```bash
 /mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_query_fill.py --org-code A001 --date-from 2026-03-31 --date-to 2026-05-31 --confirm --dry-run-match --write-back --max-rows 600 --max-cols 140
@@ -180,6 +249,51 @@ cd /mnt/h/python脚本/.venv/nc_auto_v2
 写回前必须先确认当前 NC 页面是目标 `收款单录入`。工具会做页面和结果表守卫；如果结果表的匹配名称列疑似读成 `收款单` 单据类型列，会拒绝继续。
 
 `收款财务组织` 当前按字段 label 聚焦右侧输入框后直接写组织编码，例如 `A001`、`A006`。不要点输入框右侧未知按钮；不要为了提交该输入框额外按 Enter，除非现场已确认该主体必须这样做。写入是否有效以后置查询结果和 Excel 主体匹配数为准，不能只看 JAB 文本读回。
+
+收款单明细给测试人员的主入口是 `tools/receipt_detail_test_menu.bat`。双击或在 Windows 命令行运行后，可以选择写主行、写手续费行、清理多余行或查看帮助。它不保存、不暂存，只定位当前自制录入页的 25 列明细表，并调用正式 `tools/receipt_detail_*` 模块。运行前必须把 NC 停在【收款单自制录入】界面，且没有参照窗口/提示框遮挡：
+
+```bat
+tools\receipt_detail_test_menu.bat
+```
+
+脚本化测试可直接调用 Python 入口：
+
+```bash
+/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_detail_entry.py
+```
+
+只测试手续费分支，要求主行已写好：
+
+```bash
+/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_detail_entry.py --fee-only --fee-amount 10
+```
+
+只清理第 1 行以外的多余明细行：
+
+```bash
+/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_detail_entry.py --cleanup-extra-rows-only
+```
+
+## 入口安全矩阵
+
+| 入口 | 读 Excel | 写 Excel | 点击/读取 NC | 保存业务单据 | 当前定位 |
+| --- | --- | --- | --- | --- | --- |
+| `tools/nc_auto_test_menu.bat` | 视菜单项而定 | 视菜单项而定 | 视菜单项而定 | 菜单第 3 项保存凭证，第 9 项保存收款单 | 项目级测试菜单入口 |
+| `tools/jab_batch.py plan` | 是 | 否 | 只读待生成表 | 否 | 凭证批量只读规划 |
+| `tools/jab_batch.py generate --yes` | 是 | 是 | 是 | 是，保存凭证 | 凭证正式生成入口 |
+| `tools/jab_batch.py switch-generated` | 否 | 否 | 是 | 否 | 凭证页签切换 |
+| `tools/jab_batch.py backfill` | 是 | 是 | 读取已生成表 | 否 | 凭证号回填 |
+| `tools/receipt_entry_check.py` | 是 | 否 | 否 | 否 | 收款单本地预检 |
+| `tools/receipt_entry_check.py --write` | 是 | 是，重写 Sheet2 当前计划结果区 | 否 | 否 | 收款单计划结果写入 |
+| `tools/receipt_full_flow_entry.py` | 是 | 可选写 Sheet2 预检 | 是 | 默认否，`--save` 会保存 | 收款单完整流程测试入口 |
+| `tools/receipt_query_fill.py --confirm --read-results` | 是 | 否 | 是 | 否 | 收款单查询/抽取组件 |
+| `tools/receipt_query_fill.py --dry-run-match --write-back` | 是 | 是，写 Sheet1 状态列 | 是 | 否 | 历史查重/诊断入口 |
+| `tools/receipt_self_made_fill_trial.py` | 是 | 否 | 是 | 默认否 | 单行/分阶段现场试填 |
+| `tools/receipt_detail_test_menu.bat` | 否 | 否 | 是，写当前明细表 | 否 | 明细测试菜单入口 |
+| `tools/receipt_detail_entry.py` | 否 | 否 | 是，写当前明细表 | 否 | 明细正式测试入口 |
+| `tools/tmp_*` | 视脚本而定 | 视脚本而定 | 视脚本而定 | 禁止当正式入口 | 探测/复盘参考 |
+
+收款单完整流程测试入口已经可以消费 `ReceiptPlanRow` 跑到保存前，并可显式真实保存。`--query-after-save` 当前只返回 deferred 报告，不会真的查询 NC，也不会写 Sheet2。仍未完成的是：保存后按主体统一后验查询，以及把录入/保存/查询结果结构化落到 Sheet2；当前 Sheet2 正式字段仍只表达本地预检和异常原因。
 
 ## NC 现场操作纪律
 
@@ -205,7 +319,7 @@ NC 表头层级很深，JAB 默认搜索深度必须保持 `max_depth=50`。`25`
 
 `tools/receipt_self_made_fill_trial.py` 默认只负责开单和表头阶段；账户参照打开后会停止，后续前台检查、`Alt+F` 搜索、等待结果、选择确定必须拆成独立动作。明细填入默认禁用，必须显式传 `--fill-detail` 才会尝试进入明细；即使显式填明细，默认也只允许后台 JAB 写表格，不自动退到剪贴板粘贴或 typing。
 
-收款单自制录入和授权主体真实保存 T0 已达标，相关临时脚本已清理。后续正式入口不要继续引用临时脚本；需要复盘现场实现时从 git 历史恢复。真实保存运行前仍必须由用户明确授权，成功 oracle 是保存后【新增】重新出现。测试保存单据可能被用户手工删除，后续查询不能依赖历史 T0 单据仍存在。
+收款单自制录入和授权主体真实保存 T0 已达标；当前代码已沉淀出 `tools/receipt_full_flow_entry.py`，用于消费 `ReceiptPlanRow` 跑完整流程测试。默认模式跑到保存前停止；真实保存必须显式 `--save` 并确认。尚未正式化的是“保存后按主体统一后验查询 -> 保存/查询结果落 Sheet2”；`--query-after-save` 目前只是 deferred 占位。真实保存 T0 脚本已清理，仓库仍保留若干 tmp 探测脚本；后续正式入口不要继续引用临时脚本。真实保存运行前仍必须由用户明确授权，成功 oracle 是保存后【新增】重新出现。测试保存单据可能被用户手工删除，后续查询不能依赖历史 T0 单据仍存在。
 
 明细表当前已验证的填写顺序：主行写 `收款业务类型=货款`、`收款银行账户`、`科目=1002`、`贷方原币金额`、`结算方式=网银`。币种只写表头，输入 `USD`/`CNY` 后回车；主行和手续费行不写币种。表头 `结算方式` 必须显式写 `网银`，不能依赖主体默认值；明细主行和手续费行的 `结算方式` 输入后用 Enter 确认，避免联想浮层残留。手续费非零时才 `Ctrl+I` 增行，手续费行写 `手续费`、`660305`、手续费金额、`网银`；手续费行账户必须为空，自动带出时用 `Delete` 清空；若多出空白第 3 行，用 `Ctrl+D` 删除。
 
@@ -294,9 +408,9 @@ C:\Users\Queclink\Desktop\6.1凭证.xlsx
 
 收款单配置 schema：
 
-- `receipt_entry.schema_version=2` 是面向后续 GUI 的配置模型；GUI 应编辑业务对象，不要把银行、账号、快捷键继续写死到脚本里。
+- `receipt_entry.schema_version=2` 是面向后续配置维护/前端扩展的业务对象模型；任何 UI 都应编辑这些对象，不要把银行、账号、快捷键继续写死到脚本里。
 - `receipt_entry.excel.start_row` 是 Sheet1 业务起始行；新主线从该行开始读取，不再用“最近 2 个月”或 `是否NC已做过` 状态列决定本批候选。
-- `receipt_entry.excel.result_sheet_name` 是 Sheet2 名称，默认 `收款单自动化结果`。Sheet2 是业务结果表：自动化追加写入，缺表头时补齐，旧噪音列按表头名删除，不清空旧业务数据。
+- `receipt_entry.excel.result_sheet_name` 是 Sheet2 名称，默认 `收款单自动化结果`。当前正式函数 `rewrite_plan_sheet()` 会复用/补齐表头、删除旧噪音列，然后清空表头下方旧行并重写本次计划结果；不要把它理解成历史追加表。
 - `receipt_entry.excel.currency_column`、`customer_code_column`、`fee_column` 分别指定币种、客户编码、手续费列，用于本地预检和后续录入。
 - `receipt_entry.validation_policy.mode` 支持 `strict` 和 `skip_invalid_rows`。`strict` 有任意异常就停止整批；`skip_invalid_rows` 会把异常行/重复组写 Sheet2 并跳过。
 - `receipt_entry.banks` 是银行字典，只做展示、分类和可选别名维护；同一家银行可能有多个主体账户，银行别名不能自动当账户匹配规则。
@@ -304,6 +418,7 @@ C:\Users\Queclink\Desktop\6.1凭证.xlsx
 - `nc_candidates_by_currency` 用于配置 NC 可输入候选。当前收款银行账号统一输入裸账号，不再加 `RMB/USD/CNY` 后缀；只有账号 `97460154740002297` 是 `CNY`，其余已配置账号按 `USD`。
 - `entry_policy` 记录账户录入策略：当前主线是 `account_input=detail_first`、`success_rule=non_empty`、必要时 `fallback_reference=true`。
 - `detail_entry_policy` 记录明细主行/手续费行顺序和快捷键：手续费增行 `ctrl+i`，手续费账户清空，额外空行删除 `ctrl+d`。
+- 注意：`config.json` 里的 `detail_entry_policy.main_line_order` 目前仍可能包含 `currency`，但实际明细执行源是 `tools/receipt_detail_fields.py` 的字段定义；当前业务口径是币种只写表头，主行和手续费行不写明细币种。后续要么统一配置，要么继续以代码字段定义为准。
 - `tools/validate_config.py` 会校验组织、银行、账户引用、账户别名冲突、候选值和策略枚举；新增银行或账号后必须先跑配置校验。
 
 收款单本地预检异常口径：
@@ -312,7 +427,7 @@ C:\Users\Queclink\Desktop\6.1凭证.xlsx
 - `ReceiptPlanIssue` 必须带 `excel_row`、`stage`、`issue_type`、`field`、`raw_value`、`config_node`、`message`、`action`；不要新增笼统的“配置错误/数据错误”。Sheet2 展示时会压缩为单列 `异常原因`，详细结构只留给 CLI/日志和代码判断。
 - 当前会识别缺必需列、起始行无效、银行为空/未配置/账户禁用、账户主体不存在、日期错误、银行来款名为空、金额错误或非正、币种为空或不支持、客户编码为空、手续费错误或负数、以及本批 Sheet1 内重复。
 - 重复键为 `主体 + 到款日期 + 银行 + 币种 + 客户编码 + 银行来款名 + 金额`。同一 key 出现多行时标 `DUPLICATE_EXCEL_ROWS`，整组不录入。
-- 通过预检的行按主体分组供后续录入使用；录入前不查 NC。全部录入后再进入后验查询阶段，查询结果只影响 Sheet2 的 `异常原因`。当前 T0 已做到“先全部保存、再查询”，但查询实现仍是逐案例调用；正式优化目标是按 `(主体, 日期)` 分组查询一次后在内存匹配。
+- 通过预检的行按主体分组供后续录入使用；录入前不查 NC。全部录入后再进入后验查询阶段，查询结果只影响 Sheet2 的 `异常原因`。T0/历史脚本已验证“保存阶段”和“查询阶段”分离，并验证过按主体日期区间查询后在内存匹配的方向；当前正式代码已沉淀 `tools/receipt_full_flow_entry.py` 作为完整流程测试入口，但 `--query-after-save` 仍是 deferred 占位，仍待补的是多行批量、统一后验查询和保存/查询结果落表。
 
 收款单自制录入明细表：
 
@@ -510,7 +625,23 @@ A: 不能。旧坐标入口和旧 GUI 模块已经删除，后续新功能都应
 .venv/bin/python tools/check.py
 ```
 
-该入口包含 JSON 格式、配置语义、ruff、format、compileall、basedpyright、架构边界和 pytest 纯逻辑测试。
+默认 profile 是 `all`，`changed` 是同一组本地门禁别名。二者包含：
+
+- 基础检查：JSON 格式、配置语义、ruff、format、compileall、basedpyright、架构边界和 pytest 纯逻辑测试。
+- audit 检查：semgrep、import-linter、detect-secrets、pip-audit。
+
+可用 profile：
+
+```bash
+.venv/bin/python tools/check.py all
+.venv/bin/python tools/check.py changed
+.venv/bin/python tools/check.py audit
+.venv/bin/python tools/check.py deep
+.venv/bin/python tools/check.py rule-tool-contracts
+.venv/bin/python tools/check.py --list
+```
+
+`audit` 依赖 `.semgrep.yml`、`.importlinter`、`tools/check_detect_secrets.py` 和开发依赖。仅改 Markdown 时，通常先跑 `git diff --check -- README.md TODO_JAB_HANDOFF.md CHANGELOG.md` 即可；涉及 Python、配置或依赖时再跑对应 profile。
 
 当前架构边界：
 

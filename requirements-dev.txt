@@ -1,7 +1,11 @@
 -r requirements.txt
 
 basedpyright>=1.39.5
+detect-secrets>=1.5.0
+import-linter>=2.3
+pip-audit>=2.9.0
 pytest>=8.0.0
 radon>=6.0.1
 ruff>=0.15.13
+semgrep>=1.100.0
 vulture>=2.14

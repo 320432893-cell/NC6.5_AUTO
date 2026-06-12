@@ -3,13 +3,13 @@ import json
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from core.jab_operator import JABOperator  # noqa: E402
 from core.utils import load_config  # noqa: E402
-from tools.receipt_text_controls_dump import collect_text_controls  # noqa: E402
+from tools.archive.receipt_text_controls_dump import collect_text_controls  # noqa: E402
 
 
 def main():

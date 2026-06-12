@@ -9,7 +9,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from core.jab_operator import JABOperator  # noqa: E402
-from core.receipt_entry import ReceiptEntryConfig  # noqa: E402
+from core.receipt_config import ReceiptEntryConfig  # noqa: E402
 from core.utils import load_config  # noqa: E402
 from tools.jab_health_check import check_jab_ready, print_jab_health_failure  # noqa: E402
 from tools.receipt_account_reference_try import (  # noqa: E402

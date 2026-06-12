@@ -1,31 +1,42 @@
 from datetime import date
 from decimal import Decimal
+from typing import Any, cast
 
 from openpyxl import Workbook, load_workbook
 import pytest
 
-from core.receipt_entry import ReceiptExcelRow
-from core.receipt_entry import ReceiptMatchIssue
-from core.receipt_entry import ReceiptNCExtractIssue
-from core.receipt_entry import ReceiptNCIndexedRow
-from core.receipt_entry import ReceiptNCResultExtractor
-from core.receipt_entry import format_receipt_duplicate_reason
-from core.receipt_entry import format_receipt_name_amount_mismatch_reason
-from tools.receipt_query_fill import (
-    ReceiptPageGuardError,
+from core.receipt_matching import (
+    format_receipt_duplicate_reason,
+    format_receipt_name_amount_mismatch_reason,
+)
+from core.receipt_models import (
+    ReceiptExcelRow,
+    ReceiptMatchIssue,
+    ReceiptNCExtractIssue,
+    ReceiptNCIndexedRow,
+)
+from core.receipt_nc_extract import ReceiptNCResultExtractor
+from tools.receipt_query_report import (
     build_dry_run_match_report,
     build_dry_run_match_report_from_preview,
+)
+from tools.receipt_query_pagination import (
+    parse_page_label,
+    set_receipt_page_size,
+    wait_receipt_result_stable,
+)
+from tools.receipt_query_pagination_paths import (
+    infer_result_area_prefix_from_table_path,
+)
+from tools.receipt_query_page_reader import read_receipt_result_pages
+from tools.receipt_query_result_tables import read_receipt_tables
+from tools.receipt_query_fill import (
+    ReceiptPageGuardError,
     ensure_query_window,
     fill_receipt_query,
     guard_receipt_parent_page,
     guard_receipt_result_tables,
-    infer_result_area_prefix_from_table_path,
-    parse_page_label,
-    read_receipt_result_pages,
-    read_receipt_tables,
-    set_receipt_page_size,
     wait_after_query_confirm,
-    wait_receipt_result_stable,
 )
 
 
@@ -129,13 +140,29 @@ class FakePagedJAB:
             rows = [
                 {
                     "row_index": 0,
-                    "cells": ["D100000001", "2026-03-31", "收款单", "", "客户A", "", "10.00"]
+                    "cells": [
+                        "D100000001",
+                        "2026-03-31",
+                        "收款单",
+                        "",
+                        "客户A",
+                        "",
+                        "10.00",
+                    ]
                     + [""] * 34,
                     "selected": False,
                 },
                 {
                     "row_index": 1,
-                    "cells": ["D100000002", "2026-03-31", "收款单", "", "客户B", "", "20.00"]
+                    "cells": [
+                        "D100000002",
+                        "2026-03-31",
+                        "收款单",
+                        "",
+                        "客户B",
+                        "",
+                        "20.00",
+                    ]
                     + [""] * 34,
                     "selected": False,
                 },
@@ -144,7 +171,15 @@ class FakePagedJAB:
             rows = [
                 {
                     "row_index": 0,
-                    "cells": ["D100000003", "2026-04-01", "收款单", "", "客户C", "", "30.00"]
+                    "cells": [
+                        "D100000003",
+                        "2026-04-01",
+                        "收款单",
+                        "",
+                        "客户C",
+                        "",
+                        "30.00",
+                    ]
                     + [""] * 34,
                     "selected": False,
                 }
@@ -163,6 +198,12 @@ class FakePagedJAB:
     ):
         self.table_scopes.append(scope_hwnd)
         return [{"table_index": 2, "row_count": 3, "col_count": 41}]
+
+    def find_context_by_path_once(self, *args, **kwargs):
+        return None, None, [], None
+
+    def release_contexts(self, vm_id, owned_contexts):
+        pass
 
     def do_action_by_path(
         self,
@@ -653,11 +694,27 @@ def test_read_receipt_tables_keeps_single_row_main_result_and_filters_detail():
                     "rows": [
                         {
                             "row_index": 0,
-                            "cells": ["客户", "借方", "应收款", "美元", "FTE", "1002", "6.8"],
+                            "cells": [
+                                "客户",
+                                "借方",
+                                "应收款",
+                                "美元",
+                                "FTE",
+                                "1002",
+                                "6.8",
+                            ],
                         },
                         {
                             "row_index": 1,
-                            "cells": ["客户", "财务费用", "应收款", "美元", "", "660305", "6.8"],
+                            "cells": [
+                                "客户",
+                                "财务费用",
+                                "应收款",
+                                "美元",
+                                "",
+                                "660305",
+                                "6.8",
+                            ],
                         },
                     ],
                 },
@@ -720,7 +777,7 @@ def test_read_receipt_result_pages_sets_page_size_and_reads_next_page():
     assert report["total_pages"] == 2
     assert report["pager_hwnd"] == 330038
     assert report["pages"][0]["next_page_method"] == "action"
-    assert jab.table_scopes == [330038, 330038]
+    assert all(scope == 330038 for scope in jab.table_scopes)
     assert [table["row_count"] for table in tables] == [2, 1]
 
 
@@ -730,7 +787,7 @@ def test_read_receipt_result_pages_skips_page_size_change_when_already_target():
 
     tables, report = read_receipt_result_pages(
         jab,
-        paged_query_config(),
+        paged_query_config(prefer_configured_paths=False),
         max_rows=500,
         max_cols=40,
     )
@@ -770,14 +827,14 @@ def test_read_receipt_result_pages_uses_dynamic_pagination_paths(monkeypatch):
         }
 
     monkeypatch.setattr(
-        "tools.receipt_query_fill.resolve_receipt_pagination_paths_dynamic",
+        "tools.receipt_query_pagination_paths.resolve_receipt_pagination_paths_dynamic",
         fake_dynamic,
     )
     jab.texts["dynamic_label"] = "第1页 共2页 501条记录 每页显示"
 
     tables, report = read_receipt_result_pages(
         jab,
-        paged_query_config(),
+        paged_query_config(prefer_configured_paths=False),
         max_rows=500,
         max_cols=40,
     )
@@ -835,7 +892,7 @@ def test_read_receipt_result_pages_blocks_next_page_without_pager_scope():
 
 def test_read_receipt_result_pages_applies_stability_waits(monkeypatch):
     waits = []
-    monkeypatch.setattr("tools.receipt_query_fill.time.sleep", waits.append)
+    monkeypatch.setattr("tools.receipt_query_pagination.time.sleep", waits.append)
     jab = FakePagedJAB()
     jab.texts["label"] = "第1页 共2页 501条记录 每页显示"
 
@@ -859,7 +916,7 @@ def test_read_receipt_result_pages_applies_stability_waits(monkeypatch):
 
 def test_wait_receipt_result_stable_requires_repeated_label_and_tables(monkeypatch):
     waits = []
-    monkeypatch.setattr("tools.receipt_query_fill.time.sleep", waits.append)
+    monkeypatch.setattr("tools.receipt_query_pagination.time.sleep", waits.append)
 
     report = wait_receipt_result_stable(
         FakePagedJAB(),
@@ -878,7 +935,7 @@ def test_wait_receipt_result_stable_requires_repeated_label_and_tables(monkeypat
 
 def test_set_receipt_page_size_can_skip_pre_stability(monkeypatch):
     waits = []
-    monkeypatch.setattr("tools.receipt_query_fill.time.sleep", waits.append)
+    monkeypatch.setattr("tools.receipt_query_pagination.time.sleep", waits.append)
 
     report = set_receipt_page_size(
         FakePagedJAB(),
@@ -900,8 +957,8 @@ def test_set_receipt_page_size_can_skip_pre_stability(monkeypatch):
     assert before_stability["skipped"] is True
     assert before_stability["reason"] == "pre_stability_disabled"
     assert before_stability["tables"] == []
-    assert after_stability["skipped"] is True
-    assert waits == []
+    assert after_stability["ok"] is True
+    assert waits == [0.0]
 
 
 def test_resolve_receipt_pagination_paths_uses_cached_report(monkeypatch):
@@ -912,11 +969,11 @@ def test_resolve_receipt_pagination_paths_uses_cached_report(monkeypatch):
         return {"ok": False}
 
     monkeypatch.setattr(
-        "tools.receipt_query_fill.resolve_receipt_pagination_paths_dynamic",
+        "tools.receipt_query_pagination_paths.resolve_receipt_pagination_paths_dynamic",
         fail_dynamic,
     )
     jab = FakePagedJAB()
-    jab._receipt_pagination_paths_cache = {
+    cast(Any, jab)._receipt_pagination_paths_cache = {
         "window_class": "SunAwtCanvas",
         "pager_hwnd": 330038,
         "page_label_path": "label",

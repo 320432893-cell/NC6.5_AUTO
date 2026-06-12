@@ -7,6 +7,7 @@ import ctypes
 import json
 import sys
 from pathlib import Path
+from typing import Any, cast
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -78,9 +79,14 @@ def info_dict(info):
         "y": info.y,
         "width": info.width,
         "height": info.height,
-        "valid_bounds": info.x >= 0 and info.y >= 0 and info.width > 0 and info.height > 0,
-        "showing": "showing" in (info.states_en_US.strip() or info.states.strip()).lower(),
-        "visible": "visible" in (info.states_en_US.strip() or info.states.strip()).lower(),
+        "valid_bounds": info.x >= 0
+        and info.y >= 0
+        and info.width > 0
+        and info.height > 0,
+        "showing": "showing"
+        in (info.states_en_US.strip() or info.states.strip()).lower(),
+        "visible": "visible"
+        in (info.states_en_US.strip() or info.states.strip()).lower(),
     }
 
 
@@ -142,15 +148,18 @@ def describe_window_header(jab, hwnd, title, class_name, pid, visible):
 
 
 def main():
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    stdout_reconfigure = getattr(sys.stdout, "reconfigure", None)
+    if callable(stdout_reconfigure):
+        cast(Any, stdout_reconfigure)(encoding="utf-8", errors="replace")
     config = load_config(str(ROOT / "config.json"))
     jab = JABOperator(config)
     jab.ensure_started()
     fg = foreground_info()
     windows = []
     try:
-        for hwnd, title, class_name, pid, visible in enum_windows(include_children=True):
+        for hwnd, title, class_name, pid, visible in enum_windows(
+            include_children=True
+        ):
             if class_name != "SunAwtCanvas" or not visible:
                 continue
             if not jab.dll.isJavaWindow(hwnd):
@@ -171,9 +180,7 @@ def main():
         )
     )
     complete = [item for item in windows if item.get("complete_header")]
-    foreground_complete = [
-        item for item in complete if item.get("is_foreground_root")
-    ]
+    foreground_complete = [item for item in complete if item.get("is_foreground_root")]
     print(
         json.dumps(
             {

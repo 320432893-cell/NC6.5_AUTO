@@ -164,12 +164,18 @@ def test_self_made_choose_cleanup_runs_after_success(monkeypatch):
     )
     monkeypatch.setattr(receipt_new_probe, "find_named_controls", lambda *a, **k: [])
     monkeypatch.setattr(
-        receipt_new_probe, "open_new_menu", lambda jab, args: {"ok": True}
+        receipt_new_probe,
+        "open_new_menu_with_known_buttons",
+        lambda *args, **kwargs: {"ok": True},
     )
     monkeypatch.setattr(
         receipt_new_probe,
-        "find_new_visible_popup",
-        lambda before, after: {"hwnd": 456},
+        "wait_for_self_made_popup",
+        lambda jab, before, wait: {
+            "ok": True,
+            "popup": {"hwnd": 456},
+            "windows": [{"hwnd": 1}],
+        },
     )
     monkeypatch.setattr(
         receipt_new_probe,
@@ -178,8 +184,13 @@ def test_self_made_choose_cleanup_runs_after_success(monkeypatch):
     )
     monkeypatch.setattr(
         receipt_new_probe,
+        "quick_check_self_made_entry_state",
+        lambda jab: {"ok": True, "partial_ok": False, "windows": [{"hwnd": 2}]},
+    )
+    monkeypatch.setattr(
+        receipt_new_probe,
         "detect_self_made_entry_state",
-        lambda windows: {"ok": True},
+        lambda windows: {"ok": bool(windows)},
     )
 
     assert receipt_new_probe.run(args)["residue_cleanup"]["ok"] is True

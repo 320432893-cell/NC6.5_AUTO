@@ -1,0 +1,38 @@
+rules:
+  - id: python-bare-except
+    message: "禁止裸 except，必须限定异常类型并保留可诊断上下文"
+    languages: [python]
+    severity: ERROR
+    pattern: |
+      try:
+        ...
+      except:
+        ...
+
+  - id: python-subprocess-shell-true
+    message: "禁止 subprocess shell=True，避免命令注入和转义不确定性"
+    languages: [python]
+    severity: ERROR
+    patterns:
+      - pattern: subprocess.$FUNC(..., shell=True, ...)
+
+  - id: python-eval-exec
+    message: "禁止 eval/exec 执行动态代码"
+    languages: [python]
+    severity: ERROR
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: exec(...)
+
+  - id: python-requests-without-timeout
+    message: "网络请求必须显式 timeout"
+    languages: [python]
+    severity: ERROR
+    patterns:
+      - pattern-either:
+          - pattern: requests.get(...)
+          - pattern: requests.post(...)
+          - pattern: requests.put(...)
+          - pattern: requests.patch(...)
+          - pattern: requests.delete(...)
+      - pattern-not: requests.$METHOD(..., timeout=..., ...)

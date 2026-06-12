@@ -1,0 +1,11 @@
+[importlinter]
+root_package = core
+
+[importlinter:contract:workflow_independence]
+name = NC workflow modules stay independently wired
+type = independence
+modules =
+    core.nc_pending_workflow
+    core.nc_voucher_workflow
+    core.nc_switch_generated_workflow
+    core.nc_backfill_workflow

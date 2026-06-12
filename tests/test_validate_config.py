@@ -142,6 +142,7 @@ def test_validate_receipt_entry_accepts_account_mapping():
                 "organization_short_name": "移为",
                 "account_label": "大陆花旗",
                 "account_no": "1783854003",
+                "header_currency_code": "USD",
             },
         ],
     }
@@ -188,6 +189,7 @@ def test_validate_receipt_entry_accepts_extensible_bank_account_schema():
                 "display_name": "移为-招行",
                 "account_label": "大陆招行",
                 "account_no": "FTE1219165931831",
+                "header_currency_code": "USD",
                 "excel_bank_aliases": ["招商"],
                 "nc_candidates_by_currency": {
                     "人民币": ["FTE1219165931831RMB", "FTE1219165931831"],
@@ -223,6 +225,7 @@ def test_validate_receipt_entry_rejects_conflicting_account_aliases():
                 "organization_short_name": "移为",
                 "account_label": "招行",
                 "account_no": "1",
+                "header_currency_code": "USD",
             },
             {
                 "id": "second",
@@ -230,6 +233,7 @@ def test_validate_receipt_entry_rejects_conflicting_account_aliases():
                 "organization_short_name": "移为",
                 "account_label": "招商银行",
                 "account_no": "2",
+                "header_currency_code": "USD",
                 "excel_bank_aliases": ["招行"],
             },
         ],
@@ -339,6 +343,7 @@ def test_validate_receipt_entry_allows_finance_org_text_path():
                 "organization_short_name": "移为",
                 "account_label": "大陆花旗",
                 "account_no": "1783854003",
+                "header_currency_code": "USD",
             },
         ],
     }
@@ -363,6 +368,7 @@ def test_validate_receipt_entry_rejects_unknown_account_organization():
                 "organization_short_name": "移航",
                 "account_label": "移航招行",
                 "account_no": "755927177210901",
+                "header_currency_code": "USD",
             },
         ],
     }

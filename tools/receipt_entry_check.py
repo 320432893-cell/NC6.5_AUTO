@@ -3,11 +3,14 @@ from collections import Counter
 import json
 from pathlib import Path
 import sys
+from typing import Any, cast
 
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-if hasattr(sys.stderr, "reconfigure"):
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+stdout_reconfigure = getattr(sys.stdout, "reconfigure", None)
+if callable(stdout_reconfigure):
+    cast(Any, stdout_reconfigure)(encoding="utf-8", errors="replace")
+stderr_reconfigure = getattr(sys.stderr, "reconfigure", None)
+if callable(stderr_reconfigure):
+    cast(Any, stderr_reconfigure)(encoding="utf-8", errors="replace")
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:

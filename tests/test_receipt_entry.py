@@ -3,24 +3,27 @@ from decimal import Decimal
 
 from openpyxl import Workbook, load_workbook
 
-from core.receipt_entry import (
-    ReceiptEntryConfig,
+from core.receipt_config import ReceiptEntryConfig
+from core.receipt_entry import ReceiptEntryWorkbook
+from core.receipt_matching import (
     ReceiptEntryDryRunMatcher,
     ReceiptEntryMatcher,
-    ReceiptNCResultExtractor,
-    ReceiptEntryWorkbook,
-    ReceiptExcelRow,
-    ReceiptNCIndexedRow,
-    ReceiptNCRow,
-    extract_receipt_nc_rows,
     format_receipt_amount_name_mismatch_reason,
     format_receipt_duplicate_reason,
     format_receipt_name_amount_mismatch_reason,
     format_receipt_not_found_reason,
     names_match,
     normalize_counterparty,
-    parse_amount,
 )
+from core.receipt_models import (
+    ReceiptExcelRow,
+    ReceiptNCIndexedRow,
+    ReceiptNCRow,
+)
+from core.receipt_nc_extract import ReceiptNCResultExtractor, extract_receipt_nc_rows
+from core.receipt_parsing import parse_amount
+from core.receipt_parsing import parse_amount as parse_amount_from_new_module
+from core.receipt_sheet import RESULT_SHEET_HEADERS
 
 
 def receipt_config(path="unused.xlsx"):
@@ -335,6 +338,64 @@ def test_build_local_plan_writes_machine_sheet2(tmp_path):
     saved.close()
 
 
+def test_build_local_plan_rewrites_sheet2_without_duplicate_appends(tmp_path):
+    path = tmp_path / "payments.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "💸Payments来款通知"
+    ws.append(
+        [
+            "到款日期",
+            "🟪银行来款名",
+            "🟪原始金额",
+            "银行",
+            "币种",
+            "客户编码",
+            "手续费",
+        ]
+    )
+    ws.append([date(2026, 6, 1), "OK INC", 100, "Paypal", "USD", "YW001", 0])
+    wb.save(path)
+    wb.close()
+
+    workbook = ReceiptEntryWorkbook(receipt_config(path))
+    workbook.build_local_plan(write_sheet=True)
+    workbook.build_local_plan(write_sheet=True)
+
+    saved = load_workbook(path)
+    ws = saved["收款单自动化结果"]
+    assert ws.max_row == 2
+    assert ws.cell(2, 1).value == 2
+    assert ws.cell(2, 11).value == "通过"
+    saved.close()
+
+
+def test_build_local_plan_writes_multiple_global_issues_to_sheet2(tmp_path):
+    path = tmp_path / "payments.xlsx"
+    config = receipt_config(path)
+    config["receipt_entry"]["excel"]["start_row"] = 1
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "💸Payments来款通知"
+    ws.append(["到款日期", "🟪银行来款名", "🟪原始金额", "银行"])
+    ws.append([date(2026, 6, 1)])
+    wb.save(path)
+    wb.close()
+
+    _rows, issues, summary = ReceiptEntryWorkbook(config).build_local_plan(
+        write_sheet=True
+    )
+
+    assert summary["issues"] >= 2
+    assert {issue.issue_type for issue in issues} == {"EXCEL_REQUIRED_COLUMN_MISSING"}
+    saved = load_workbook(path)
+    ws = saved["收款单自动化结果"]
+    assert ws.max_row == 3
+    assert [ws.cell(row, 11).value for row in range(2, 4)] == ["异常"] * 2
+    assert all(ws.cell(row, 12).value for row in range(2, 4))
+    saved.close()
+
+
 def test_counterparty_normalization_ignores_prefix_and_punctuation():
     assert normalize_counterparty("1/AZUGA INC. AZUGA INC - OPERATING") == (
         "AZUGAINCAZUGAINCOPERATING"
@@ -573,6 +634,11 @@ def test_extract_receipt_nc_rows_reports_bad_result_values():
 def test_parse_amount_accepts_nc_negative_spacing():
     assert parse_amount("- 1,368.10") == Decimal("-1368.10")
     assert parse_amount("(1,368.10)") == Decimal("-1368.10")
+
+
+def test_receipt_split_modules_export_new_paths():
+    assert parse_amount_from_new_module("- 1,368.10") == Decimal("-1368.10")
+    assert "异常原因" in RESULT_SHEET_HEADERS
 
 
 def test_extract_receipt_nc_rows_reports_missing_header():

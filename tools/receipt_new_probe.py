@@ -233,7 +233,7 @@ def run(args, jab=None, before=None, buttons=None):
             if (
                 tracked_popup
                 and choose_report.get("ok")
-                and not (entry_wait or {}).get("ok")
+                and (entry_wait or {}).get("ok")
             ):
                 popup_cleanup = measure(
                     timings,
@@ -290,7 +290,9 @@ def run(args, jab=None, before=None, buttons=None):
     return report
 
 
-def open_new_menu_with_known_buttons(jab, args, buttons, all_buttons=None, foreground=None):
+def open_new_menu_with_known_buttons(
+    jab, args, buttons, all_buttons=None, foreground=None
+):
     if args.method == "button" and buttons:
         target = buttons[0]
         action_report = trigger_button_async(
@@ -358,7 +360,11 @@ def foreground_nc_guard(foreground):
     if os.name != "nt":
         return {"ok": False, "reason": "Windows only", "foreground": foreground}
     if not foreground:
-        return {"ok": False, "reason": "missing foreground window", "foreground": foreground}
+        return {
+            "ok": False,
+            "reason": "missing foreground window",
+            "foreground": foreground,
+        }
     ok = bool(
         foreground.get("class_name") == "YonyouUWnd"
         or foreground.get("root_class_name") == "YonyouUWnd"
@@ -500,7 +506,9 @@ def quick_check_self_made_entry_state(jab):
     state = detect_self_made_entry_state(windows)
     confirmed = bool(state.get("ok") or state.get("partial_ok"))
     if not confirmed:
-        windows = collect_receipt_new_windows_compat(jab, max_depth=18, max_children=520)
+        windows = collect_receipt_new_windows_compat(
+            jab, max_depth=18, max_children=520
+        )
         state = detect_self_made_entry_state(windows)
         confirmed = bool(state.get("ok") or state.get("partial_ok"))
     if not confirmed:
@@ -640,16 +648,27 @@ def new_button_priority(item):
     is_showing = "showing" in states.lower()
     desc = control.get("description") or ""
     is_plain_new = desc == "新增(Ctrl+N)"
-    return (not is_foreground_root, not is_showing, not has_valid_size, not is_plain_new)
+    return (
+        not is_foreground_root,
+        not is_showing,
+        not has_valid_size,
+        not is_plain_new,
+    )
 
 
 def filter_usable_new_buttons(buttons, foreground=None):
-    buttons = [item for item in buttons or [] if is_current_visible_control(item.get("control") or {})]
+    buttons = [
+        item
+        for item in buttons or []
+        if is_current_visible_control(item.get("control") or {})
+    ]
     if not buttons:
         return []
     if foreground and foreground.get("root"):
         foreground_buttons = [
-            item for item in buttons if (item.get("window") or {}).get("is_foreground_root")
+            item
+            for item in buttons
+            if (item.get("window") or {}).get("is_foreground_root")
         ]
         if foreground_buttons:
             return foreground_buttons
@@ -1155,7 +1174,12 @@ def is_current_visible_control(control):
     normalized_states = states.lower()
     if "visible" not in normalized_states or "showing" not in normalized_states:
         return False
-    return has_valid_bounds(bounds)
+    return (
+        isinstance(bounds, list)
+        and len(bounds) == 4
+        and bounds[2] > 0
+        and bounds[3] > 0
+    )
 
 
 def choose_click_action(actions):

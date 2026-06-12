@@ -2,9 +2,18 @@
 
 只记录影响维护判断的关键节点。具体实验流水账看 git 历史。
 
+## 2026-06-12 - 收款单明细写入正式模块沉淀
+
+- 文档口径修正：明确当前无正式 GUI/前端，`.bat` 只是测试菜单；`tools/nc_auto_test_menu.bat` 中凭证生成项会保存凭证、收款完整流程保存项会保存收款单；`tools/receipt_full_flow_entry.py --query-after-save` 当前只是 deferred 占位；`core/receipt_sheet.py::rewrite_plan_sheet()` 当前会重写 Sheet2 当前计划结果区，不是历史追加表。
+- 明细主行/手续费行能力已从 `tools/tmp_receipt_detail_main_line_run.py` 拆到正式 `tools/receipt_detail_*` 模块：字段映射和读回校验、明细表读取、JAB 选中+前台守卫键盘写入、整行重试、手续费流程、清账户和删多余行分别落到独立文件。
+- 新增收款单完整流程测试入口 `tools/receipt_full_flow_entry.py`：消费 `ReceiptPlanRow`，默认跑 `新增 -> 自制 -> 表头 -> 明细主行 -> 手续费分支` 后停在保存前；显式 `--save` 才调用 JAB 保存按钮真实保存。入口默认只取 1 行，支持指定 `--excel-row` 和运行前 `--write-plan-sheet`。
+- 新增项目级测试菜单 `tools/nc_auto_test_menu.bat`：覆盖工程检查、凭证计划/生成/回填/切已生成、收款本地预检、写 Sheet2、收款完整流程不保存/保存、明细测试、查询读取和历史写回。菜单记录开始时间、结束时间和退出码，并按只读、写 Excel、真实 NC 不保存、真实保存分组提示风险。
+- 当前仍未完成的是“保存后按主体统一后验查询 -> 保存/查询结果结构化落 Sheet2”。可测试明细正式模块的主入口是 `tools/receipt_detail_test_menu.bat`，菜单可选写主行、写手续费、清理多余行和查看帮助；脚本化入口是 `tools/receipt_detail_entry.py`。`tools/tmp_receipt_detail_main_line_run.py` 只保留短期兼容并转发到正式入口。
+- 手续费覆盖守卫已补强：第 2 行只有为空或已是手续费行时才允许覆盖；删行和字段写入返回结构会标记 `changed`、`partial_success` 和副作用策略，便于失败后人工判断是否已有部分写入。
+
 ## 2026-06-11 - 收款单录入/查询 T0 达标并清理临时脚本
 
-- 当前阶段总体速度和稳定性已达标，T0 真实保存脚本和专项探测脚本开始清理；后续不要再把 `tools/tmp_receipt_two_case_save_run.py`、`tools/tmp_receipt_three_org_real_save_run.py` 当主入口，必要时从 git 历史恢复现场脚本。
+- 当前阶段总体速度和稳定性已达标，T0 真实保存脚本开始清理；后续不要再把 `tools/tmp_receipt_two_case_save_run.py`、`tools/tmp_receipt_three_org_real_save_run.py` 当主入口，必要时从 git 历史恢复现场脚本。仓库仍保留若干 `tools/tmp_*` 探测/诊断脚本，只作复盘参考，不是正式入口。
 - 后验查询已改为按主体分组查询：同一主体只查一次，查询条件使用本批保存行的日期最小值到最大值；查询结果在内存匹配本批行，最后批量追加 Sheet2。Sheet2 保持业务字段精简，异常原因只写阶段前缀加原因，例如 `保存：...` / `查询：...`。
 - 查询结果区已确认可用“动态 path 推导 + 缓存 + 失效回退”：语义先确认当前是收款单录入页，再从结果区推导动态前缀。主结果表后缀为 `0.0.0`，分页 label 后缀 `1.6`，每页条数后缀 `1.7`，下一页后缀 `1.2`。不要只靠 41 列判断主结果表，读取时还要看单据号、日期、金额等主表行特征，避免混入明细表。
 - 查询分页策略已收敛：先确保每页条数为 `500`；如果结果总数小于等于 `500`，只读本页；大于 `500` 时先读本页，未命中再翻页。翻页后至少等待约 `0.3s` 并等分页/结果摘要稳定，避免 NC 异步刷新未完成导致闪退或读错页。
@@ -35,13 +44,13 @@
 
 - 收款单新主线改为：从 `receipt_entry.excel.start_row` 开始读 Sheet1，先做本地配置识别和异常识别；录入前不查 NC，不再用“最近 2 个月”或 `是否NC已做过` 状态列决定本批候选。业务前提是交给机器的行本来就是未做过的；全部录入后再按主体各查一次 NC 做后验验证。
 - `config.json receipt_entry.excel` 新增 `start_row`、`result_sheet_name`、`currency_column`、`customer_code_column`、`fee_column`；`receipt_entry.validation_policy` 新增 `mode` 和 `skip_invalid_rows`。默认 `strict`，任意异常停止整批；`skip_invalid_rows` 只跳过异常行/重复组。
-- `core.receipt_entry` 新增 `ReceiptPlanRow` 和 `ReceiptPlanIssue`。`ReceiptEntryWorkbook.build_local_plan()` 负责本地预检、重复识别和 Sheet2 输出；Sheet2 默认名为 `收款单自动化结果`，只由机器生成/覆盖，人工不维护。
+- `core.receipt_entry` 新增 `ReceiptPlanRow` 和 `ReceiptPlanIssue`。`ReceiptEntryWorkbook.build_local_plan()` 负责本地预检、重复识别和 Sheet2 输出；Sheet2 默认名为 `收款单自动化结果`。本日早期口径曾写“生成/覆盖”，后续已收敛为追加写入、缺表头补齐、旧噪音列按表头删除。
 - 本地预检异常必须精确到 `原行号/阶段/异常类型/字段/原值/配置节点/说明/处理动作`，不能只写“配置错误”或“数据异常”。当前异常覆盖缺必需列、起始行无效、银行未配置、账户禁用、主体缺失、日期/金额/币种/手续费错误、客户编码为空和本批重复。
 - 本地重复键为 `主体 + 到款日期 + 银行 + 币种 + 客户编码 + 银行来款名 + 金额`。重复组标 `DUPLICATE_EXCEL_ROWS`，整组不录入，避免在不查 NC 的前提下重复制单。
 - `tools/receipt_entry_check.py` 默认改为新本地预检入口；`--write` 写 Sheet2，`--validation-mode skip_invalid_rows` 可临时跳过异常行/重复组。旧的“最近 N 个月 + 空状态列”候选逻辑保留为 `--legacy-candidates`，只作兼容诊断。
 - 配置校验已纳入新字段和策略枚举；新增/修改收款配置后仍必须跑 `tools/validate_config.py`。
 
-## 最新接手重点 - 2026-06-05
+## 2026-06-05 - 当时接手重点
 
 - 当前不要宣称收款单真实保存已完成。明细主行和手续费行 T0 已验证，真实 `Ctrl+S` 两案例保存循环还没跑通。
 - 最新 blocker 是表头【客户】字段：`YW03200` 后台写入和一次屏幕兜底都出现读回为空。客户已设为硬门槛，表头写完后和保存前都必须非空，否则不写明细、不保存。
@@ -79,7 +88,7 @@
 - A001/移为已按 `2026-03-31` 至 `2026-05-31` 完成覆盖写回：NC 读取 `437` 行，Excel A001 候选 `407` 行，写回 `407` 行；其中唯一匹配 `315` 行、未找到 `4` 行、重复 `24` 行、异常/人工确认 `88` 行。
 - A006 已在真实查询窗口验证成功：查询结果 `24` 行，Excel A006 候选 `24` 行，金额和对手方 `24/24` 唯一匹配，无重复、无未找到、无异常。
 - A003 已聚焦测试：输入框可以写入 `A003`，但确认后结果仍保持 A001 口径的 `437` 行，说明 NC 没有采用 A003 查询条件；当前按权限或 NC 条件未生效处理，暂不允许据此写回。
-- 收款单未唯一匹配的 Excel 回写说明已细化：金额匹配名称不一致、名称匹配金额不一致都会写明 `Excel` 值和 `NC` 候选值；完全无命中写 `金额和对手方均未匹配`；重复写实际数量 `重复N条：名称和金额相同，需人工确认`。
+- 收款单未唯一匹配的 Excel 回写说明已细化：金额匹配名称不一致、名称匹配金额不一致都会写明 `Excel` 值和 `NC` 候选值；完全无命中当时诊断 reason 为 `金额和对手方均未匹配`，当前实际写回状态已改为 `未做过`；重复写实际数量 `重复N条：名称和金额相同，需人工确认`。
 
 ## 2026-06-05 - 收款单明细主行屏幕写入验证
 
@@ -89,7 +98,7 @@
 - 校验口径补充：`科目` 输入 `1002` 后 NC 回显 `1002\银行存款`，按编码前缀成功；金额 `1090` 回显 `1,090.00`，按金额归一化成功。
 - 兼容边界：当前 T0 坐标按表格 bounds 动态计算，可适配窗口位置和整体尺寸变化，但仍假设 25 列可见且列宽未被用户拖动。正式化前应升级为按 JAB 单元格/列标题定位列，避免均分列宽假设。
 - 手续费规则明确：只有 Excel 手续费非零时才允许进入手续费分支并增行；手续费行写 `收款业务类型=手续费`、`科目=660305`、`贷方原币金额=手续费金额`、`结算方式=网银`，收款银行账户列不填手续费。手续费为 0/空时禁止增行。增行入口改为稳定业务快捷键 `Ctrl+I`，不要用 Enter；必须先单独 T0 验证行数 +1、第 2 行写入和读回。
-- `receipt_entry` 配置升级为面向后续 GUI 的 `schema_version=2`：新增 `banks` 银行字典、账户稳定 `id/enabled/bank_id/display_name/excel_bank_aliases/nc_candidates_by_currency/entry_policy`、以及 `detail_entry_policy`。账户匹配只看账户自己的 label/aliases/excel_bank_aliases，银行字典只做分类，避免同一银行多主体账户时别名误匹配。
+- `receipt_entry` 配置升级为面向后续配置维护/前端扩展的 `schema_version=2`：新增 `banks` 银行字典、账户稳定 `id/enabled/bank_id/display_name/excel_bank_aliases/nc_candidates_by_currency/entry_policy`、以及 `detail_entry_policy`。账户匹配只看账户自己的 label/aliases/excel_bank_aliases，银行字典只做分类，避免同一银行多主体账户时别名误匹配。
 - 手续费分支 T0 已验证通过：主行完成后用 `Ctrl+I` 增行，新增手续费行写 `手续费 / 660305 / 金额 / 网银`。若手续费行自动带出收款银行账户，必须选中手续费行账户格后 `Delete` 清空；若写结算方式后 NC 自动多出空白第 3 行，选中第 3 行后用 `Ctrl+D` 删除。该流程已在测试单据上验证成功，未保存、未暂存。
 - 收款银行账户明细主行改为优先直接填下方表格，不再走上方 `Alt+F` 参照作为主路径。原因：`Alt+F` 太慢且依赖前台；下方表格直接输入候选账号更快。账号候选从 `config.json receipt_entry.accounts[].nc_candidates_by_currency` 读取，例如招行人民币优先 `FTE1219165931831RMB`，不要把裸账号写死在脚本里。
 - 真实保存循环 T0 新增 `tools/tmp_receipt_two_case_save_run.py`，计划连续保存两条测试单：无手续费和有手续费。保存成功 oracle 只看 `Ctrl+S` 后是否重新看到【新增】；不看提示框，不写 Excel，不关闭窗口。当前没有跑通保存闭环。
