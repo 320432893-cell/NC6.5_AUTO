@@ -4,7 +4,6 @@
 # 谁不应该 import：core 层模块不应 import 本入口；凭证批量模块不应 import
 
 import argparse
-from collections import Counter
 from dataclasses import asdict
 from decimal import Decimal
 import json
@@ -18,19 +17,24 @@ if str(ROOT) not in sys.path:
 
 from core.jab_operator import JABOperator  # noqa: E402
 from core.receipt_entry import ReceiptEntryWorkbook  # noqa: E402
+from core.receipt_models import ReceiptBatchResultRow  # noqa: E402
 from core.utils import load_config  # noqa: E402
 from tools.jab_health_check import check_jab_ready  # noqa: E402
 from tools.receipt_body_table_locator import locate_receipt_body_table_cached  # noqa: E402
+from tools.receipt_detail_async_verifier import DetailPipelineVerifier  # noqa: E402
 from tools.receipt_detail_row_cleanup import delete_extra_row_if_present  # noqa: E402
 from tools.receipt_detail_rows import StepTimer, run_fee_only  # noqa: E402
 from tools.receipt_detail_writer import write_detail_line_by_screen  # noqa: E402
+from tools.receipt_modal_guard import recover_cancelable_modal_before_save  # noqa: E402
 from tools.receipt_new_probe import (  # noqa: E402
     collect_receipt_new_windows,
     detect_self_made_entry_state,
 )
+from tools.receipt_post_save_query import run_post_save_batch_query  # noqa: E402
 from tools.receipt_self_made_fill_trial import (  # noqa: E402
     detect_existing_self_made_entry,
     fill_header,
+    locate_receipt_header_scope,
     read_body_table,
     run_receipt_new_probe,
     wait_header_account_description,
@@ -49,11 +53,21 @@ def parse_args(argv=None):
     parser.add_argument(
         "--excel-row", type=int, default=None, help="只测试指定 Sheet1 行"
     )
+    parser.add_argument(
+        "--excel-rows",
+        default=None,
+        help="只测试指定 Sheet1 行号，逗号分隔；例如 1801,1802,1803",
+    )
     parser.add_argument("--limit", type=int, default=1, help="最多测试几行，默认 1")
     parser.add_argument(
         "--write-plan-sheet",
         action="store_true",
         help="运行前先把本地预检结果写入 Sheet2",
+    )
+    parser.add_argument(
+        "--write-selected-plan-sheet",
+        action="store_true",
+        help="运行前只把本次选中的计划行写入 Sheet2",
     )
     parser.add_argument(
         "--validation-mode",
@@ -109,15 +123,16 @@ def main(argv=None):
     }
     started = time.perf_counter()
     workbook = ReceiptEntryWorkbook(config, excel_path=args.excel_path)
-    plan_rows, issues, summary = workbook.build_local_plan(
-        write_sheet=args.write_plan_sheet
-    )
+    if args.write_plan_sheet and args.write_selected_plan_sheet:
+        raise SystemExit("--write-plan-sheet 和 --write-selected-plan-sheet 只能选一个")
+    plan_rows, issues, summary = workbook.build_local_plan(write_sheet=False)
     selected_rows = select_plan_rows(plan_rows, issues, args)
     report["local_plan"] = {
         "summary": summary,
         "issue_count": len(issues),
         "selected_rows": [row.row for row in selected_rows],
         "write_plan_sheet": bool(args.write_plan_sheet),
+        "write_selected_plan_sheet": bool(args.write_selected_plan_sheet),
     }
     if not selected_rows:
         report.update(
@@ -129,6 +144,13 @@ def main(argv=None):
         )
         print_report(report, args)
         return 2
+    if args.write_plan_sheet:
+        workbook.write_plan_sheet(plan_rows, issues)
+    elif args.write_selected_plan_sheet:
+        workbook.write_plan_sheet(
+            selected_rows,
+            filter_issues_for_rows(issues, selected_rows),
+        )
 
     if not args.json:
         print("收款单完整流程测试入口")
@@ -144,8 +166,16 @@ def main(argv=None):
         if not row_report.get("ok"):
             exit_code = 1
             break
+    batch_results = build_batch_results(selected_rows, report["rows"])
     if args.query_after_save and report["rows"] and exit_code == 0:
-        report["post_query"] = build_post_query_defer_report(selected_rows)
+        batch_results, post_query = run_post_save_batch_query(
+            config,
+            selected_rows,
+            report["rows"],
+        )
+        report["post_query"] = post_query
+    if args.write_selected_plan_sheet:
+        workbook.write_batch_result_sheet(batch_results)
 
     report["ok"] = exit_code == 0
     report["total_seconds"] = round(time.perf_counter() - started, 3)
@@ -166,7 +196,19 @@ def confirm_save(args):
 def select_plan_rows(plan_rows, issues, args):
     issue_rows = {issue.excel_row for issue in issues if issue.excel_row is not None}
     runnable = [row for row in plan_rows if row.row not in issue_rows]
-    if args.excel_row is not None:
+    target_rows = parse_excel_rows_arg(getattr(args, "excel_rows", None))
+    if args.excel_row is not None and target_rows:
+        raise SystemExit("--excel-row 和 --excel-rows 只能选一个")
+    if target_rows:
+        target_set = set(target_rows)
+        runnable = [row for row in runnable if row.row in target_set]
+        by_number = {row.row: row for row in runnable}
+        runnable = [
+            by_number[row_number]
+            for row_number in target_rows
+            if row_number in by_number
+        ]
+    elif args.excel_row is not None:
         runnable = [row for row in runnable if row.row == args.excel_row]
     limit = max(int(args.limit or 0), 0)
     if limit:
@@ -174,8 +216,36 @@ def select_plan_rows(plan_rows, issues, args):
     return runnable
 
 
+def parse_excel_rows_arg(value):
+    if value in (None, ""):
+        return []
+    rows = []
+    for part in str(value).split(","):
+        text = part.strip()
+        if not text:
+            continue
+        try:
+            row_number = int(text)
+        except ValueError as exc:
+            raise SystemExit(f"--excel-rows 行号无效: {text!r}") from exc
+        if row_number <= 0:
+            raise SystemExit(f"--excel-rows 行号必须大于 0: {row_number}")
+        rows.append(row_number)
+    return list(dict.fromkeys(rows))
+
+
+def filter_issues_for_rows(issues, selected_rows):
+    selected = {row.row for row in selected_rows}
+    return [
+        issue
+        for issue in issues
+        if issue.excel_row is None or issue.excel_row in selected
+    ]
+
+
 def run_one_row(config, row, save_enabled=False):
     timings = StepTimer()
+    flow_started_at = time.perf_counter()
     row_report = {
         "excel_row": row.row,
         "plan_row": serializable(asdict(row)),
@@ -189,6 +259,7 @@ def run_one_row(config, row, save_enabled=False):
         return fail(row_report, "open-self-made", timings, open_step.get("reason"))
 
     jab = JABOperator(config)
+    pipeline_verifier = None
     try:
         timings.measure("jab.ensure-started", jab.ensure_started)
         health = timings.measure("jab.health-check", check_jab_ready, jab)
@@ -200,24 +271,16 @@ def run_one_row(config, row, save_enabled=False):
             fill_header,
             jab,
             business,
-            False,
-            True,
         )
         row_report["header_steps"] = header_steps
+        row_report["nc_customer_name"] = extract_header_accepted_text(
+            header_steps,
+            "客户",
+        )
         if any(not step.get("ok") for step in header_steps):
             return fail(row_report, "header-fill", timings, "表头字段写入失败")
-        account_check = timings.measure(
-            "header.account-readback",
-            wait_header_account_description,
-            jab,
-            5.0,
-        )
-        row_report["header_account"] = account_check
-        if not account_check.get("accepted"):
-            return fail(
-                row_report, "header-account-readback", timings, "收款银行账户为空"
-            )
-
+        if not row_report["nc_customer_name"]:
+            return fail(row_report, "header-fill", timings, "客户名称未读回")
         located = timings.measure(
             "body.locate",
             locate_receipt_body_table_cached,
@@ -230,35 +293,69 @@ def run_one_row(config, row, save_enabled=False):
         row_report["before_table"] = timings.measure(
             "body.read-before", read_body_table, jab, "before_detail_fill"
         )
+        pipeline_verifier = DetailPipelineVerifier(
+            config,
+            located,
+            flow_started_at=flow_started_at,
+        )
+        pipeline_verifier.start()
+        pipeline_field_task_ids = []
+        pipeline_snapshot_task_ids = []
+        pipeline_row_count_task_id = None
+
+        def submit_detail_verify(row_index, field, business_values, _step):
+            task_id = pipeline_verifier.submit_field(
+                row_index,
+                field,
+                business_values,
+            )
+            pipeline_field_task_ids.append(task_id)
+            return task_id
+
         detail_steps = timings.measure(
             "detail.main-line",
             write_detail_line_by_screen,
             jab,
             business,
             located,
+            after_field=submit_detail_verify,
         )
         row_report["detail_steps"] = detail_steps
+        pipeline_snapshot_task_ids.append(
+            pipeline_verifier.submit_snapshot(
+                "after-main-line",
+                max_rows=3,
+                min_matches=len(detail_steps),
+            )
+        )
         if not all(step.get("ok") for step in detail_steps):
             return fail(row_report, "detail-main-line", timings, "明细主行写入失败")
-        row_report["extra_row_delete"] = timings.measure(
-            "detail.delete-extra-after-main",
-            delete_extra_row_if_present,
-            jab,
-            located,
-            1,
-        )
         if row.fee > 0:
+            row_report["extra_row_delete"] = {
+                "ok": True,
+                "skipped": True,
+                "reason": "手续费非 0，保留主行后自动带出的第 2 行给手续费覆盖",
+            }
             add_row, fee_steps, clear_account, delete_extra = timings.measure(
                 "detail.fee-line",
                 run_fee_only,
                 jab,
                 located,
                 str(row.fee),
+                after_field=submit_detail_verify,
             )
             row_report["fee_row_add"] = add_row
             row_report["fee_steps"] = fee_steps
+            pipeline_snapshot_task_ids.append(
+                pipeline_verifier.submit_snapshot(
+                    "after-fee-line",
+                    max_rows=4,
+                )
+            )
             row_report["fee_account_clear"] = clear_account
             row_report["fee_extra_row_delete"] = delete_extra
+            if delete_extra.get("ok"):
+                pipeline_row_count_task_id = pipeline_verifier.submit_row_count(2)
             if (
                 not add_row.get("ok")
                 or not all(step.get("ok") for step in fee_steps)
@@ -267,13 +364,82 @@ def run_one_row(config, row, save_enabled=False):
             ):
                 return fail(row_report, "detail-fee-line", timings, "手续费行处理失败")
         else:
+            row_report["extra_row_delete"] = timings.measure(
+                "detail.delete-extra-after-main",
+                delete_extra_row_if_present,
+                jab,
+                located,
+                1,
+            )
+            if not row_report["extra_row_delete"].get("ok"):
+                return fail(
+                    row_report,
+                    "detail-delete-extra-after-main",
+                    timings,
+                    "主行后多余行删除失败",
+                )
             row_report["fee_skipped"] = {
                 "ok": True,
                 "reason": "手续费为 0，跳过手续费行",
             }
-        row_report["after_table"] = timings.measure(
-            "body.read-after", read_body_table, jab, "after_detail_fill"
+            pipeline_row_count_task_id = pipeline_verifier.submit_row_count(1)
+        pipeline_wait_ids = []
+        if pipeline_field_task_ids:
+            pipeline_wait_ids.append(pipeline_field_task_ids[-1])
+        if pipeline_row_count_task_id:
+            pipeline_wait_ids.append(pipeline_row_count_task_id)
+        pipeline_wait_started = time.perf_counter()
+        row_report["detail_pipeline_verify"] = pipeline_verifier.wait(
+            pipeline_wait_ids,
+            timeout=2.0,
         )
+        timings.add(
+            "detail.pipeline-final-wait",
+            time.perf_counter() - pipeline_wait_started,
+        )
+        row_report["detail_pipeline_snapshots"] = pipeline_snapshot_task_ids
+        if not row_report["detail_pipeline_verify"].get("ok"):
+            row_report["after_table"] = timings.measure(
+                "body.read-after-fallback", read_body_table, jab, "after_detail_fill"
+            )
+            return fail(
+                row_report,
+                "detail-pipeline-verify",
+                timings,
+                "后台明细验证未通过，已执行整表读 fallback",
+            )
+        row_report["after_table"] = {
+            "ok": True,
+            "skipped": True,
+            "reason": "后台 pipeline verifier 已覆盖最后字段与最终行数，跳过同步整表读",
+        }
+        account_check = timings.measure(
+            "header.account-readback-after-detail",
+            wait_header_account_description,
+            jab,
+            1.0,
+        )
+        row_report["header_account"] = account_check
+        if not account_check.get("accepted"):
+            return fail(
+                row_report,
+                "header-account-readback-after-detail",
+                timings,
+                "收款银行账户为空",
+            )
+        row_report["pre_save_modal_recovery"] = timings.measure(
+            "guard.pre-save-modal-recovery",
+            recover_cancelable_modal_before_save,
+            jab,
+            probe_receipt_entry_page,
+        )
+        if not row_report["pre_save_modal_recovery"].get("ok"):
+            return fail(
+                row_report,
+                "pre-save-modal-recovery",
+                timings,
+                row_report["pre_save_modal_recovery"].get("reason"),
+            )
         if save_enabled:
             save_result = timings.measure("save.ctrl-s", save_receipt_by_ctrl_s, jab)
             row_report["save"] = save_result
@@ -289,6 +455,8 @@ def run_one_row(config, row, save_enabled=False):
         row_report["timings"] = timings.items
         return row_report
     finally:
+        if pipeline_verifier is not None:
+            pipeline_verifier.close(timeout=0.2)
         jab.close()
 
 
@@ -301,6 +469,20 @@ def open_self_made_entry(config):
         return opened
     opened["reason"] = opened.get("reason") or "未能进入收款单自制录入态"
     return opened
+
+
+def probe_receipt_entry_page(jab):
+    scope = locate_receipt_header_scope(jab)
+    if scope.get("ok"):
+        return {"ok": True, "method": "header-scope", "scope": scope}
+    windows = collect_receipt_new_windows(jab)
+    state = detect_self_made_entry_state(windows)
+    return {
+        "ok": bool(state.get("ok")),
+        "method": "entry-state",
+        "scope": scope,
+        "entry_state": state,
+    }
 
 
 def business_from_plan_row(row):
@@ -322,6 +504,52 @@ def business_from_plan_row(row):
         "fee_subject": "660305",
         "fee_business_type": "手续费",
     }
+
+
+def extract_header_accepted_text(header_steps, label):
+    for step in header_steps or []:
+        if step.get("label") != label:
+            continue
+        text = str(step.get("accepted_text") or "").strip()
+        if text:
+            return text
+        backend = step.get("backend_state") or {}
+        for key in ("description", "text", "name"):
+            value = str(backend.get(key) or "").strip()
+            if value and value != str(step.get("value") or "").strip():
+                return value
+    return ""
+
+
+def build_batch_results(selected_rows, row_reports):
+    reports_by_row = {int(report.get("excel_row")): report for report in row_reports}
+    results = []
+    for row in selected_rows:
+        report = reports_by_row.get(row.row) or {}
+        ok = bool(report.get("ok"))
+        reason = "" if ok else format_row_failure_reason(report)
+        results.append(
+            ReceiptBatchResultRow(
+                plan_row=row,
+                local_status="通过" if ok else "异常",
+                exception_reason=reason,
+                nc_customer_name=str(report.get("nc_customer_name") or "").strip(),
+                nc_document_no=str(report.get("nc_document_no") or "").strip(),
+            )
+        )
+    return results
+
+
+def format_row_failure_reason(report):
+    failed_step = str(report.get("failed_step") or "").strip()
+    reason = str(report.get("reason") or "").strip()
+    if failed_step.startswith("save"):
+        return f"保存失败-{reason or failed_step}"
+    if failed_step:
+        return (
+            f"录入失败-{failed_step}:{reason}" if reason else f"录入失败-{failed_step}"
+        )
+    return reason or "录入失败"
 
 
 def save_receipt_by_ctrl_s(jab, timeout=12.0):
@@ -363,20 +591,6 @@ def fail(row_report, failed_step, timings, reason):
         }
     )
     return row_report
-
-
-def build_post_query_defer_report(rows):
-    by_org = Counter(row.organization_code for row in rows)
-    date_from = min(row.receipt_date for row in rows).isoformat()
-    date_to = max(row.receipt_date for row in rows).isoformat()
-    return {
-        "ok": False,
-        "deferred": True,
-        "reason": "查询后验编排下一步接入；当前入口先验证保存前/保存动作",
-        "organizations": dict(by_org),
-        "date_from": date_from,
-        "date_to": date_to,
-    }
 
 
 def serializable(value):

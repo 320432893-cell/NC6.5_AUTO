@@ -10,10 +10,9 @@ if str(ROOT) not in sys.path:
 
 from core.jab_operator import JABOperator  # noqa: E402
 from core.utils import load_config  # noqa: E402
-from tools.receipt_self_made_fill_trial import (  # noqa: E402
-    HEADER_FORM_BASE_PATH,
-    post_key_to_hwnd,
-)
+from tools.receipt_self_made_fill_trial import post_key_to_hwnd  # noqa: E402
+
+HEADER_FORM_BASE_PATH = "0.0.1.0.0.0.0.2.0.0.0.1.1.0.0.0.0.1.0.2.0.0.0.0.0.0.0"
 
 
 def main():

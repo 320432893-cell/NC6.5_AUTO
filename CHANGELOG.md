@@ -2,6 +2,13 @@
 
 只记录影响维护判断的关键节点。具体实验流水账看 git 历史。
 
+## 2026-06-15 - 收款后验查询正式化和结果页缓存
+
+- 正式后验查询接入已验证的查询入口：用 `pyautogui.press("f3")` 重试打开 `查询条件/SunAwtDialog`，间隔 `0.2s`；不再把裸 SendInput F3 当主路径，因为现场只看到窗口变化但未稳定弹窗。
+- 查询条件继续走“动态前缀 + 稳定后缀 path”，失败后只在当前查询窗口内做语义路径推断；旧 near-label 兜底不再进正式路径。
+- 查询结果页改为 path 优先和缓存复用：模块动态前缀 `0.0.1.0.0.0.0.{index}` + 结果区固定后缀 + 结果表/分页后缀，缓存 `result_table_path`、结果区前缀、分页 hwnd、页码 label、每页行数和下一页 path；命中后 `cached_trusted`，减少重复 JAB 探测。
+- 分页设置只在每页行数不是 `500` 时写入并 Enter；结果表读取只读匹配必要列，不全列扫描。最新样本读取：`ensure_query_window=0.527s`、`query.dynamic-scope=0.275s`、`result_wait_before_read=3.327s`、`read_receipt_result_pages=1.134s`，其中 `result_wait_before_read` 仍是后续优化点。
+
 ## 2026-06-12 - 收款单明细写入正式模块沉淀
 
 - 文档口径修正：明确当前无正式 GUI/前端，`.bat` 只是测试菜单；`tools/nc_auto_test_menu.bat` 中凭证生成项会保存凭证、收款完整流程保存项会保存收款单；`tools/receipt_full_flow_entry.py --query-after-save` 当前只是 deferred 占位；`core/receipt_sheet.py::rewrite_plan_sheet()` 当前会重写 Sheet2 当前计划结果区，不是历史追加表。

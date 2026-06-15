@@ -11,7 +11,6 @@ from tools.jab_probe import JOBJECT
 def summarize_receipt_tables(jab, query_cfg, scope_hwnd=None):
     indexes = receipt_result_read_columns(query_cfg)
     min_cols = max(indexes) + 1 if indexes else None
-    exact_cols = query_cfg.get("result_table_cols")
     if hasattr(jab, "read_table_summaries"):
         return [
             table
@@ -19,7 +18,6 @@ def summarize_receipt_tables(jab, query_cfg, scope_hwnd=None):
                 min_rows=1,
                 min_cols=min_cols,
                 scope_hwnd=scope_hwnd,
-                exact_cols=exact_cols,
             )
             if is_receipt_result_table_candidate(table, query_cfg)
         ]
@@ -62,7 +60,6 @@ def read_receipt_tables(
     read_columns=None,
     scope_hwnd=None,
 ):
-    exact_cols = query_cfg.get("result_table_cols")
     if read_columns and hasattr(jab, "read_all_table_selected_columns"):
         tables = jab.read_all_table_selected_columns(
             read_columns,
@@ -70,7 +67,6 @@ def read_receipt_tables(
             min_rows=1,
             min_cols=max(read_columns) + 1,
             scope_hwnd=scope_hwnd,
-            exact_cols=exact_cols,
         )
     else:
         try:
@@ -78,7 +74,6 @@ def read_receipt_tables(
                 max_rows=max_rows,
                 max_cols=max_cols,
                 scope_hwnd=scope_hwnd,
-                exact_cols=exact_cols,
             )
         except TypeError:
             tables = jab.read_all_table_cells(max_rows=max_rows, max_cols=max_cols)
@@ -115,8 +110,8 @@ def read_receipt_result_table_by_path(
         table_info = jab.get_table_info(vm_id, context)
         if not table_info:
             return []
-        exact_cols = query_cfg.get("result_table_cols")
-        if exact_cols is not None and table_info.columnCount != int(exact_cols):
+        min_cols = receipt_result_min_required_columns(query_cfg, read_columns)
+        if min_cols is not None and table_info.columnCount < min_cols:
             return []
         if read_columns:
             table = jab.read_table_selected_columns_from_context(
@@ -177,11 +172,23 @@ def read_receipt_result_tables_runtime(
 def is_receipt_result_table_candidate(table, query_cfg):
     if table.get("row_count", 0) <= 0:
         return False
-    result_table_cols = int(query_cfg.get("result_table_cols", 41))
-    return int(table.get("col_count", 0)) == result_table_cols
+    min_cols = receipt_result_min_required_columns(query_cfg)
+    if min_cols is None:
+        return int(table.get("col_count", 0)) > 0
+    if int(table.get("col_count", 0)) < min_cols:
+        return False
+    return receipt_result_table_rows_match(table, query_cfg)
 
 
 def enumerate_receipt_result_table_paths(jab, query_cfg, window_class):
+    return [
+        candidate
+        for candidate in enumerate_visible_table_paths(jab, window_class)
+        if is_receipt_result_table_candidate(candidate, query_cfg)
+    ]
+
+
+def enumerate_visible_table_paths(jab, window_class):
     if not hasattr(jab, "dll"):
         return []
     jab.ensure_started()
@@ -229,13 +236,47 @@ def enumerate_receipt_result_table_paths(jab, query_cfg, window_class):
                 "col_count": int(table_info.columnCount),
             }
             table_index += 1
-            if is_receipt_result_table_candidate(candidate, query_cfg):
-                result.append(candidate)
+            result.append(candidate)
             contexts_to_release.extend(table["owned_contexts"])
         if contexts_to_release:
             unique_contexts = list(dict.fromkeys(contexts_to_release))
             jab.release_contexts(vm_id.value, unique_contexts)
     return result
+
+
+def receipt_result_min_required_columns(query_cfg, read_columns=None):
+    columns = set(receipt_result_read_columns(query_cfg))
+    if read_columns:
+        columns.update(
+            int(column)
+            for column in read_columns
+            if isinstance(column, int) and column >= 0
+        )
+    if not columns:
+        return None
+    return max(columns) + 1
+
+
+def receipt_result_table_rows_match(table, query_cfg):
+    rows = table.get("rows") or []
+    if not rows:
+        return True
+    guard_cfg = query_cfg.get("result_guard") or {}
+    document_type_col = int(guard_cfg.get("document_type_column", 2))
+    document_type = str(guard_cfg.get("document_type", "收款单")).strip()
+    if not document_type:
+        return True
+    sampled_values = []
+    for row in rows:
+        cells = row.get("cells") or []
+        if len(cells) <= document_type_col:
+            continue
+        value = str(cells[document_type_col] or "").strip()
+        if value:
+            sampled_values.append(value)
+    if not sampled_values:
+        return True
+    return any(document_type in value for value in sampled_values)
 
 
 def find_table_paths_in_context(

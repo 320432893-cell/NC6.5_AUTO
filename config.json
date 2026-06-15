@@ -153,9 +153,12 @@
             "open_timeout": 5,
             "activate_timeout": 5,
             "existing_dialog_timeout": 0.1,
+            "open_poll_interval": 0.1,
+            "window_poll_interval": 0.05,
+            "open_key_retry_interval": 0.2,
             "open_wait": 0.0,
             "result_wait_timeout": 0.5,
-            "result_wait_interval": 0.05,
+            "result_wait_interval": 0.1,
             "result_wait_fallback": 0.0,
             "finance_org_field": "收款财务组织",
             "finance_org_operator": "等于",
@@ -168,6 +171,7 @@
                 "confirm_timeout": 1.0,
                 "confirm_wait": 0.0,
                 "text_set_wait": 0.0,
+                "path_ready_timeout": 0.05,
                 "fields": {
                     "finance_org": {
                         "label": "收款财务组织",
@@ -231,7 +235,11 @@
                 "window_class": "SunAwtCanvas",
                 "pager_scope_timeout": 5.0,
                 "prefer_configured_paths": false,
+                "module_index_paths_enabled": true,
                 "configured_path_timeout": 0.1,
+                "dynamic_path_timeout": 0.1,
+                "trust_cached_paths": true,
+                "read_label_when_page_size_ok": true,
                 "wait_before_page_size_stable": false,
                 "wait_before_page_size": 0.5,
                 "wait_after_page_size": 0.5,
@@ -359,7 +367,6 @@
         "detail_entry_policy": {
             "main_line_order": [
                 "business_type",
-                "currency",
                 "account",
                 "subject",
                 "amount",
@@ -391,8 +398,7 @@
                 ],
                 "entry_policy": {
                     "account_input": "detail_first",
-                    "success_rule": "non_empty",
-                    "fallback_reference": true
+                    "success_rule": "non_empty"
                 }
             },
             {
@@ -410,8 +416,7 @@
                 ],
                 "entry_policy": {
                     "account_input": "detail_first",
-                    "success_rule": "non_empty",
-                    "fallback_reference": true
+                    "success_rule": "non_empty"
                 }
             },
             {
@@ -429,8 +434,7 @@
                 ],
                 "entry_policy": {
                     "account_input": "detail_first",
-                    "success_rule": "non_empty",
-                    "fallback_reference": true
+                    "success_rule": "non_empty"
                 }
             },
             {
@@ -448,8 +452,7 @@
                 ],
                 "entry_policy": {
                     "account_input": "detail_first",
-                    "success_rule": "non_empty",
-                    "fallback_reference": true
+                    "success_rule": "non_empty"
                 }
             },
             {
@@ -468,8 +471,7 @@
                 ],
                 "entry_policy": {
                     "account_input": "detail_first",
-                    "success_rule": "non_empty",
-                    "fallback_reference": false
+                    "success_rule": "non_empty"
                 }
             },
             {
@@ -487,8 +489,7 @@
                 ],
                 "entry_policy": {
                     "account_input": "detail_first",
-                    "success_rule": "non_empty",
-                    "fallback_reference": true
+                    "success_rule": "non_empty"
                 }
             },
             {
@@ -506,8 +507,7 @@
                 ],
                 "entry_policy": {
                     "account_input": "detail_first",
-                    "success_rule": "non_empty",
-                    "fallback_reference": true
+                    "success_rule": "non_empty"
                 }
             },
             {
@@ -525,8 +525,7 @@
                 ],
                 "entry_policy": {
                     "account_input": "detail_first",
-                    "success_rule": "non_empty",
-                    "fallback_reference": true
+                    "success_rule": "non_empty"
                 }
             },
             {
@@ -544,8 +543,7 @@
                 ],
                 "entry_policy": {
                     "account_input": "detail_first",
-                    "success_rule": "non_empty",
-                    "fallback_reference": true
+                    "success_rule": "non_empty"
                 }
             }
         ]

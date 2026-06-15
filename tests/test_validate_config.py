@@ -168,7 +168,6 @@ def test_validate_receipt_entry_accepts_extensible_bank_account_schema():
         "detail_entry_policy": {
             "main_line_order": [
                 "business_type",
-                "currency",
                 "account",
                 "subject",
                 "amount",
@@ -198,7 +197,6 @@ def test_validate_receipt_entry_accepts_extensible_bank_account_schema():
                 "entry_policy": {
                     "account_input": "detail_first",
                     "success_rule": "non_empty",
-                    "fallback_reference": True,
                 },
             },
         ],

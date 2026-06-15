@@ -7,6 +7,7 @@ import time
 
 from tools.receipt_body_table_locator import locate_receipt_body_table_cached
 from tools.receipt_detail_fields import (
+    ACCOUNT_COL,
     BUSINESS_TYPE_COL,
     FEE_FIELDS,
     SUBJECT_COL,
@@ -21,14 +22,12 @@ from tools.receipt_detail_reader import (
     wait_body_row_count,
 )
 from tools.receipt_detail_row_cleanup import (
-    clear_fee_account_if_filled,
     delete_extra_row_if_present,
     read_fee_prepare_row_count,
-    skip_fee_account_clear_enabled,
     skip_fee_extra_row_delete_enabled,
 )
 from tools.receipt_detail_writer import write_detail_line_by_screen
-from tools.tmp_receipt_cell_probe_run import guarded_send_ctrl_i
+from tools.receipt_keyboard_utils import guarded_send_ctrl_i
 
 ADD_FEE_ROW_HOTKEY = "Ctrl+I"
 
@@ -139,16 +138,33 @@ def read_fee_row_overwrite_guard(jab, located, row_index, fee_business):
     }
 
 
-def run_fee_only(jab, located, fee_amount, scope_hwnd=None):
+def run_fee_only(
+    jab,
+    located,
+    fee_amount,
+    scope_hwnd=None,
+    after_field=None,
+    known_row_count=None,
+    defer_delete_wait=False,
+):
     timings = StepTimer()
     fee_business = build_fee_business(fee_amount)
-    before = timings.measure(
-        "fee.read-before-prepare",
-        read_fee_prepare_row_count,
-        jab,
-        located,
-        scope_hwnd,
-    )
+    if known_row_count is None:
+        before = timings.measure(
+            "fee.read-before-prepare",
+            read_fee_prepare_row_count,
+            jab,
+            located,
+            scope_hwnd,
+        )
+    else:
+        before = {
+            "ok": True,
+            "fast_path": True,
+            "row_count": int(known_row_count),
+            "source": "known_row_count",
+        }
+        timings.add("fee.read-before-prepare", 0.0)
     before_rows = int(before.get("row_count") or 0)
     if not before.get("ok"):
         add_row = {
@@ -187,75 +203,29 @@ def run_fee_only(jab, located, fee_amount, scope_hwnd=None):
             or ((located.get("best") or {}).get("window") or {}).get("hwnd"),
         )
         before_rows = 2
-        overwrite_guard = timings.measure(
-            "fee.guard-row2-after-cleanup",
-            read_fee_row_overwrite_guard,
-            jab,
-            located,
-            1,
-            fee_business,
-        )
-        if not overwrite_guard.get("ok"):
-            overwrite_guard["timings"] = timings.items
-            return (
-                overwrite_guard,
-                [],
-                {
-                    "ok": False,
-                    "skipped": True,
-                    "reason": "手续费第 2 行覆盖守卫失败，未清空账户",
-                },
-                {
-                    "ok": False,
-                    "skipped": True,
-                    "reason": "手续费第 2 行覆盖守卫失败，未删除多余行",
-                },
-            )
         add_row = {
             "ok": True,
             "skipped": True,
-            "reason": "当前超过 2 行，已删到 2 行并覆盖第 2 行为手续费行",
+            "reason": "当前超过 2 行，已删到 2 行；第 2 行无条件覆盖为手续费行",
             "hotkey": ADD_FEE_ROW_HOTKEY,
             "before_rows": before.get("row_count"),
             "after_rows": before_rows,
             "before": before,
-            "overwrite_guard": overwrite_guard,
         }
     elif before_rows == 1:
         add_row = guarded_add_fee_row_by_ctrl_i(jab, located, scope_hwnd=scope_hwnd)
         timings.add("fee.add-row", add_row.get("seconds") or 0)
     elif before_rows == 2:
-        overwrite_guard = timings.measure(
-            "fee.guard-row2-before-overwrite",
-            read_fee_row_overwrite_guard,
-            jab,
-            located,
-            1,
-            fee_business,
-        )
-        if not overwrite_guard.get("ok"):
-            add_row = {
-                "ok": False,
-                "skipped": True,
-                "reason": overwrite_guard.get("reason"),
-                "hotkey": ADD_FEE_ROW_HOTKEY,
-                "before_rows": before_rows,
-                "after_rows": before_rows,
-                "before": before,
-                "overwrite_guard": overwrite_guard,
-            }
-        else:
-            add_row = {
-                "ok": True,
-                "skipped": True,
-                "reason": "当前已有 2 行，第 2 行为空或已是手续费行，直接覆盖为手续费行",
-                "hotkey": ADD_FEE_ROW_HOTKEY,
-                "before_rows": before_rows,
-                "after_rows": before_rows,
-                "before": before,
-                "after": before,
-                "overwrite_guard": overwrite_guard,
-            }
+        add_row = {
+            "ok": True,
+            "skipped": True,
+            "reason": "当前已有 2 行，第 2 行无条件覆盖为手续费行",
+            "hotkey": ADD_FEE_ROW_HOTKEY,
+            "before_rows": before_rows,
+            "after_rows": before_rows,
+            "before": before,
+            "after": before,
+        }
     else:
         add_row = {
             "ok": False,
@@ -287,22 +257,19 @@ def run_fee_only(jab, located, fee_amount, scope_hwnd=None):
         refreshed,
         fields=FEE_FIELDS,
         row_index=target_row,
+        after_field=after_field,
     )
-    if skip_fee_account_clear_enabled():
-        clear_account = {
-            "ok": True,
-            "skipped": True,
-            "reason": "RECEIPT_SKIP_FEE_ACCOUNT_CLEAR=1，试验不清手续费账户",
-        }
-    else:
-        clear_account = timings.measure(
-            "fee.clear-account-if-filled",
-            clear_fee_account_if_filled,
-            jab,
-            refreshed,
-            target_row,
-            known_cells=cells_from_steps(steps),
-        )
+    fee_cells = cells_from_steps(steps)
+    clear_account = {
+        "ok": normalize_text(fee_cells.get(str(ACCOUNT_COL))) == "",
+        "skipped": True,
+        "source": "fee.write-line",
+        "before": fee_cells.get(str(ACCOUNT_COL)),
+        "after": fee_cells.get(str(ACCOUNT_COL)),
+        "reason": None
+        if normalize_text(fee_cells.get(str(ACCOUNT_COL))) == ""
+        else "手续费账户列按顺序清空后读回仍非空",
+    }
     if skip_fee_extra_row_delete_enabled():
         delete_extra = {
             "ok": True,
@@ -318,6 +285,8 @@ def run_fee_only(jab, located, fee_amount, scope_hwnd=None):
             refreshed,
             expected_rows=2,
             scope_hwnd=scope_hwnd,
+            known_row_count=int(add_row.get("after_rows") or before_rows) + 1,
+            defer_wait=defer_delete_wait,
         )
     delete_extra["timings"] = timings.items
     return add_row, steps, clear_account, delete_extra

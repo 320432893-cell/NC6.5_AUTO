@@ -5,7 +5,6 @@
 
 import time
 
-from tools.receipt_account_reference_try import STOP_HOTKEY, is_stop_hotkey_pressed
 from tools.receipt_body_table_locator import locate_receipt_body_table_cached
 from tools.receipt_detail_fields import (
     DETAIL_FIELDS,
@@ -19,7 +18,10 @@ from tools.receipt_detail_screen_writer import (
     KEYBOARD_INPUT_COMMIT_KEY,
     focus_detail_cell,
     keyboard_write_selected_cell,
+    move_selected_cell_by_arrows,
+    read_selected_cell,
 )
+from tools.receipt_keyboard_utils import STOP_HOTKEY, is_stop_hotkey_pressed
 
 MAX_FIELD_RETRIES = 3
 
@@ -34,16 +36,51 @@ def write_field_once(
     next_col,
     business,
     attempt_no,
+    current_col=None,
 ):
     value = str(business[field["value_key"]])
     attempt_start = time.perf_counter()
-    focus = focus_detail_cell(
-        jab,
-        located,
-        row_index,
-        int(field["col"]),
-    )
-    if focus.get("ok"):
+    target_col = int(field["col"])
+    if current_col is None:
+        focus = focus_detail_cell(
+            jab,
+            located,
+            row_index,
+            target_col,
+        )
+        navigation = {
+            "ok": True,
+            "skipped": True,
+            "reason": "首个字段直接定位",
+            "from_col": target_col,
+            "to_col": target_col,
+        }
+    else:
+        focus = {"ok": True, "skipped": True, "reason": "沿用当前选中单元格"}
+        navigation = move_selected_cell_by_arrows(table_window, current_col, target_col)
+    selected_before = None
+    if focus.get("ok") and navigation.get("ok"):
+        selected_before = read_selected_cell(jab, located)
+        selected = selected_before.get("single") if selected_before.get("ok") else None
+        selected_row = selected.get("row") if selected else None
+        selected_col = selected.get("col") if selected else None
+        if not (
+            selected
+            and selected_row is not None
+            and selected_col is not None
+            and int(selected_row) == int(row_index)
+            and int(selected_col) == target_col
+        ):
+            navigation = {
+                **navigation,
+                "ok": False,
+                "selected_before_write": selected_before,
+                "reason": (
+                    f"方向键导航后当前格不匹配：期望第 {row_index + 1} 行第 {target_col} 列，"
+                    f"实际 {selected!r}"
+                ),
+            }
+    if focus.get("ok") and navigation.get("ok"):
         commit_key = field.get("commit_key") or KEYBOARD_INPUT_COMMIT_KEY
         screen = keyboard_write_selected_cell(
             table_window,
@@ -51,9 +88,18 @@ def write_field_once(
             commit_key=commit_key,
             clear_only=field.get("kind") == "blank",
             accept_key=field.get("accept_key"),
+            typing_interval=field.get("typing_interval", 0.0),
+            edit_mode=field.get("edit_mode", "editor"),
+            input_mode=field.get("input_mode", "paste"),
+            pre_commit_wait=field.get("pre_commit_wait", 0.025),
         )
     else:
-        screen = {"ok": False, "reason": focus.get("reason"), "focus": focus}
+        screen = {
+            "ok": False,
+            "reason": focus.get("reason") or navigation.get("reason"),
+            "focus": focus,
+            "navigation": navigation,
+        }
     selected_after = None
     if screen.get("ok"):
         selected_after = {"ok": True, "skipped": True, "reason": "最终统一读回校验"}
@@ -63,19 +109,34 @@ def write_field_once(
         "mode": "keyboard",
         "input_ok": bool(screen.get("ok")),
         "input_reason": screen.get("reason"),
-        "target": {"row": row_index, "col": int(field["col"])},
+        "target": {"row": row_index, "col": target_col},
         "table_bounds": None,
         "cell_width": None,
         "cell_height": None,
         "focus": focus,
+        "navigation": navigation,
+        "selected_before_write": selected_before,
         "commit_ok": bool(screen.get("ok")),
         "commit_key": field.get("commit_key") or KEYBOARD_INPUT_COMMIT_KEY,
         "accept_key": field.get("accept_key"),
-        "commit_col": int(next_col),
+        "typing_interval": field.get("typing_interval", 0.0),
+        "edit_mode": field.get("edit_mode", "editor"),
+        "input_mode": field.get("input_mode", "paste"),
+        "pre_commit_wait": field.get("pre_commit_wait", 0.025),
+        "commit_col": current_col_after_commit(target_col, field.get("commit_key")),
         "commit_target": selected_after,
         "commit_reason": screen.get("reason"),
         "ok": bool(screen.get("ok")),
     }
+
+
+def current_col_after_commit(target_col, commit_key):
+    key = commit_key or KEYBOARD_INPUT_COMMIT_KEY
+    if str(key).lower() in {"enter", "right"}:
+        return int(target_col) + 1
+    if str(key).lower() == "left":
+        return max(int(target_col) - 1, 0)
+    return int(target_col)
 
 
 def refresh_unmatched_settlement_steps(
@@ -110,7 +171,14 @@ def refresh_unmatched_settlement_steps(
         time.sleep(interval)
 
 
-def write_detail_line_by_screen(jab, business, located, fields=None, row_index=0):
+def write_detail_line_by_screen(
+    jab,
+    business,
+    located,
+    fields=None,
+    row_index=0,
+    after_field=None,
+):
     fields = fields or DETAIL_FIELDS
     best = located.get("best") or {}
     table_window = best.get("window") or {}
@@ -129,6 +197,7 @@ def write_detail_line_by_screen(jab, business, located, fields=None, row_index=0
         ]
 
     steps = []
+    current_col = None
     for index, field in enumerate(fields):
         if is_stop_hotkey_pressed():
             steps.append(
@@ -155,7 +224,12 @@ def write_detail_line_by_screen(jab, business, located, fields=None, row_index=0
             next_field["col"],
             business,
             attempt_no=1,
+            current_col=current_col,
         )
+        if attempt.get("ok"):
+            commit_col = attempt.get("commit_col")
+            if commit_col is not None:
+                current_col = int(commit_col)
         step["attempts"].append(attempt)
         step["input_ok"] = bool(attempt.get("input_ok"))
         step["target"] = attempt.get("target")
@@ -171,24 +245,37 @@ def write_detail_line_by_screen(jab, business, located, fields=None, row_index=0
                 "cell_height": attempt.get("cell_height"),
             }
         )
+        if after_field and attempt.get("ok"):
+            step["async_verify_task"] = after_field(row_index, field, business, step)
         if not attempt.get("ok"):
             step["reason"] = attempt.get("input_reason") or attempt.get("commit_reason")
         steps.append(step)
         if not attempt.get("ok"):
             break
     else:
-        _snapshot, cells = read_row_cells(jab, row_index, located)
-        apply_readback_to_steps(steps, cells)
-        settle_refresh = refresh_unmatched_settlement_steps(
-            jab,
-            steps,
-            row_index,
-            located=located,
-        )
-        if settle_refresh:
+        if after_field:
             for step in steps:
-                if step.get("name") == "结算方式":
-                    step["settlement_stability_check"] = settle_refresh
+                step["ok"] = bool(step.get("input_ok"))
+                step["blocked"] = not step["ok"]
+                step["reason"] = None if step["ok"] else step.get("reason")
+                step["actual"] = None
+                step["deferred_readback"] = {
+                    "ok": True,
+                    "reason": "后台 pipeline verifier 批量读回校验",
+                }
+        else:
+            _snapshot, cells = read_row_cells(jab, row_index, located)
+            apply_readback_to_steps(steps, cells)
+            settle_refresh = refresh_unmatched_settlement_steps(
+                jab,
+                steps,
+                row_index,
+                located=located,
+            )
+            if settle_refresh:
+                for step in steps:
+                    if step.get("name") == "结算方式":
+                        step["settlement_stability_check"] = settle_refresh
 
         for step in steps:
             while (
@@ -218,6 +305,7 @@ def write_detail_line_by_screen(jab, business, located, fields=None, row_index=0
                     next_field["col"],
                     business,
                     attempt_no=len(step["attempts"]) + 1,
+                    current_col=None,
                 )
                 step["attempts"].append(attempt)
                 step["input_ok"] = bool(attempt.get("input_ok"))

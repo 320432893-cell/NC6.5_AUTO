@@ -13,7 +13,8 @@
 
 - `tools/jab_probe.py`：被 core 和多个正式工具依赖。
 - `tools/receipt_new_probe.py`：仍承接收款单新增/自制入口能力。
-- `tools/receipt_account_reference_try.py`：仍提供账户参照能力和停止热键。
+- `tools/archive/receipt_account_reference_try.py`：历史表头账户参照探针，只能用于复盘旧方案；正式流程不得 import。停止热键/剪贴板工具已抽到 `tools/receipt_keyboard_utils.py`。
+- `tools/archive/tmp_receipt_account_run.py`：历史表头账户参照手工入口，只能用于复盘旧方案；正式流程不得 import。
 - `tools/receipt_table_cell_probe.py`：仍被历史/正式录入流程间接依赖。
-- `tools/tmp_receipt_cell_probe_run.py`：虽然是 T0 名称，但正式明细模块仍 import 金额比较和受保护按键 helper，必须先抽正式 helper 后再决定归档。
+- `tools/tmp_receipt_cell_probe_run.py`：仍保留为现场探测脚本；正式明细模块需要的金额比较、剪贴板和受保护按键 helper 已抽到 `tools/receipt_keyboard_utils.py`，正式流程不得再从该 tmp 脚本 import。
 - `tools/tmp_receipt_detail_main_line_run.py`：短期兼容壳，现场人员全部改用 `tools/receipt_detail_entry.py` 后再删除。

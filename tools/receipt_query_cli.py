@@ -7,10 +7,15 @@ import argparse
 from copy import deepcopy
 import json
 import os
+from pathlib import Path
 import sys
 
-from core.utils import load_config
-from tools.receipt_query_fill import (
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from core.utils import load_config  # noqa: E402
+from tools.receipt_query_fill import (  # noqa: E402
     ReceiptPageGuardError,
     fill_receipt_query as run_fill_receipt_query,
 )
@@ -120,6 +125,31 @@ def main():
         print("receipt query timings:")
         for item in timings:
             print(f"  {item['name']}: {item['seconds']}s")
+    page_report = result.get("page_report") or {}
+    if page_report:
+        print("receipt query page report:")
+        for key in (
+            "setup_seconds",
+            "page_size_changed",
+            "before_page_size_text",
+            "after_page_size_text",
+            "pager_resolution",
+            "result_page_resolution",
+            "dynamic_resolution",
+            "total_records",
+            "planned_pages",
+        ):
+            if key in page_report:
+                print(f"  {key}: {page_report.get(key)}")
+        for page in (page_report.get("pages") or [])[:3]:
+            print(
+                "  page="
+                f"{page.get('page')} rows="
+                f"{sum((table.get('row_count') or 0) for table in page.get('tables') or [])} "
+                f"read_tables_seconds={page.get('read_tables_seconds')} "
+                f"wait_before_read_seconds={page.get('wait_before_read_seconds')} "
+                f"wait_after_page_read_seconds={page.get('wait_after_page_read_seconds')}"
+            )
     if args.probe_stage:
         print(
             json.dumps(
@@ -162,3 +192,7 @@ def main():
                 indent=2,
             )
         )
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

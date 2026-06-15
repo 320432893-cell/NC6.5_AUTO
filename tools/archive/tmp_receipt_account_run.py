@@ -1,10 +1,15 @@
+# 职责: 归档历史表头收款银行账户参照手工入口
+# 不做什么: 不作为正式测试入口，不参与批量保存流程，不写明细/Excel
+# 允许依赖层: core JAB 操作、tools.archive 历史参照探针、tools 剪贴板工具
+# 谁不应该 import: core、正式 tools 入口、tests、配置校验和 Excel/Sheet 写入模块不应 import
+
 import argparse
 import sys
 import time
 import traceback
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -12,10 +17,12 @@ from core.jab_operator import JABOperator  # noqa: E402
 from core.receipt_config import ReceiptEntryConfig  # noqa: E402
 from core.utils import load_config  # noqa: E402
 from tools.jab_health_check import check_jab_ready, print_jab_health_failure  # noqa: E402
-from tools.receipt_account_reference_try import (  # noqa: E402
+from tools.archive.receipt_account_reference_try import (  # noqa: E402
+    run_full_account_reference,
+)
+from tools.receipt_keyboard_utils import (  # noqa: E402
     STOP_HOTKEY,
     get_clipboard_text,
-    run_full_account_reference,
     set_clipboard_text,
 )
 

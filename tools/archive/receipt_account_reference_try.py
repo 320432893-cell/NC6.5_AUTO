@@ -1,3 +1,8 @@
+# 职责: 归档历史表头收款银行账户参照搜索/带回探针
+# 不做什么: 不作为正式收款单录入逻辑，不提供正式账号录入 fallback，不写 Excel/保存 NC
+# 允许依赖层: core JAB 操作、历史现场探测工具
+# 谁不应该 import: core、正式 tools 入口、tests、配置校验和 Excel/Sheet 写入模块不应 import
+
 import argparse
 import ctypes
 import json
@@ -7,7 +12,7 @@ import time
 from ctypes import wintypes
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 

@@ -219,6 +219,7 @@ def wait_window_by_title(
     include_children=False,
     visible_only=True,
     search_timeout=5.0,
+    interval=0.2,
 ):
     deadline = time.time() + (timeout or search_timeout)
     while time.time() < deadline:
@@ -230,7 +231,7 @@ def wait_window_by_title(
         )
         if hwnd:
             return hwnd
-        time.sleep(0.2)
+        time.sleep(interval)
     return None
 
 

@@ -16,6 +16,7 @@ from core.receipt_matching import (
     normalize_counterparty,
 )
 from core.receipt_models import (
+    ReceiptBatchResultRow,
     ReceiptExcelRow,
     ReceiptNCIndexedRow,
     ReceiptNCRow,
@@ -120,7 +121,6 @@ def test_extended_account_alias_maps_to_account_and_candidates():
             "entry_policy": {
                 "account_input": "detail_first",
                 "success_rule": "non_empty",
-                "fallback_reference": True,
             },
         }
     )
@@ -317,24 +317,27 @@ def test_build_local_plan_writes_machine_sheet2(tmp_path):
     saved = load_workbook(path)
     ws = saved["收款单自动化结果"]
     headers = [ws.cell(1, column).value for column in range(1, ws.max_column + 1)]
-    assert headers[:12] == [
+    assert headers[:15] == [
         "原Sheet1行号",
         "执行主体名称",
         "到款日期",
+        "🟪银行来款名",
         "客户编码",
-        "币种",
-        "银行来款名",
-        "实收金额",
+        "NC客户名称",
+        "🟪到账金额",
+        "🟪原始金额",
         "手续费",
-        "总金额",
+        "币种",
+        "银行",
         "收款银行账户",
         "本地预检状态",
+        "NC单据号",
         "异常原因",
     ]
     assert ws.cell(2, 1).value == rows[0].row
     assert ws.cell(2, 2).value == "上海移为通信技术股份有限公司"
-    assert ws.cell(2, 11).value == "通过"
-    assert ws.cell(2, 12).value in (None, "")
+    assert ws.cell(2, 13).value == "通过"
+    assert ws.cell(2, 15).value in (None, "")
     saved.close()
 
 
@@ -364,9 +367,64 @@ def test_build_local_plan_rewrites_sheet2_without_duplicate_appends(tmp_path):
 
     saved = load_workbook(path)
     ws = saved["收款单自动化结果"]
+    columns = {ws.cell(1, col).value: col for col in range(1, ws.max_column + 1)}
     assert ws.max_row == 2
     assert ws.cell(2, 1).value == 2
-    assert ws.cell(2, 11).value == "通过"
+    assert ws.cell(2, columns["本地预检状态"]).value == "通过"
+    saved.close()
+
+
+def test_write_batch_result_sheet_uses_business_columns_and_sorting(tmp_path):
+    path = tmp_path / "payments.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "💸Payments来款通知"
+    ws.append(
+        [
+            "到款日期",
+            "🟪银行来款名",
+            "🟪原始金额",
+            "银行",
+            "币种",
+            "客户编码",
+            "手续费",
+        ]
+    )
+    ws.append([date(2026, 6, 2), "LATE", 100, "Paypal", "USD", "YW001", 0])
+    ws.append([date(2026, 6, 1), "EARLY", 200, "Paypal", "USD", "YW002", 3])
+    wb.save(path)
+    wb.close()
+
+    rows, _issues, _summary = ReceiptEntryWorkbook(
+        receipt_config(path)
+    ).build_local_plan()
+    by_row = {row.row: row for row in rows}
+    ReceiptEntryWorkbook(receipt_config(path)).write_batch_result_sheet(
+        [
+            ReceiptBatchResultRow(
+                plan_row=by_row[2],
+                local_status="通过",
+                nc_customer_name="NC LATE",
+                nc_document_no="SK2",
+            ),
+            ReceiptBatchResultRow(
+                plan_row=by_row[3],
+                local_status="通过",
+                nc_customer_name="NC EARLY",
+                nc_document_no="SK1",
+            ),
+        ]
+    )
+
+    saved = load_workbook(path)
+    ws = saved["收款单自动化结果"]
+    assert ws.cell(2, 1).value == 3
+    assert ws.cell(2, 4).value == "EARLY"
+    assert ws.cell(2, 6).value == "NC EARLY"
+    assert ws.cell(2, 7).value == "203.00"
+    assert ws.cell(2, 8).value == "200.00"
+    assert ws.cell(2, 14).value == "SK1"
+    assert ws.cell(3, 1).value == 2
     saved.close()
 
 
@@ -390,9 +448,12 @@ def test_build_local_plan_writes_multiple_global_issues_to_sheet2(tmp_path):
     assert {issue.issue_type for issue in issues} == {"EXCEL_REQUIRED_COLUMN_MISSING"}
     saved = load_workbook(path)
     ws = saved["收款单自动化结果"]
+    columns = {ws.cell(1, col).value: col for col in range(1, ws.max_column + 1)}
     assert ws.max_row == 3
-    assert [ws.cell(row, 11).value for row in range(2, 4)] == ["异常"] * 2
-    assert all(ws.cell(row, 12).value for row in range(2, 4))
+    assert [ws.cell(row, columns["本地预检状态"]).value for row in range(2, 4)] == [
+        "异常"
+    ] * 2
+    assert all(ws.cell(row, columns["异常原因"]).value for row in range(2, 4))
     saved.close()
 
 

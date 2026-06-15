@@ -1,6 +1,6 @@
 # 职责：通过 JAB 选中收款单明细单元格，并用前台守卫键盘输入写入
 # 不做什么：不决定业务字段顺序，不增删明细行，不读取 Excel
-# 允许依赖层：标准库 ctypes/sys/time、tools.jab_probe、tools.tmp_receipt_cell_probe_run 的 SendInput 兼容函数
+# 允许依赖层：标准库 ctypes/sys/time、tools.jab_probe、tools.receipt_keyboard_utils
 # 谁不应该 import：配置校验、Sheet 写入、收款匹配模块不应 import
 
 import ctypes
@@ -8,14 +8,18 @@ import sys
 import time
 
 from tools.jab_probe import AccessibleTableCellInfo
-from tools.tmp_receipt_cell_probe_run import (
+from tools.receipt_keyboard_utils import (
+    get_clipboard_text,
     read_window_info,
+    restore_clipboard_text,
     send_hotkey_ctrl_a,
     send_text,
+    send_unicode_char,
     send_virtual_key,
+    set_clipboard_text,
 )
 
-KEYBOARD_INPUT_COMMIT_KEY = "Right"
+KEYBOARD_INPUT_COMMIT_KEY = "Enter"
 KEY_WAIT_SECONDS = 0.035
 REFERENCE_ACCEPT_SETTLE_SECONDS = 0.04
 VK_KEYS = {
@@ -25,6 +29,8 @@ VK_KEYS = {
     "Enter": 0x0D,
     "Delete": 0x2E,
 }
+VK_CONTROL = 0x11
+VK_V = 0x56
 
 
 def activate_window(hwnd):
@@ -199,21 +205,64 @@ def guarded_press_virtual_key(table_window, key_name):
     }
 
 
+def move_selected_cell_by_arrows(table_window, from_col, to_col):
+    start = int(from_col)
+    target = int(to_col)
+    delta = target - start
+    if delta == 0:
+        return {
+            "ok": True,
+            "skipped": True,
+            "from_col": start,
+            "to_col": target,
+            "steps": [],
+            "reason": "当前已在目标列",
+        }
+    key_name = "Right" if delta > 0 else "Left"
+    steps = []
+    for _index in range(abs(delta)):
+        sent = guarded_press_virtual_key(table_window, key_name)
+        steps.append(sent)
+        if not sent.get("ok"):
+            return {
+                "ok": False,
+                "from_col": start,
+                "to_col": target,
+                "steps": steps,
+                "reason": sent.get("reason"),
+            }
+    return {
+        "ok": True,
+        "from_col": start,
+        "to_col": target,
+        "key": key_name,
+        "count": abs(delta),
+        "steps": steps,
+    }
+
+
 def keyboard_write_selected_cell(
     table_window,
     value,
     commit_key=KEYBOARD_INPUT_COMMIT_KEY,
     clear_only=False,
     accept_key=None,
+    typing_interval=0.0,
+    edit_mode="editor",
+    input_mode="paste",
+    pre_commit_wait=0.025,
 ):
     guard = foreground_matches_table(table_window)
     if not guard.get("ok"):
         return guard
+    old_clipboard = None
+    clipboard_restored = None
     try:
-        send_virtual_key(VK_KEYS["F2"])
-        time.sleep(0.025)
-        send_hotkey_ctrl_a()
-        time.sleep(0.02)
+        if edit_mode != "selected":
+            send_virtual_key(VK_KEYS["F2"])
+            time.sleep(0.025)
+            send_hotkey_ctrl_a()
+            time.sleep(0.02)
         clear = None
         if clear_only:
             clear = guarded_press_virtual_key(table_window, "Delete")
@@ -229,8 +278,13 @@ def keyboard_write_selected_cell(
                     "reason": clear.get("reason"),
                 }
         else:
-            send_text(value)
-        time.sleep(0.025)
+            if input_mode == "paste":
+                old_clipboard = safe_clipboard_read()
+                set_clipboard_text(str(value))
+                send_hotkey_ctrl_v()
+            else:
+                send_text_slow(value, typing_interval)
+        time.sleep(float(pre_commit_wait or 0))
         accept = None
         if accept_key:
             accept = guarded_press_virtual_key(table_window, accept_key)
@@ -255,6 +309,9 @@ def keyboard_write_selected_cell(
             "accept_key": accept_key,
             "commit_key": commit_key,
         }
+    finally:
+        if old_clipboard is not None:
+            clipboard_restored = restore_clipboard_text(old_clipboard)
     return {
         **guard,
         "ok": bool(commit.get("ok")),
@@ -262,11 +319,41 @@ def keyboard_write_selected_cell(
         "clear_only": clear_only,
         "clear": clear,
         "accept_key": accept_key,
+        "typing_interval": float(typing_interval or 0),
+        "edit_mode": edit_mode,
+        "input_mode": input_mode,
+        "pre_commit_wait": float(pre_commit_wait or 0),
+        "clipboard_restored": clipboard_restored,
         "accept": accept,
         "commit_key": commit_key,
         "commit": commit,
         "reason": None if commit.get("ok") else commit.get("reason"),
     }
+
+
+def send_text_slow(value, interval=0.0):
+    text = str(value)
+    delay = float(interval or 0)
+    if delay <= 0:
+        send_text(text)
+        return
+    for char in text:
+        send_unicode_char(char)
+        time.sleep(delay)
+
+
+def safe_clipboard_read():
+    try:
+        return get_clipboard_text()
+    except Exception:
+        return None
+
+
+def send_hotkey_ctrl_v():
+    send_virtual_key(VK_CONTROL, key_up=False)
+    send_virtual_key(VK_V, key_up=False)
+    send_virtual_key(VK_V, key_up=True)
+    send_virtual_key(VK_CONTROL, key_up=True)
 
 
 def read_selected_cell(jab, located):

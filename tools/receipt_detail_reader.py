@@ -12,7 +12,7 @@ from tools.receipt_body_table_locator import (
 from tools.receipt_self_made_fill_trial import read_body_table
 
 
-def read_body_table_by_path(jab, located, step, max_rows=5):
+def read_body_table_by_path(jab, located, step, max_rows=5, semantic_fallback=False):
     result = read_receipt_body_table_by_cached_path(
         jab,
         located,
@@ -26,11 +26,36 @@ def read_body_table_by_path(jab, located, step, max_rows=5):
             "step": step,
             "ok": True,
             "fast_path": True,
+            "semantic_fallback_used": False,
             "path": result.get("path"),
             "row_count": result.get("row_count"),
             "col_count": result.get("col_count"),
             "rows": result.get("rows"),
         }
+    if semantic_fallback:
+        refreshed = locate_receipt_body_table_cached(
+            jab,
+            cached=located,
+            max_rows=max_rows,
+            scope_hwnd=(((located or {}).get("best") or {}).get("window") or {}).get(
+                "hwnd"
+            ),
+        )
+        best = refreshed.get("best")
+        if best:
+            if isinstance(located, dict):
+                located["best"] = best
+            return {
+                "step": step,
+                "ok": True,
+                "fast_path": bool(refreshed.get("cache_hit")),
+                "semantic_fallback_used": bool(refreshed.get("fallback_used")),
+                "path": best.get("path"),
+                "row_count": best.get("row_count"),
+                "col_count": best.get("col_count"),
+                "rows": best.get("rows"),
+                "path_validation": refreshed.get("path_validation"),
+            }
     return {"step": step, "ok": False, "reason": result.get("reason")}
 
 
@@ -51,8 +76,13 @@ def read_first_row_cells(jab, located=None):
     return snapshot, cells
 
 
-def read_row_cells(jab, row_index, located=None):
-    snapshot = read_body_table_by_path(jab, located, f"row_{row_index}_readback")
+def read_row_cells(jab, row_index, located=None, semantic_fallback=False):
+    snapshot = read_body_table_by_path(
+        jab,
+        located,
+        f"row_{row_index}_readback",
+        semantic_fallback=semantic_fallback,
+    )
     if not snapshot.get("ok"):
         snapshot = read_body_table(
             jab,
@@ -70,14 +100,36 @@ def read_row_cells(jab, row_index, located=None):
     return snapshot, {}
 
 
-def read_table_row_count_by_path(jab, located):
+def read_table_row_count_by_path(jab, located, semantic_fallback=False):
     result = read_receipt_body_table_by_cached_path(jab, located, max_rows=0)
     if not result.get("ok"):
+        if semantic_fallback:
+            refreshed = locate_receipt_body_table_cached(
+                jab,
+                cached=located,
+                max_rows=0,
+                scope_hwnd=(
+                    ((located or {}).get("best") or {}).get("window") or {}
+                ).get("hwnd"),
+            )
+            best = refreshed.get("best")
+            if best:
+                if isinstance(located, dict):
+                    located["best"] = best
+                return {
+                    "ok": True,
+                    "row_count": best.get("row_count"),
+                    "col_count": best.get("col_count"),
+                    "semantic_fallback_used": bool(refreshed.get("fallback_used")),
+                    "path": best.get("path"),
+                    "path_validation": refreshed.get("path_validation"),
+                }
         return {"ok": False, "reason": result.get("reason")}
     return {
         "ok": True,
         "row_count": result.get("row_count"),
         "col_count": result.get("col_count"),
+        "semantic_fallback_used": False,
     }
 
 

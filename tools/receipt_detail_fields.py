@@ -1,25 +1,86 @@
 # 职责：定义收款单明细行字段映射和读回校验口径
 # 不做什么：不执行 JAB/GUI 动作，不定位 NC 表格，不读取 Excel
-# 允许依赖层：标准库 decimal、tools.tmp_receipt_cell_probe_run 的金额比较兼容函数
+# 允许依赖层：标准库 decimal、tools.receipt_keyboard_utils 的金额比较函数
 # 谁不应该 import：底层 JAB operator 和 NC 窗口探测模块不应 import
 
 from decimal import Decimal, InvalidOperation
 
-from tools.tmp_receipt_cell_probe_run import amount_matches
+from tools.receipt_keyboard_utils import amount_matches
 
 
 DETAIL_FIELDS = [
-    {"col": 1, "name": "收款业务类型", "value_key": "main_business_type"},
-    {"col": 4, "name": "收款银行账户", "value_key": "bank_account"},
-    {"col": 5, "name": "科目", "value_key": "main_subject", "kind": "code_prefix"},
-    {"col": 7, "name": "贷方原币金额", "value_key": "amount", "kind": "amount"},
-    {"col": 11, "name": "结算方式", "value_key": "settlement", "commit_key": "Enter"},
+    {
+        "col": 1,
+        "name": "收款业务类型",
+        "value_key": "main_business_type",
+        "input_mode": "paste",
+    },
+    {
+        "col": 4,
+        "name": "收款银行账户",
+        "value_key": "bank_account",
+        "commit_key": "Enter",
+        "edit_mode": "selected",
+        "input_mode": "paste",
+        "pre_commit_wait": 0.1,
+    },
+    {
+        "col": 5,
+        "name": "科目",
+        "value_key": "main_subject",
+        "kind": "code_prefix",
+        "input_mode": "paste",
+    },
+    {
+        "col": 7,
+        "name": "贷方原币金额",
+        "value_key": "amount",
+        "kind": "amount",
+        "input_mode": "paste",
+    },
+    {
+        "col": 11,
+        "name": "结算方式",
+        "value_key": "settlement",
+        "commit_key": "Enter",
+        "input_mode": "paste",
+    },
 ]
 FEE_FIELDS = [
-    {"col": 1, "name": "收款业务类型", "value_key": "fee_business_type"},
-    {"col": 5, "name": "科目", "value_key": "fee_subject", "kind": "code_prefix"},
-    {"col": 7, "name": "贷方原币金额", "value_key": "fee_amount", "kind": "amount"},
-    {"col": 11, "name": "结算方式", "value_key": "settlement", "commit_key": "Enter"},
+    {
+        "col": 1,
+        "name": "收款业务类型",
+        "value_key": "fee_business_type",
+        "input_mode": "paste",
+    },
+    {
+        "col": 4,
+        "name": "收款银行账户",
+        "value_key": "fee_account",
+        "kind": "blank",
+        "edit_mode": "selected",
+    },
+    {
+        "col": 5,
+        "name": "科目",
+        "value_key": "fee_subject",
+        "kind": "code_prefix",
+        "input_mode": "paste",
+    },
+    {
+        "col": 7,
+        "name": "贷方原币金额",
+        "value_key": "fee_amount",
+        "kind": "amount",
+        "input_mode": "paste",
+    },
+    {
+        "col": 11,
+        "name": "结算方式",
+        "value_key": "settlement",
+        "commit_key": "Enter",
+        "input_mode": "paste",
+    },
 ]
 ACCOUNT_COL = 4
 BUSINESS_TYPE_COL = 1

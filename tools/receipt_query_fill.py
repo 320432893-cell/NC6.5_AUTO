@@ -41,6 +41,10 @@ from tools.receipt_query_pagination_paths import (  # noqa: E402
     validate_receipt_pagination_path_report as validate_receipt_pagination_path_report,
     with_runtime_pagination_paths as with_runtime_pagination_paths,
 )
+from tools.receipt_query_dynamic_fields import (  # noqa: E402
+    find_query_condition_scope,
+    set_query_dynamic_text,
+)
 from tools.receipt_query_reader import (  # noqa: E402
     dedupe_page_tables as dedupe_page_tables,
     evaluate_paging_match_stop as evaluate_paging_match_stop,
@@ -102,28 +106,10 @@ def set_text(jab, jab_cfg, path, value):
     )
 
 
-def set_finance_org_text(jab, jab_cfg, field_cfg, value):
-    text_path = field_cfg.get("text_path")
-    if text_path and jab.set_text_by_path(
-        text_path,
-        value,
-        title=jab_cfg["dialog_title"],
-        class_name=jab_cfg["dialog_class"],
-        role="text",
-        wait=float(field_cfg.get("path_wait", jab_cfg.get("text_set_wait", 0.0))),
-        timeout=float(field_cfg.get("path_timeout", 0.5)),
-        require_showing=True,
-    ):
-        return True
-
-    return jab.set_text_near_label(
-        field_cfg["label"],
-        value,
-        title=jab_cfg["dialog_title"],
-        class_name=jab_cfg["dialog_class"],
-        timeout=float(field_cfg.get("timeout", 2.0)),
-        require_showing=True,
-    )
+def set_finance_org_text(jab, jab_cfg, field_cfg, value, dynamic_scope=None):
+    scope = dynamic_scope or find_query_condition_scope(jab, jab_cfg)
+    result = set_query_dynamic_text(jab, jab_cfg, scope, "finance_org", value)
+    return bool(result.get("ok"))
 
 
 def ensure_query_window(jab, config, query_cfg, jab_cfg, skip_open=False):
@@ -137,6 +123,7 @@ def ensure_query_window(jab, config, query_cfg, jab_cfg, skip_open=False):
         timeout=existing_timeout,
         include_children=bool(query_cfg.get("dialog_include_children", True)),
         visible_only=bool(query_cfg.get("dialog_visible_only", True)),
+        interval=float(query_cfg.get("window_poll_interval", 0.05)),
     )
     if existing or skip_open:
         return bool(existing)
@@ -150,19 +137,27 @@ def ensure_query_window(jab, config, query_cfg, jab_cfg, skip_open=False):
             class_name=main_class,
             timeout=float(query_cfg.get("activate_timeout", 5)),
         )
-    jab.press_key(
-        query_cfg.get("open_key", batch_open_query.get("key", "f3")),
-        wait=float(query_cfg.get("open_wait", 0.0)),
-    )
-    return bool(
-        jab.wait_window_by_title(
+    open_key = query_cfg.get("open_key", batch_open_query.get("key", "f3"))
+    deadline = time.perf_counter() + timeout
+    interval = float(query_cfg.get("window_poll_interval", 0.05))
+    press_interval = float(query_cfg.get("open_key_retry_interval", 0.2))
+    next_press_at = 0.0
+    while time.perf_counter() < deadline:
+        now = time.perf_counter()
+        if now >= next_press_at:
+            jab.press_key(open_key, wait=0.0)
+            next_press_at = now + press_interval
+        opened = jab.wait_window_by_title(
             title,
             class_name=class_name,
-            timeout=timeout,
+            timeout=interval,
             include_children=bool(query_cfg.get("dialog_include_children", True)),
             visible_only=bool(query_cfg.get("dialog_visible_only", True)),
+            interval=interval,
         )
-    )
+        if opened:
+            return True
+    return False
 
 
 def fill_receipt_query(
@@ -181,7 +176,6 @@ def fill_receipt_query(
 ):
     query_cfg = config["receipt_entry"]["query"]
     jab_cfg = query_cfg["jab"]
-    fields = jab_cfg["fields"]
     start = date_from or query_cfg["date_from"]
     end = date_to or query_cfg["date_to"]
     start = parse_date(resolve_today(start)).isoformat()
@@ -204,23 +198,43 @@ def fill_receipt_query(
         if not query_window_ok:
             raise RuntimeError("未检测到收款单查询条件窗口")
 
+        query_scope = timings.measure(
+            "query.dynamic-scope",
+            find_query_condition_scope,
+            jab,
+            jab_cfg,
+        )
+        if not query_scope.get("ok"):
+            raise RuntimeError(
+                f"查询条件动态 path 定位失败:{query_scope.get('reason')}"
+            )
         finance_org_ok = timings.measure(
             "set_finance_org",
             set_finance_org_text,
             jab,
             jab_cfg,
-            fields["finance_org"],
+            None,
             org_code,
+            query_scope,
         )
         if not finance_org_ok:
             raise RuntimeError(f"收款查询条件写入失败: finance_org={org_code}")
 
         steps = [
-            ("document_date_from", fields["document_date"]["from_text_path"], start),
-            ("document_date_to", fields["document_date"]["to_text_path"], end),
+            ("document_date_from", start),
+            ("document_date_to", end),
         ]
-        for name, path, value in steps:
-            if not timings.measure(name, set_text, jab, jab_cfg, path, value):
+        for name, value in steps:
+            written = timings.measure(
+                name,
+                set_query_dynamic_text,
+                jab,
+                jab_cfg,
+                query_scope,
+                name,
+                value,
+            )
+            if not written.get("ok"):
                 raise RuntimeError(f"收款查询条件写入失败: {name}={value}")
 
         if confirm:
@@ -274,7 +288,7 @@ def fill_receipt_query(
                     max_cols=max_cols,
                     read_columns=receipt_result_read_columns(
                         query_cfg,
-                        include_amount_candidates=True,
+                        include_amount_candidates=False,
                     ),
                     write_back=write_back,
                 )

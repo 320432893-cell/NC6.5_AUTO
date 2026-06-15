@@ -263,89 +263,32 @@ def test_cleanup_awt_popup_residue_moves_small_awt_windows(monkeypatch):
     assert any(call[0] == "RedrawWindow" for call in calls)
 
 
-def test_account_reference_stops_after_open_by_default(monkeypatch):
-    class FakeJAB:
-        def __init__(self):
-            self.actions = []
-
-        def do_action_by_path(self, *args, **kwargs):
-            self.actions.append((args, kwargs))
-            return True
-
-        def get_scoped_windows(self, *args, **kwargs):
-            return [(1234, "使用权参照", "SunAwtDialog", 99, True)]
-
-        class Dll:
-            @staticmethod
-            def isJavaWindow(hwnd):
-                return True
-
-        dll = Dll()
-
-    searched = {"called": False}
-
-    def fail_if_search(*args, **kwargs):
-        searched["called"] = True
-        raise AssertionError("search must not run by default")
-
-    monkeypatch.setattr(trial, "set_reference_search_text", fail_if_search)
-
-    jab = FakeJAB()
-    result = trial.set_header_account_by_reference(jab, "FTE123")
-
-    assert result["ok"] is False
-    assert result["blocked"] is True
-    assert result["dialog"]["hwnd"] == 1234
-    assert result["next_required"] == "foreground_check_account_reference"
-    assert searched["called"] is False
-
-
-def test_account_reference_existing_dialog_blocks_without_click(monkeypatch):
-    class FakeJAB:
-        def do_action_by_path(self, *args, **kwargs):
-            raise AssertionError("must not click account button when dialog exists")
-
-    monkeypatch.setattr(
-        trial,
-        "wait_reference_dialog",
-        lambda jab, timeout=6.0: {
-            "hwnd": 1234,
-            "title": "使用权参照",
-            "class_name": "SunAwtDialog",
-            "pid": 99,
-            "visible": True,
-        },
-    )
-
-    result = trial.set_header_account_by_reference(FakeJAB(), "FTE123")
-
-    assert result["ok"] is False
-    assert result["blocked"] is True
-    assert result["dialog"]["hwnd"] == 1234
-
-
 def test_header_fill_writes_customer_before_date(monkeypatch):
     calls = []
 
     monkeypatch.setattr(
         trial,
-        "set_text_by_control_name",
-        lambda jab, control_name, value, **kwargs: (
-            calls.append("财务组织") or {"ok": True}
-        ),
+        "locate_receipt_header_scope",
+        lambda jab: {
+            "ok": True,
+            "scope_hwnd": 123,
+            "dynamic_index": 2,
+            "dynamic_prefix": "0.0.1.0.0.0.0.2",
+            "mode": "fast-path",
+        },
     )
 
-    def fake_set_header_field(jab, label, value, **kwargs):
+    def fake_set_header_field(jab, label, value, dynamic_index, scope_hwnd, **kwargs):
         calls.append(label)
-        return {"ok": True}
+        return {
+            "ok": True,
+            "path": trial.build_receipt_header_dynamic_path(dynamic_index, label),
+        }
 
-    monkeypatch.setattr(trial, "set_receipt_header_form_field", fake_set_header_field)
     monkeypatch.setattr(
         trial,
-        "set_header_account_by_reference",
-        lambda jab, account, continue_after_open=False: (
-            calls.append("收款银行账户") or {"ok": False, "blocked": True}
-        ),
+        "set_receipt_header_dynamic_field",
+        fake_set_header_field,
     )
 
     trial.fill_header(
@@ -357,10 +300,9 @@ def test_header_fill_writes_customer_before_date(monkeypatch):
             "currency": "美元",
             "bank_account": "FTE123",
         },
-        continue_account_reference=True,
     )
 
-    assert calls[:4] == ["财务组织", "客户", "单据日期", "币种"]
+    assert calls == ["财务组织", "客户", "单据日期", "币种", "结算方式"]
 
 
 def test_backend_field_state_accepts_description_without_foreground():

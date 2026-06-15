@@ -23,7 +23,7 @@ from tools.jab_probe import (  # noqa: E402
     AccessibleTableCellInfo,
     JOBJECT,
 )
-from tools.receipt_account_reference_try import STOP_HOTKEY, is_stop_hotkey_pressed  # noqa: E402
+from tools.receipt_keyboard_utils import STOP_HOTKEY, is_stop_hotkey_pressed  # noqa: E402
 from tools.receipt_body_table_locator import locate_receipt_body_table  # noqa: E402
 from tools.receipt_self_made_fill_trial import read_body_table  # noqa: E402
 from tools.receipt_table_cell_probe import collect_text_controls, diff_text_controls  # noqa: E402

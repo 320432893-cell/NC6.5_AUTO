@@ -315,10 +315,11 @@ def _validate_account_entry_policy(entry_policy, errors, prefix):
         errors,
         prefix=f"{prefix}.entry_policy",
     )
-    if "fallback_reference" in entry_policy and not isinstance(
-        entry_policy.get("fallback_reference"), bool
-    ):
-        errors.append(f"{prefix}.entry_policy.fallback_reference must be bool")
+    if "fallback_reference" in entry_policy:
+        errors.append(
+            f"{prefix}.entry_policy.fallback_reference is deprecated; "
+            "account input must use detail_first"
+        )
 
 
 def _validate_receipt_detail_entry_policy(policy, errors):

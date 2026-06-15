@@ -26,6 +26,8 @@ from tools.receipt_query_pagination import (
     wait_receipt_result_stable,
 )
 from tools.receipt_query_pagination_paths import (
+    resolve_receipt_pagination_paths_by_module_index,
+    resolve_receipt_pagination_paths_dynamic,
     infer_result_area_prefix_from_table_path,
 )
 from tools.receipt_query_page_reader import read_receipt_result_pages
@@ -38,6 +40,11 @@ from tools.receipt_query_fill import (
     guard_receipt_result_tables,
     wait_after_query_confirm,
 )
+
+QUERY_PREFIX = "0.0.1.0.1.0.0.1.0.0.0.0.0.1.0.1"
+QUERY_FINANCE_ORG_PATH = f"{QUERY_PREFIX}.1.2.0.0.0.0"
+QUERY_DATE_FROM_PATH = f"{QUERY_PREFIX}.3.2.0.0.0.0"
+QUERY_DATE_TO_PATH = f"{QUERY_PREFIX}.3.2.1.0.0.0"
 
 
 class FakeJAB:
@@ -54,6 +61,7 @@ class FakeJAB:
         timeout=None,
         include_children=False,
         visible_only=True,
+        interval=0.2,
     ):
         self.wait_calls += 1
         if self.existing or self.keys:
@@ -324,6 +332,27 @@ class FakeReceiptQueryJAB:
     def wait_window_by_title(self, *args, **kwargs):
         return 100
 
+    def wait_context_by_path(
+        self,
+        path,
+        title=None,
+        class_name=None,
+        name=None,
+        role=None,
+        require_showing=True,
+        require_valid_bounds=True,
+        timeout=None,
+        scope_hwnd=None,
+    ):
+        expected = {
+            QUERY_FINANCE_ORG_PATH,
+            QUERY_DATE_FROM_PATH,
+            QUERY_DATE_TO_PATH,
+        }
+        if self.path_ok and path in expected:
+            return {"path": path}
+        return None
+
     def set_text_by_path(
         self,
         path,
@@ -353,7 +382,7 @@ class FakeReceiptQueryJAB:
                 "require_showing": require_showing,
             }
         )
-        if path == "finance_org" and not self.path_ok:
+        if path == QUERY_FINANCE_ORG_PATH and not self.path_ok:
             return False
         return True
 
@@ -452,15 +481,15 @@ def receipt_config(path):
                         "finance_org": {
                             "label": "收款财务组织",
                             "operator": "等于",
-                            "text_path": "finance_org",
+                            "text_path": QUERY_FINANCE_ORG_PATH,
                             "path_timeout": 0.5,
                             "timeout": 2.0,
                         },
                         "document_date": {
                             "label": "单据日期",
                             "operator": "介于",
-                            "from_text_path": "date_from",
-                            "to_text_path": "date_to",
+                            "from_text_path": QUERY_DATE_FROM_PATH,
+                            "to_text_path": QUERY_DATE_TO_PATH,
                         },
                     },
                 },
@@ -502,7 +531,6 @@ def receipt_config(path):
 
 def test_ensure_query_window_opens_with_f3_without_fixed_sleep():
     jab = FakeJAB(existing=False)
-
     ok = ensure_query_window(
         jab,
         {
@@ -566,19 +594,19 @@ def test_fill_receipt_query_sets_finance_org_by_path(monkeypatch):
     assert jab.actions == []
     assert jab.near_label_texts == []
     assert jab.set_texts[0] == {
-        "path": "finance_org",
+        "path": QUERY_FINANCE_ORG_PATH,
         "text": "A003",
         "title": "查询条件",
         "class_name": "SunAwtDialog",
         "role": "text",
         "wait": 0.0,
-        "timeout": 0.5,
+        "timeout": 2,
         "require_showing": True,
     }
     assert [(item["path"], item["text"]) for item in jab.set_texts] == [
-        ("finance_org", "A003"),
-        ("date_from", "2026-03-31"),
-        ("date_to", "2026-05-31"),
+        (QUERY_FINANCE_ORG_PATH, "A003"),
+        (QUERY_DATE_FROM_PATH, "2026-03-31"),
+        (QUERY_DATE_TO_PATH, "2026-05-31"),
     ]
     assert jab.closed is True
 
@@ -615,30 +643,33 @@ def test_fill_receipt_query_confirms_without_fixed_wait(monkeypatch):
     assert jab.closed is True
 
 
-def test_wait_after_query_confirm_returns_when_page_label_is_ready(monkeypatch):
+def test_wait_after_query_confirm_returns_when_result_table_path_is_ready(monkeypatch):
     waits = []
     monkeypatch.setattr("tools.receipt_query_fill.time.sleep", waits.append)
     jab = FakePagedJAB()
-    jab.texts["label"] = "第1页 共1页 3条记录 每页显示"
 
     report = wait_after_query_confirm(
         jab,
         {
             "result_wait_timeout": 0.5,
-            "result_wait_interval": 0.05,
+            "result_wait_interval": 0.1,
             "pagination": {
-                "page_label_path": "label",
+                "module_index_paths_enabled": True,
                 "window_class": "SunAwtCanvas",
+                "page_label_path": "label",
+                "page_size_text_path": "size",
+                "next_page_button_path": "next",
             },
         },
     )
 
     assert report["ok"] is True
-    assert report["method"] == "page_label"
+    assert report["method"] == "result_table_path"
+    assert report["result_table_path"]
     assert waits == []
 
 
-def test_fill_receipt_query_falls_back_to_finance_org_near_label(monkeypatch):
+def test_fill_receipt_query_fails_without_dynamic_or_semantic_path(monkeypatch):
     instances = []
 
     def make_jab(config):
@@ -648,31 +679,18 @@ def test_fill_receipt_query_falls_back_to_finance_org_near_label(monkeypatch):
 
     monkeypatch.setattr("tools.receipt_query_fill.JABOperator", make_jab)
 
-    result = fill_receipt_query(
-        receipt_config("unused.xlsx"),
-        org_code="A003",
-        date_from="2026-03-31",
-        date_to="2026-05-31",
-        confirm=False,
-    )
+    with pytest.raises(RuntimeError, match="查询条件动态 path 定位失败"):
+        fill_receipt_query(
+            receipt_config("unused.xlsx"),
+            org_code="A003",
+            date_from="2026-03-31",
+            date_to="2026-05-31",
+            confirm=False,
+        )
 
     jab = instances[0]
-    assert result["organization_code"] == "A003"
-    assert jab.near_label_texts == [
-        {
-            "label": "收款财务组织",
-            "text": "A003",
-            "title": "查询条件",
-            "class_name": "SunAwtDialog",
-            "timeout": 2.0,
-            "require_showing": True,
-        }
-    ]
-    assert [(item["path"], item["text"]) for item in jab.set_texts] == [
-        ("finance_org", "A003"),
-        ("date_from", "2026-03-31"),
-        ("date_to", "2026-05-31"),
-    ]
+    assert jab.near_label_texts == []
+    assert jab.set_texts == []
     assert jab.closed is True
 
 
@@ -857,6 +875,151 @@ def test_infer_result_area_prefix_from_table_path_strips_known_table_suffix():
     assert infer_result_area_prefix_from_table_path("0.1.2.3") is None
 
 
+def test_resolve_receipt_pagination_paths_dynamic_uses_path_not_fixed_column_count(
+    monkeypatch,
+):
+    class FakePathJAB:
+        max_depth = 1
+        max_children = 1
+
+        def __init__(self):
+            self.visible_paths = {
+                "0.0.1.0.0.0.0.5.0.0.0.1.1.0.0.0.1.1.1.0.0.0.1.6",
+                "0.0.1.0.0.0.0.5.0.0.0.1.1.0.0.0.1.1.1.0.0.0.1.7",
+                "0.0.1.0.0.0.0.5.0.0.0.1.1.0.0.0.1.1.1.0.0.0.1.2",
+            }
+
+        def wait_context_by_path(
+            self,
+            path,
+            title=None,
+            class_name=None,
+            name=None,
+            role=None,
+            require_showing=True,
+            require_valid_bounds=True,
+            timeout=None,
+            scope_hwnd=None,
+        ):
+            if path in self.visible_paths:
+                return {"hwnd": 330038, "class": class_name, "title": "查询结果"}
+            return None
+
+    monkeypatch.setattr(
+        "tools.receipt_query_pagination_paths.enumerate_visible_table_paths",
+        lambda _jab, _window_class: [
+            {
+                "table_index": 2,
+                "path": ("0.0.1.0.0.0.0.5.0.0.0.1.1.0.0.0.1.1.1.0.0.0.0.0.0"),
+                "hwnd": 330038,
+                "row_count": 500,
+                "col_count": 32,
+            }
+        ],
+    )
+
+    report = resolve_receipt_pagination_paths_dynamic(
+        FakePathJAB(),
+        paged_query_config(prefer_configured_paths=False),
+    )
+
+    assert report["ok"] is True
+    assert report["result_area_prefix"] == (
+        "0.0.1.0.0.0.0.5.0.0.0.1.1.0.0.0.1.1.1.0.0.0"
+    )
+    assert report["result_table_path"].endswith(".0.0.0")
+    assert report["page_label_path"].endswith(".1.6")
+    assert report["page_size_text_path"].endswith(".1.7")
+    assert report["next_page_button_path"].endswith(".1.2")
+
+
+def test_resolve_receipt_pagination_paths_by_module_index_uses_shared_receipt_index():
+    class FakeModuleIndexJAB:
+        def __init__(self):
+            self.visible_paths = {
+                "0.0.1.0.0.0.0.5.0.0.0.1.1.0.0.0.1.1.1.0.0.0.0.0.0": "table",
+                "0.0.1.0.0.0.0.5.0.0.0.1.1.0.0.0.1.1.1.0.0.0.1.6": "label",
+                "0.0.1.0.0.0.0.5.0.0.0.1.1.0.0.0.1.1.1.0.0.0.1.7": "text",
+                "0.0.1.0.0.0.0.5.0.0.0.1.1.0.0.0.1.1.1.0.0.0.1.2": "push button",
+            }
+
+        def wait_context_by_path(
+            self,
+            path,
+            title=None,
+            class_name=None,
+            name=None,
+            role=None,
+            require_showing=True,
+            require_valid_bounds=True,
+            timeout=None,
+            scope_hwnd=None,
+        ):
+            if self.visible_paths.get(path) == role:
+                return {"hwnd": 330038, "class": class_name, "title": "查询结果"}
+            return None
+
+    report = resolve_receipt_pagination_paths_by_module_index(
+        FakeModuleIndexJAB(),
+        paged_query_config(
+            prefer_configured_paths=False,
+            module_index_paths_enabled=True,
+        ),
+    )
+
+    assert report["ok"] is True
+    assert report["resolution"] == "dynamic_module_index"
+    assert report["dynamic_index"] == 5
+    assert report["module_prefix"] == "0.0.1.0.0.0.0.5"
+    assert report["result_table_path"].endswith(".0.0.0")
+    assert report["page_size_text_path"].endswith(".1.7")
+
+
+def test_read_receipt_tables_accepts_variable_result_columns_when_required_fields_fit():
+    class FakeVariableColumnResultJAB:
+        def __init__(self):
+            self.exact_cols_args = []
+
+        def read_all_table_cells(
+            self, max_rows=None, max_cols=None, scope_hwnd=None, exact_cols=None
+        ):
+            self.exact_cols_args.append(exact_cols)
+            return [
+                {
+                    "table_index": 2,
+                    "row_count": 1,
+                    "col_count": 32,
+                    "rows": [
+                        {
+                            "row_index": 0,
+                            "cells": [
+                                "D22026060100026949",
+                                "2026-05-27",
+                                "收款单",
+                                "收款结算",
+                                "Copeland Cold Chain LP",
+                                "美元",
+                                "161713.00",
+                            ]
+                            + [""] * 25,
+                        }
+                    ],
+                }
+            ]
+
+    jab = FakeVariableColumnResultJAB()
+    tables = read_receipt_tables(
+        jab,
+        paged_query_config(),
+        max_rows=10,
+        max_cols=80,
+    )
+
+    assert jab.exact_cols_args == [None]
+    assert [table["table_index"] for table in tables] == [2]
+    assert tables[0]["col_count"] == 32
+
+
 def test_read_receipt_result_pages_does_not_fall_back_to_bounds_click_for_next_page():
     jab = FakeFailingNextPageJAB()
     jab.texts["label"] = "第1页 共2页 501条记录 每页显示"
@@ -983,7 +1146,7 @@ def test_resolve_receipt_pagination_paths_uses_cached_report(monkeypatch):
 
     report = set_receipt_page_size(jab, paged_query_config())
 
-    assert report["pager_resolution"] == "cached"
+    assert report["pager_resolution"] == "cached_trusted"
     assert calls == []
 
 

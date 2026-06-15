@@ -6,6 +6,7 @@
 import re
 import time
 
+from tools.receipt_keyboard_utils import send_virtual_key
 from tools.receipt_query_pagination_paths import (
     resolve_receipt_pagination_paths,
     resolve_receipt_pagination_paths_dynamic,
@@ -26,24 +27,25 @@ def wait_after_query_confirm(jab, query_cfg):
         }
 
     started = time.perf_counter()
-    interval = float(query_cfg.get("result_wait_interval", 0.05))
+    interval = float(query_cfg.get("result_wait_interval", 0.1))
     window_class = pagination.get("window_class", "SunAwtCanvas")
     page_label_path = pagination.get("page_label_path")
     fallback_wait = float(query_cfg.get("result_wait_fallback", 0.0))
     while time.perf_counter() - started < wait_timeout:
-        dynamic = resolve_receipt_pagination_paths_dynamic(jab, query_cfg)
+        probe_cfg = {
+            **query_cfg,
+            "pagination": {
+                **pagination,
+                "module_index_table_ready_only": True,
+            },
+        }
+        dynamic = resolve_receipt_pagination_paths_dynamic(jab, probe_cfg)
         if dynamic.get("ok"):
             setattr(jab, "_receipt_pagination_paths_cache", dynamic)
-            label = read_page_label(
-                jab,
-                dynamic["page_label_path"],
-                window_class,
-                dynamic.get("pager_hwnd"),
-            )
             return {
                 "ok": True,
-                "method": "dynamic-result-table",
-                "label": label,
+                "method": "result_table_path",
+                "label": None,
                 "result_table_path": dynamic.get("result_table_path"),
                 "result_area_prefix": dynamic.get("result_area_prefix"),
                 "seconds": round(time.perf_counter() - started, 3),
@@ -85,19 +87,21 @@ def set_receipt_page_size(jab, query_cfg):
     dynamic_resolution = resolved_paths.get("dynamic_resolution")
     dynamic_diagnostics = resolved_paths.get("dynamic_diagnostics")
     runtime_query_cfg = with_runtime_pagination_paths(query_cfg, resolved_paths)
-    pager_window = jab.wait_context_by_path(
-        page_label_path,
-        class_name=window_class,
-        role="label",
-        timeout=float(pagination.get("pager_scope_timeout", 2.0)),
-        require_showing=True,
-        require_valid_bounds=False,
-    )
-    pager_hwnd = (
-        int(pager_window.get("hwnd"))
-        if pager_window and pager_window.get("hwnd") is not None
-        else resolved_paths.get("pager_hwnd")
-    )
+    pager_hwnd = resolved_paths.get("pager_hwnd")
+    if not pager_hwnd or not bool(pagination.get("trust_cached_paths", True)):
+        pager_window = jab.wait_context_by_path(
+            page_label_path,
+            class_name=window_class,
+            role="label",
+            timeout=float(pagination.get("pager_scope_timeout", 2.0)),
+            require_showing=False,
+            require_valid_bounds=False,
+        )
+        pager_hwnd = (
+            int(pager_window.get("hwnd"))
+            if pager_window and pager_window.get("hwnd") is not None
+            else pager_hwnd
+        )
     if not pager_hwnd:
         return {
             "enabled": True,
@@ -142,12 +146,21 @@ def set_receipt_page_size(jab, query_cfg):
             "tables": [],
         }
         before_stability_seconds = 0.0
-    before_label = read_page_label(jab, page_label_path, window_class, pager_hwnd)
     before_page_size_text = read_page_size_text(
         jab, page_size_path, window_class, pager_hwnd
     )
     current_page_size = parse_int_text(before_page_size_text)
     page_size_changed = current_page_size != page_size
+    if page_size_changed:
+        before_label = read_page_label(jab, page_label_path, window_class, pager_hwnd)
+    else:
+        before_label = getattr(jab, "_receipt_last_page_label", None)
+        if before_label is None and bool(
+            pagination.get("read_label_when_page_size_ok", True)
+        ):
+            before_label = read_page_label(
+                jab, page_label_path, window_class, pager_hwnd
+            )
     wait_before_page_size_seconds = 0.0
     set_page_size_text_seconds = 0.0
     enter_seconds = 0.0
@@ -166,13 +179,15 @@ def set_receipt_page_size(jab, query_cfg):
             scope_hwnd=pager_hwnd,
             role="text",
             timeout=2,
-            require_showing=True,
+            require_showing=False,
             require_valid_bounds=False,
         )
         set_page_size_text_seconds = time.perf_counter() - set_text_start
     if page_size_ok and page_size_changed:
         enter_start = time.perf_counter()
-        jab.press_key("enter", wait=float(pagination.get("wait_after_page_size", 2.0)))
+        press_enter_for_page_size(
+            jab, wait=float(pagination.get("wait_after_page_size", 2.0))
+        )
         enter_seconds = time.perf_counter() - enter_start
     if page_size_changed or bool(
         pagination.get("ready_check_when_page_size_ok", False)
@@ -197,6 +212,8 @@ def set_receipt_page_size(jab, query_cfg):
         after_stability_seconds = 0.0
         after_label = before_label
         after_page_size_text = before_page_size_text
+    if after_label:
+        setattr(jab, "_receipt_last_page_label", after_label)
     return {
         "enabled": True,
         "page_size": page_size,
@@ -316,6 +333,14 @@ def click_next_page(jab, pagination, next_page_path, window_class, scope_hwnd=No
     return False, "failed"
 
 
+def press_enter_for_page_size(jab, wait=2.0):
+    try:
+        jab.press_key("enter", wait=wait)
+    except ModuleNotFoundError:
+        send_virtual_key(0x0D)
+        time.sleep(float(wait or 0))
+
+
 def read_page_label(jab, path, window_class, scope_hwnd=None):
     return jab.get_text_by_path(
         path,
@@ -323,7 +348,7 @@ def read_page_label(jab, path, window_class, scope_hwnd=None):
         scope_hwnd=scope_hwnd,
         role="label",
         timeout=1,
-        require_showing=True,
+        require_showing=False,
         require_valid_bounds=False,
     )
 
@@ -335,7 +360,7 @@ def read_page_size_text(jab, path, window_class, scope_hwnd=None):
         scope_hwnd=scope_hwnd,
         role="text",
         timeout=1,
-        require_showing=True,
+        require_showing=False,
         require_valid_bounds=False,
     )
 

@@ -7,14 +7,17 @@ RESULT_SHEET_HEADERS = [
     "原Sheet1行号",
     "执行主体名称",
     "到款日期",
+    "🟪银行来款名",
     "客户编码",
-    "币种",
-    "银行来款名",
-    "实收金额",
+    "NC客户名称",
+    "🟪到账金额",
+    "🟪原始金额",
     "手续费",
-    "总金额",
+    "币种",
+    "银行",
     "收款银行账户",
     "本地预检状态",
+    "NC单据号",
     "异常原因",
 ]
 
@@ -33,31 +36,57 @@ DEPRECATED_RESULT_SHEET_HEADERS = {
     "录入结果",
     "保存结果",
     "后验查询结果",
+    "总金额",
+    "实收金额",
+    "银行来款名",
 }
 
 
 def plan_sheet_row(row, issue, status):
     if row is None:
-        base = [""] * 10
+        base = [""] * 12
     else:
-        total_amount = row.raw_amount + row.fee
         base = [
             row.row,
             row.organization_name,
             row.receipt_date.isoformat(),
-            row.customer_code,
-            row.currency,
             row.payer_name,
+            row.customer_code,
+            "",
+            str(row.raw_amount + row.fee),
             str(row.raw_amount),
             str(row.fee),
-            str(total_amount),
+            row.currency,
+            row.bank,
             row.account_no,
         ]
     issue_reason = format_plan_issue_reason(issue)
     return [
         *base,
         status,
+        "",
         issue_reason,
+    ]
+
+
+def batch_result_sheet_row(result):
+    row = result.plan_row
+    return [
+        row.row,
+        row.organization_name,
+        row.receipt_date.isoformat(),
+        row.payer_name,
+        row.customer_code,
+        result.nc_customer_name,
+        str(row.raw_amount + row.fee),
+        str(row.raw_amount),
+        str(row.fee),
+        row.currency,
+        row.bank,
+        row.account_no,
+        result.local_status,
+        result.nc_document_no,
+        result.exception_reason,
     ]
 
 
@@ -118,6 +147,24 @@ def append_plan_sheet_row(ws, columns, row_number, values):
     for header, value in row_by_header.items():
         ws.cell(row=row_number, column=columns[header], value=value)
     return row_number + 1
+
+
+def rewrite_batch_result_sheet(wb, sheet_name, header_row, results):
+    if sheet_name not in wb.sheetnames:
+        ws = wb.create_sheet(sheet_name)
+    else:
+        ws = wb[sheet_name]
+    columns = ensure_result_sheet_headers(ws, header_row)
+    if ws.max_row > header_row:
+        ws.delete_rows(header_row + 1, ws.max_row - header_row)
+    append_start_row = header_row + 1
+    for result in sorted(results, key=batch_result_sort_key):
+        append_start_row = append_plan_sheet_row(
+            ws,
+            columns,
+            append_start_row,
+            batch_result_sheet_row(result),
+        )
 
 
 def rewrite_plan_sheet(wb, sheet_name, header_row, rows, issues):
@@ -187,8 +234,13 @@ def plan_sheet_sort_key(row):
     return (
         str(row.organization_code or ""),
         str(row.organization_name or ""),
+        row.receipt_date,
         int(row.row or 0),
     )
+
+
+def batch_result_sort_key(result):
+    return plan_sheet_sort_key(result.plan_row)
 
 
 def orphan_issue_sort_key(item, rows_by_number):

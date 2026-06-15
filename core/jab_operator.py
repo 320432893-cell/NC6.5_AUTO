@@ -26,6 +26,7 @@ class JABOperator(JABControlMixin, JABNearLabelMixin, JABPathMixin, JABTableMixi
     """Small Java Access Bridge wrapper for stable NC button/menu actions."""
 
     def __init__(self, config):
+        self.config = config
         jab_cfg = config.get("jab", {})
         self.dll_path = jab_cfg.get(
             "dll_path",
@@ -131,6 +132,7 @@ class JABOperator(JABControlMixin, JABNearLabelMixin, JABPathMixin, JABTableMixi
         timeout=None,
         include_children=False,
         visible_only=True,
+        interval=0.2,
     ):
         return jab_window.wait_window_by_title(
             title,
@@ -139,6 +141,7 @@ class JABOperator(JABControlMixin, JABNearLabelMixin, JABPathMixin, JABTableMixi
             include_children=include_children,
             visible_only=visible_only,
             search_timeout=self.search_timeout,
+            interval=interval,
         )
 
     def window_exists(self, title, class_name=None, include_children=False):

@@ -7,7 +7,13 @@ import os
 import time
 
 from tools.receipt_body_table_locator import locate_receipt_body_table_cached
-from tools.receipt_detail_fields import ACCOUNT_COL, normalize_text
+from tools.receipt_detail_fields import (
+    ACCOUNT_COL,
+    AMOUNT_COL,
+    SUBJECT_COL,
+    normalize_amount_text,
+    normalize_text,
+)
 from tools.receipt_detail_reader import (
     read_located_body_table,
     read_row_cells,
@@ -19,7 +25,7 @@ from tools.receipt_detail_screen_writer import (
     focus_detail_cell,
     keyboard_write_selected_cell,
 )
-from tools.tmp_receipt_cell_probe_run import guarded_send_ctrl_d
+from tools.receipt_keyboard_utils import guarded_send_ctrl_d
 
 
 def skip_fee_extra_row_delete_enabled():
@@ -82,6 +88,33 @@ def _with_delete_effect(result, expected_rows=None):
     return result
 
 
+def guard_extra_row_deletable(jab, located, row_index):
+    snapshot, cells = read_row_cells(jab, row_index, located)
+    if not snapshot.get("ok"):
+        return {
+            "ok": False,
+            "reason": f"删除前无法读取第 {row_index + 1} 行：{snapshot.get('reason')}",
+            "snapshot": snapshot,
+        }
+    subject = normalize_text(cells.get(str(SUBJECT_COL)))
+    amount = normalize_amount_text(cells.get(str(AMOUNT_COL)))
+    safe = not subject and amount in ("", "0.00")
+    return {
+        "ok": safe,
+        "row_index": row_index,
+        "cells": cells,
+        "snapshot": snapshot,
+        "subject": subject,
+        "amount": amount,
+        "reason": None
+        if safe
+        else (
+            f"第 {row_index + 1} 行已有业务内容，禁止删除："
+            f"科目={subject!r}，金额={amount!r}"
+        ),
+    }
+
+
 def cleanup_rows_after_first(jab, located, scope_hwnd=None):
     started_at = time.perf_counter()
     before = read_located_body_table(
@@ -140,6 +173,20 @@ def cleanup_rows_after_first(jab, located, scope_hwnd=None):
                 },
                 expected_rows=1,
             )
+        guard = guard_extra_row_deletable(jab, refreshed, target_row)
+        if not guard.get("ok"):
+            return _with_delete_effect(
+                {
+                    "ok": False,
+                    "reason": guard.get("reason"),
+                    "before_rows": before_rows,
+                    "after_rows": current_rows,
+                    "steps": steps,
+                    "guard": guard,
+                    "seconds": round(time.perf_counter() - started_at, 3),
+                },
+                expected_rows=1,
+            )
         sent = guarded_send_ctrl_d(table_window)
         waited = wait_body_row_count(
             jab,
@@ -192,7 +239,7 @@ def clear_fee_account_if_filled(jab, located, row_index, known_cells=None):
     snapshot = None
     cells = known_cells or {}
     before = normalize_text(cells.get(str(ACCOUNT_COL)))
-    if known_cells is None:
+    if known_cells is None or str(ACCOUNT_COL) not in cells:
         snapshot, cells = read_row_cells(jab, row_index, located)
         before = normalize_text(cells.get(str(ACCOUNT_COL)))
         if not snapshot.get("ok"):
@@ -236,24 +283,41 @@ def clear_fee_account_if_filled(jab, located, row_index, known_cells=None):
     }
 
 
-def delete_extra_row_if_present(jab, located, expected_rows, scope_hwnd=None):
-    fast_count = read_table_row_count_by_path(jab, located)
-    if fast_count.get("ok") and int(fast_count.get("row_count") or 0) <= expected_rows:
-        row_count = int(fast_count.get("row_count") or 0)
-        return _with_delete_effect(
-            {
-                "ok": True,
-                "skipped": True,
-                "fast_path": True,
-                "before_rows": row_count,
-                "after_rows": row_count,
-                "steps": [],
-                "seconds": 0.0,
-                "reason": f"当前 {row_count} 行，无需删行，不切换焦点",
-            },
-            expected_rows=expected_rows,
-        )
-    fast = fast_delete_extra_rows_by_row_count(jab, located, expected_rows)
+def delete_extra_row_if_present(
+    jab,
+    located,
+    expected_rows,
+    scope_hwnd=None,
+    known_row_count=None,
+    defer_wait=False,
+):
+    if known_row_count is None:
+        fast_count = read_table_row_count_by_path(jab, located)
+        if (
+            fast_count.get("ok")
+            and int(fast_count.get("row_count") or 0) <= expected_rows
+        ):
+            row_count = int(fast_count.get("row_count") or 0)
+            return _with_delete_effect(
+                {
+                    "ok": True,
+                    "skipped": True,
+                    "fast_path": True,
+                    "before_rows": row_count,
+                    "after_rows": row_count,
+                    "steps": [],
+                    "seconds": 0.0,
+                    "reason": f"当前 {row_count} 行，无需删行，不切换焦点",
+                },
+                expected_rows=expected_rows,
+            )
+    fast = fast_delete_extra_rows_by_row_count(
+        jab,
+        located,
+        expected_rows,
+        known_row_count=known_row_count,
+        defer_wait=defer_wait,
+    )
     if fast.get("ok") or fast.get("skipped"):
         return fast
 
@@ -311,7 +375,20 @@ def delete_extra_row_if_present(jab, located, expected_rows, scope_hwnd=None):
                 },
                 expected_rows=expected_rows,
             )
-
+        guard = guard_extra_row_deletable(jab, refreshed, target_row)
+        if not guard.get("ok"):
+            return _with_delete_effect(
+                {
+                    "ok": False,
+                    "before_rows": before_rows,
+                    "after_rows": current_rows,
+                    "reason": guard.get("reason"),
+                    "steps": steps,
+                    "guard": guard,
+                    "seconds": round(time.perf_counter() - started_at, 3),
+                },
+                expected_rows=expected_rows,
+            )
         sent = guarded_send_ctrl_d(table_window)
         waited = wait_body_row_count(
             jab,
@@ -361,18 +438,27 @@ def delete_extra_row_if_present(jab, located, expected_rows, scope_hwnd=None):
     )
 
 
-def fast_delete_extra_rows_by_row_count(jab, located, expected_rows):
+def fast_delete_extra_rows_by_row_count(
+    jab,
+    located,
+    expected_rows,
+    known_row_count=None,
+    defer_wait=False,
+):
     started_at = time.perf_counter()
-    before = read_table_row_count_by_path(jab, located)
-    if not before.get("ok"):
-        return {
-            "ok": False,
-            "fast_path": True,
-            "fallback_required": True,
-            "reason": before.get("reason"),
-            "seconds": round(time.perf_counter() - started_at, 3),
-        }
-    before_rows = int(before.get("row_count") or 0)
+    if known_row_count is None:
+        before = read_table_row_count_by_path(jab, located)
+        if not before.get("ok"):
+            return {
+                "ok": False,
+                "fast_path": True,
+                "fallback_required": True,
+                "reason": before.get("reason"),
+                "seconds": round(time.perf_counter() - started_at, 3),
+            }
+        before_rows = int(before.get("row_count") or 0)
+    else:
+        before_rows = int(known_row_count or 0)
     if before_rows <= expected_rows:
         return _with_delete_effect(
             {
@@ -410,13 +496,38 @@ def fast_delete_extra_rows_by_row_count(jab, located, expected_rows):
                 },
                 expected_rows=expected_rows,
             )
+        guard = guard_extra_row_deletable(jab, located, target_row)
+        if not guard.get("ok"):
+            return _with_delete_effect(
+                {
+                    "ok": False,
+                    "fast_path": True,
+                    "fallback_required": False,
+                    "before_rows": before_rows,
+                    "after_rows": current_rows,
+                    "steps": steps,
+                    "guard": guard,
+                    "reason": guard.get("reason"),
+                    "seconds": round(time.perf_counter() - started_at, 3),
+                },
+                expected_rows=expected_rows,
+            )
         sent = guarded_send_ctrl_d(table_window)
-        waited = wait_table_row_count_by_path(
-            jab,
-            located,
-            expected_rows=current_rows - 1,
-            label="after_fast_extra_row_delete",
-        )
+        if defer_wait:
+            waited = {
+                "ok": True,
+                "skipped": True,
+                "expected_rows": current_rows - 1,
+                "actual_rows": current_rows - 1 if sent.get("ok") else current_rows,
+                "reason": "行数读回交给最终 pipeline verifier",
+            }
+        else:
+            waited = wait_table_row_count_by_path(
+                jab,
+                located,
+                expected_rows=current_rows - 1,
+                label="after_fast_extra_row_delete",
+            )
         after_rows = int(waited.get("actual_rows") or 0)
         step = {
             "target_row": target_row,

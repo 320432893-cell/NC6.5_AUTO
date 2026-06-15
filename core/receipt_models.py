@@ -132,3 +132,12 @@ class ReceiptMatchIssue:
     excel_row: int
     reason: str
     nc_rows: list[int]
+
+
+@dataclass(frozen=True)
+class ReceiptBatchResultRow:
+    plan_row: ReceiptPlanRow
+    local_status: str
+    exception_reason: str = ""
+    nc_customer_name: str = ""
+    nc_document_no: str = ""

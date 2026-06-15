@@ -17,7 +17,7 @@ from core.jab_operator import JABOperator  # noqa: E402
 from core.receipt_config import ReceiptEntryConfig  # noqa: E402
 from core.utils import load_config  # noqa: E402
 from tools.jab_health_check import check_jab_ready  # noqa: E402
-from tools.receipt_account_reference_try import (  # noqa: E402
+from tools.receipt_keyboard_utils import (  # noqa: E402
     STOP_HOTKEY,
     is_stop_hotkey_pressed,
 )
