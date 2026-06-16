@@ -12,38 +12,136 @@ from tools.jab_probe import JOBJECT, enum_windows
 from tools.receipt_keyboard_utils import send_hotkey_alt_c
 
 
-def recover_cancelable_modal_before_save(jab, page_probe, timeout=0.8):
-    before_page = page_probe(jab)
-    if before_page.get("ok"):
-        return {
-            "ok": True,
-            "skipped": True,
-            "reason": "当前仍是收款单录入页，无需 Alt+C 恢复",
-            "before_page": before_page,
-        }
+def recover_cancelable_modal_now(jab, stage="", settle_timeout=0.25):
     dialogs = collect_visible_java_dialogs(jab)
     recoverable = [item for item in dialogs if item.get("cancel_controls")]
     if not recoverable:
         return {
-            "ok": False,
-            "reason": "当前不是收款单录入页，且未找到带取消按钮的可恢复弹窗",
-            "before_page": before_page,
-            "dialogs": dialogs,
+            "ok": True,
+            "attempted": False,
+            "stage": stage,
+            "dialog_count": len(dialogs),
+            "reason": "未发现带取消按钮的 Java 弹窗",
         }
-    send_hotkey_alt_c()
-    time.sleep(float(timeout or 0))
-    after_page = page_probe(jab)
-    after_dialogs = collect_visible_java_dialogs(jab)
-    return {
-        "ok": bool(after_page.get("ok")),
+    event = {
+        "ok": False,
+        "attempted": True,
+        "stage": stage,
         "method": "Alt+C",
-        "before_page": before_page,
-        "before_dialogs": dialogs,
-        "recoverable_dialog_count": len(recoverable),
-        "after_page": after_page,
-        "after_dialogs": after_dialogs,
-        "reason": None if after_page.get("ok") else "Alt+C 后仍未恢复收款单录入页",
+        "dialogs": recoverable[:5],
     }
+    event["focus"] = focus_window(recoverable[0].get("hwnd"))
+    send_hotkey_alt_c()
+    time.sleep(float(settle_timeout or 0))
+    after = collect_visible_java_dialogs(jab)
+    still_recoverable = [item for item in after if item.get("cancel_controls")]
+    event["after_dialogs"] = after[:5]
+    event["ok"] = not still_recoverable
+    event["reason"] = None if event["ok"] else "Alt+C 后仍存在带取消按钮的 Java 弹窗"
+    return event
+
+
+def retry_after_cancelable_modal(
+    action,
+    recover_jab,
+    *,
+    stage="",
+    retry_once=True,
+    is_success=None,
+):
+    try:
+        result = action()
+    except Exception as exc:
+        recovery = recover_cancelable_modal_now(recover_jab, stage=stage)
+        if recovery.get("attempted") and recovery.get("ok") and retry_once:
+            try:
+                retried = action()
+            except Exception as retry_exc:
+                return {
+                    "ok": False,
+                    "exception": f"{type(retry_exc).__name__}: {retry_exc}",
+                    "modal_recovery": recovery,
+                    "retried": True,
+                }
+            return {
+                "ok": bool(is_success(retried) if is_success else retried),
+                "result": retried,
+                "modal_recovery": recovery,
+                "retried": True,
+            }
+        return {
+            "ok": False,
+            "exception": f"{type(exc).__name__}: {exc}",
+            "modal_recovery": recovery,
+            "retried": False,
+        }
+    ok = bool(is_success(result) if is_success else result)
+    if ok:
+        return {"ok": True, "result": result, "retried": False}
+    recovery = recover_cancelable_modal_now(recover_jab, stage=stage)
+    if recovery.get("attempted") and recovery.get("ok") and retry_once:
+        try:
+            retried = action()
+        except Exception as retry_exc:
+            return {
+                "ok": False,
+                "exception": f"{type(retry_exc).__name__}: {retry_exc}",
+                "result": result,
+                "modal_recovery": recovery,
+                "retried": True,
+            }
+        return {
+            "ok": bool(is_success(retried) if is_success else retried),
+            "result": retried,
+            "first_result": result,
+            "modal_recovery": recovery,
+            "retried": True,
+        }
+    return {
+        "ok": False,
+        "result": result,
+        "modal_recovery": recovery,
+        "retried": False,
+    }
+
+
+def focus_window(hwnd):
+    if sys.platform != "win32" or not hwnd:
+        return {"ok": False, "reason": "必须在 Windows Python 下运行且需要 hwnd"}
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    hwnd = int(hwnd)
+    foreground = int(user32.GetForegroundWindow() or 0)
+    current_thread = int(kernel32.GetCurrentThreadId())
+    target_thread = int(user32.GetWindowThreadProcessId(wintypes.HWND(hwnd), None))
+    foreground_thread = (
+        int(user32.GetWindowThreadProcessId(wintypes.HWND(foreground), None))
+        if foreground
+        else 0
+    )
+    attached = []
+    try:
+        user32.ShowWindow(wintypes.HWND(hwnd), 9)
+        user32.BringWindowToTop(wintypes.HWND(hwnd))
+        for thread_id in {target_thread, foreground_thread}:
+            if thread_id and thread_id != current_thread:
+                if user32.AttachThreadInput(current_thread, thread_id, True):
+                    attached.append(thread_id)
+        ok = bool(user32.SetForegroundWindow(wintypes.HWND(hwnd)))
+        user32.SetFocus(wintypes.HWND(hwnd))
+        user32.SetActiveWindow(wintypes.HWND(hwnd))
+        time.sleep(0.05)
+        after = int(user32.GetForegroundWindow() or 0)
+        return {
+            "ok": bool(ok or after == hwnd),
+            "hwnd": hwnd,
+            "foreground_before": foreground,
+            "foreground_after": after,
+            "attached_threads": attached,
+        }
+    finally:
+        for thread_id in attached:
+            user32.AttachThreadInput(current_thread, thread_id, False)
 
 
 def collect_visible_java_dialogs(jab):

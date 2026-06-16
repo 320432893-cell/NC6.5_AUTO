@@ -7,7 +7,6 @@ import json
 import os
 import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 
@@ -24,16 +23,24 @@ from tools.receipt_new_probe import (  # noqa: E402
     collect_receipt_new_windows,
     detect_self_made_entry_state,
 )
+from tools.receipt_keyboard_utils import (  # noqa: E402
+    foreground_matches_window,
+    get_clipboard_text,
+    restore_clipboard_text,
+    send_hotkey_ctrl_a,
+    send_hotkey_ctrl_v,
+    send_virtual_key,
+    set_clipboard_text,
+)
 from tools.receipt_table_cell_probe import select_cell  # noqa: E402
 
 
 CURRENCY_NAMES = {"USD": "美元", "RMB": "人民币", "CNY": "人民币"}
+VK_RETURN = 0x0D
 HEADER_DYNAMIC_PREFIX_BASE = "0.0.1.0.0.0.0"
-HEADER_DYNAMIC_MAX_INDEX = 8
 HEADER_COMMON_SUFFIX_TEMPLATE = "0.0.0.1.1.0.0.0.0.1.0.2.0.0.0.0.0.0.0.{index}.0"
 HEADER_COMMON_LABEL_SUFFIX_TEMPLATE = "0.0.0.1.1.0.0.0.0.1.0.2.0.0.0.0.0.0.0.{index}"
-FINANCE_ORG_SUFFIX = "0.0.0.1.1.0.0.0.0.1.1.1.0"
-FINANCE_ORG_LABEL_SUFFIX = "0.0.0.1.1.0.0.0.0.1.1.0"
+FINANCE_ORG_LABEL_SUFFIX = "0.0.0.1.1.0.0.0.1.1.1.0"
 HEADER_FORM_TEXT_INDEXES = {
     "单据日期": 5,
     "币种": 13,
@@ -42,7 +49,15 @@ HEADER_FORM_TEXT_INDEXES = {
     "结算方式": 31,
 }
 HEADER_REQUIRED_LABELS = ("财务组织", "客户", "单据日期", "币种", "结算方式")
-FAST_HEADER_SCOPE_LABEL = "财务组织"
+HEADER_LABEL_ALIASES = {
+    "财务组织": ("财务组织(O)",),
+    "客户": ("客户",),
+    "单据日期": ("单据日期",),
+    "币种": ("币种",),
+    "结算方式": ("结算方式",),
+}
+HEADER_SCOPE_ANCHOR_LABEL = "财务组织"
+HEADER_SCOPE_ANCHOR_TEXT = "财务组织(O)"
 
 
 def print_json(data):
@@ -177,6 +192,52 @@ def build_business_values(config, row_data):
 
 
 def run_receipt_new_probe():
+    return run_receipt_new_probe_with_jab()
+
+
+def run_receipt_new_probe_with_jab(jab=None):
+    if jab is not None:
+        from argparse import Namespace
+        from tools import receipt_new_probe
+
+        args = Namespace(
+            config="config.json",
+            method="button",
+            path=None,
+            title=None,
+            class_name="SunAwtFrame",
+            name="新增",
+            role=None,
+            action=None,
+            return_timeout=0.2,
+            wait=0.8,
+            choose_self_made=True,
+            self_made_index=0,
+            json=False,
+            summary=True,
+        )
+        report = receipt_new_probe.run(args, jab=jab)
+        entry_state = report.get("entry_state") or {}
+        ok = bool(
+            (report.get("open") or {}).get("ok")
+            and (report.get("choose_self_made") or {}).get("ok")
+        )
+        return {
+            "step": "open_self_made",
+            "ok": ok,
+            "parsed": report,
+            "entry_state": entry_state,
+            "windows_after_choose": report.get("windows_after_choose"),
+            "windows_after_open": report.get("windows_after_open"),
+            "reason": None
+            if ok
+            else (
+                ((report.get("open") or {}).get("reason"))
+                or ((report.get("choose_self_made") or {}).get("reason"))
+                or "未能完成新增->自制"
+            ),
+        }
+
     cmd = [
         sys.executable,
         str(ROOT / "tools" / "receipt_new_probe.py"),
@@ -205,7 +266,6 @@ def run_receipt_new_probe():
             proc.returncode == 0
             and bool((parsed.get("open") or {}).get("ok"))
             and bool((parsed.get("choose_self_made") or {}).get("ok"))
-            and bool(entry_state.get("ok"))
         )
     except json.JSONDecodeError:
         ok = False
@@ -244,25 +304,34 @@ def detect_existing_self_made_entry(config):
         jab.close()
 
 
-def fill_header(jab, business):
+def fill_header(
+    jab,
+    business,
+    after_field=None,
+    scope_hwnd=None,
+    dynamic_index=None,
+    anchor_path=None,
+    recover_after_failure=None,
+):
+    started_at = time.perf_counter()
     steps = []
-    scope = locate_receipt_header_scope(jab)
+    scope_started_at = time.perf_counter()
+    scope = resolve_receipt_header_scope(jab, scope_hwnd, dynamic_index, anchor_path)
+    scope_seconds = round(time.perf_counter() - scope_started_at, 3)
     if not scope.get("ok"):
         return [
             {
                 "step": "blocked",
                 "reason": "header scope not resolved",
                 "scope": scope,
+                "header_timing": {
+                    "scope_seconds": scope_seconds,
+                    "total_seconds": round(time.perf_counter() - started_at, 3),
+                },
             }
         ]
     dynamic_index = scope.get("dynamic_index")
     scope_hwnd = scope.get("scope_hwnd")
-    semantic_preload = HeaderSemanticPreload(
-        jab.config if hasattr(jab, "config") else None,
-        scope_hwnd,
-        [label for label in HEADER_REQUIRED_LABELS if label != "财务组织"],
-    )
-    semantic_preload.start()
     for field in [
         {
             "label": "财务组织",
@@ -294,6 +363,7 @@ def fill_header(jab, business):
         label = field["label"]
         value = field["value"]
         if field.get("dynamic_path"):
+            field_started_at = time.perf_counter()
             result = set_receipt_header_dynamic_field(
                 jab,
                 label,
@@ -301,10 +371,10 @@ def fill_header(jab, business):
                 dynamic_index,
                 scope_hwnd,
                 accepted_text=field.get("accepted_text"),
-                semantic_snapshot=semantic_preload.snapshot(timeout=0.0),
-                semantic_preload=semantic_preload,
+                recover_after_failure=recover_after_failure,
             )
             ok = bool(result.get("ok"))
+            field_seconds = round(time.perf_counter() - field_started_at, 3)
             steps.append(
                 {
                     "step": "header",
@@ -318,7 +388,11 @@ def fill_header(jab, business):
                         "dynamic_prefix": scope.get("dynamic_prefix"),
                     },
                     **result,
-                    "semantic_preload": semantic_preload.snapshot(timeout=0.0),
+                    "seconds": field_seconds,
+                    "header_timing": {
+                        "scope_seconds": scope_seconds,
+                        "elapsed_seconds": round(time.perf_counter() - started_at, 3),
+                    },
                 }
             )
         else:
@@ -342,76 +416,177 @@ def fill_header(jab, business):
                 }
             )
             break
+        if after_field is not None:
+            callback_report = after_field(label, value, steps[-1])
+            if callback_report is not None:
+                steps[-1]["after_field_callback"] = callback_report
+                if not callback_report.get("ok", True):
+                    steps.append(
+                        {
+                            "step": "blocked",
+                            "reason": callback_report.get("reason")
+                            or "header after-field callback blocked workflow",
+                            "label": label,
+                        }
+                    )
+                    break
     return steps
 
 
-class HeaderSemanticPreload:
-    def __init__(self, config, scope_hwnd, labels):
-        self.config = config
-        self.scope_hwnd = scope_hwnd
-        self.labels = list(labels)
-        self.started_at = None
-        self.finished_at = None
-        self.result = {
-            "status": "not_started",
+def resolve_receipt_header_scope(
+    jab, scope_hwnd=None, dynamic_index=None, anchor_path=None
+):
+    cached = getattr(jab, "_receipt_header_scope_cache", None)
+    if cached and (scope_hwnd is None or cached.get("scope_hwnd") == scope_hwnd):
+        return {**cached, "cached": True}
+    if scope_hwnd and dynamic_index is not None:
+        scoped = validate_receipt_header_scope_anchor(
+            jab,
+            scope_hwnd,
+            dynamic_index,
+            anchor_path=anchor_path,
+        )
+        if scoped.get("ok"):
+            try:
+                setattr(jab, "_receipt_header_scope_cache", scoped)
+            except AttributeError:
+                pass
+            return scoped
+        return scoped
+    return {
+        "ok": False,
+        "mode": "provided-canvas-anchor",
+        "reason": "正式表头缺少当前 canvas scope 或 dynamic_index，停止；不走语义兜底",
+        "scope_hwnd": scope_hwnd,
+        "dynamic_index": dynamic_index,
+        "label_path": anchor_path,
+    }
+
+
+def validate_receipt_header_scope_anchor(
+    jab, scope_hwnd, dynamic_index, anchor_path=None
+):
+    label_path = anchor_path or build_receipt_header_dynamic_label_path(
+        dynamic_index,
+        HEADER_SCOPE_ANCHOR_LABEL,
+    )
+    if not label_path:
+        return {
+            "ok": False,
+            "mode": "provided-canvas-anchor",
+            "reason": "财务组织(O) label path not configured",
             "scope_hwnd": scope_hwnd,
-            "fields": {},
+            "dynamic_index": dynamic_index,
         }
-        self._thread = None
+    context, vm_id, owned_contexts, window_info = jab.find_context_by_path_once(
+        label_path,
+        class_name="SunAwtCanvas",
+        scope_hwnd=scope_hwnd,
+        role="label",
+        require_showing=False,
+        require_valid_bounds=False,
+    )
+    if not context:
+        return {
+            "ok": False,
+            "mode": "provided-canvas-anchor",
+            "reason": "当前 canvas 未找到财务组织(O) 锚点",
+            "scope_hwnd": scope_hwnd,
+            "dynamic_index": dynamic_index,
+            "label_path": label_path,
+        }
+    try:
+        info = jab.get_context_info(vm_id, context)
+        anchor_ok = bool(info and header_scope_anchor_text_matches(info))
+        anchor_text = {
+            "name": info.name.strip() if info else "",
+            "description": info.description.strip() if info else "",
+        }
+    finally:
+        jab.release_contexts(vm_id, owned_contexts)
+    if not anchor_ok:
+        return {
+            "ok": False,
+            "mode": "provided-canvas-anchor",
+            "reason": "当前 canvas 财务组织(O) 锚点文本不匹配",
+            "scope_hwnd": scope_hwnd,
+            "dynamic_index": dynamic_index,
+            "label_path": label_path,
+            "anchor_text": anchor_text,
+        }
+    return {
+        "ok": True,
+        "scope_hwnd": scope_hwnd,
+        "mode": "provided-canvas-anchor",
+        "dynamic_index": dynamic_index,
+        "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
+        "matched_labels": [HEADER_SCOPE_ANCHOR_LABEL],
+        "semantic_label_path": label_path,
+        "anchor_text": anchor_text,
+        "window": window_info,
+    }
 
-    def start(self):
-        if not self.config:
-            self.result["status"] = "skipped"
-            self.result["reason"] = "JAB config unavailable"
-            return
-        self.started_at = time.perf_counter()
-        self.result["status"] = "running"
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
 
-    def _run(self):
-        jab = JABOperator(self.config)
-        try:
-            jab.ensure_started()
-            fields = {}
-            for label in self.labels:
-                found = find_receipt_header_field_by_semantic_label(
-                    jab,
-                    label,
-                    scope_hwnd=self.scope_hwnd,
-                )
-                fields[label] = {
-                    "ok": bool(found.get("ok")),
-                    "path": found.get("path"),
-                    "label_path": found.get("label_path"),
-                    "reason": found.get("reason"),
-                }
-                if found.get("ok"):
-                    jab.release_contexts(found["vm_id"], found["owned_contexts"])
-            self.result["fields"] = fields
-            self.result["ok"] = all(item.get("ok") for item in fields.values())
-            self.result["status"] = "ready"
-        except Exception as exc:
-            self.result["ok"] = False
-            self.result["status"] = "error"
-            self.result["reason"] = f"{type(exc).__name__}: {exc}"
-        finally:
-            self.finished_at = time.perf_counter()
-            if self.started_at is not None:
-                self.result["seconds"] = round(self.finished_at - self.started_at, 3)
-            jab.close()
-
-    def snapshot(self, timeout=0.0):
-        if self._thread is not None:
-            self._thread.join(timeout=max(float(timeout or 0), 0.0))
-        data = dict(self.result)
-        if self.started_at is not None and self.finished_at is None:
-            data["elapsed_seconds"] = round(time.perf_counter() - self.started_at, 3)
-        return data
+def resolve_receipt_header_anchor_in_canvas(jab, scope_hwnd, timeout=0.6):
+    label_found = find_header_label_context_with_window(
+        jab,
+        HEADER_SCOPE_ANCHOR_LABEL,
+        timeout=timeout,
+        require_showing=False,
+        scope_hwnd=scope_hwnd,
+        strict_anchor=True,
+    )
+    label_context, vm_id, owned_contexts, owned_indexes, window = label_found
+    if not label_context:
+        return {
+            "ok": False,
+            "reason": "当前 canvas 未找到财务组织(O) 锚点",
+            "scope_hwnd": scope_hwnd,
+            "window": window,
+        }
+    label_path = ".".join(["0", *[str(index) for index in owned_indexes]])
+    try:
+        info = jab.get_context_info(vm_id, label_context)
+        anchor_ok = bool(info and header_scope_anchor_text_matches(info))
+        anchor_text = {
+            "name": info.name.strip() if info else "",
+            "description": info.description.strip() if info else "",
+        }
+    finally:
+        jab.release_contexts(vm_id, owned_contexts)
+    if not anchor_ok:
+        return {
+            "ok": False,
+            "reason": "当前 canvas 财务组织(O) 锚点文本不匹配",
+            "scope_hwnd": scope_hwnd,
+            "label_path": label_path,
+            "anchor_text": anchor_text,
+            "window": window,
+        }
+    dynamic_index = extract_receipt_header_dynamic_index(label_path)
+    if dynamic_index is None:
+        return {
+            "ok": False,
+            "reason": "当前 canvas 财务组织(O) 锚点无法推出动态前缀",
+            "scope_hwnd": scope_hwnd,
+            "label_path": label_path,
+            "anchor_text": anchor_text,
+            "window": window,
+        }
+    return {
+        "ok": True,
+        "scope_hwnd": scope_hwnd,
+        "dynamic_index": dynamic_index,
+        "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
+        "label_path": label_path,
+        "anchor_text": anchor_text,
+        "window": window,
+        "mode": "current-canvas-anchor",
+    }
 
 
 def wait_header_account_description(jab, timeout=5.0, scope=None):
-    deadline = time.time() + timeout
+    deadline = time.time() + max(float(timeout or 0), 0.0)
     last = None
     if scope is None:
         scope = locate_receipt_header_scope(jab)
@@ -419,7 +594,9 @@ def wait_header_account_description(jab, timeout=5.0, scope=None):
         return {"text": None, "description": "", "accepted": False, "scope": scope}
     dynamic_index = scope.get("dynamic_index")
     scope_hwnd = scope.get("scope_hwnd")
-    while time.time() < deadline:
+    first_attempt = True
+    while first_attempt or time.time() < deadline:
+        first_attempt = False
         found = find_receipt_header_field_by_dynamic_path(
             jab,
             "收款银行账户",
@@ -442,6 +619,8 @@ def wait_header_account_description(jab, timeout=5.0, scope=None):
                     return last
             finally:
                 jab.release_contexts(vm_id, owned_contexts)
+        if time.time() >= deadline:
+            break
         time.sleep(0.3)
     if last is None:
         last = {"text": None, "description": "", "accepted": False}
@@ -457,97 +636,135 @@ def set_receipt_header_dynamic_field(
     dynamic_index,
     scope_hwnd,
     accepted_text=None,
-    semantic_snapshot=None,
-    semantic_preload=None,
+    recover_after_failure=None,
 ):
-    found = find_receipt_header_field_by_dynamic_path(
-        jab,
-        label,
-        dynamic_index,
-        scope_hwnd=scope_hwnd,
-        require_showing=label != "财务组织",
-        require_valid_bounds=label != "财务组织",
-    )
-    path_attempt = found
-    if not found.get("ok"):
-        if (
-            semantic_preload is not None
-            and semantic_snapshot
-            and semantic_snapshot.get("status") == "running"
-        ):
-            semantic_snapshot = semantic_preload.snapshot(timeout=1.5)
-        takeover = find_receipt_header_field_by_semantic_cache(
+    def find_by_path():
+        label_found = find_receipt_header_field_by_scoped_label(
             jab,
             label,
-            semantic_snapshot,
-            scope_hwnd,
+            scope_hwnd=scope_hwnd,
         )
-        if takeover.get("ok"):
-            found = takeover
+        if label_found.get("ok"):
+            return label_found
+        path_found = find_receipt_header_field_by_dynamic_path(
+            jab,
+            label,
+            dynamic_index,
+            scope_hwnd=scope_hwnd,
+            require_showing=False,
+            require_valid_bounds=False,
+        )
+        if path_found.get("ok"):
+            path_found["source"] = "dynamic-path-fallback"
+            path_found["scoped_label_attempt"] = label_found
+            return path_found
+        return {
+            **path_found,
+            "scoped_label_attempt": label_found,
+        }
+
+    recovery_after_find = None
+    try:
+        found = find_by_path()
+    except Exception as exc:
+        if recover_after_failure is None:
+            raise
+        recovery_after_find = recover_after_failure()
+        if recovery_after_find.get("attempted") and recovery_after_find.get("ok"):
+            try:
+                found = find_by_path()
+            except Exception as retry_exc:
+                return {
+                    "ok": False,
+                    "stage": "resolve",
+                    "exception": f"{type(retry_exc).__name__}: {retry_exc}",
+                    "first_exception": f"{type(exc).__name__}: {exc}",
+                    "modal_recovery": recovery_after_find,
+                }
         else:
             return {
                 "ok": False,
                 "stage": "resolve",
-                "path_attempt": path_attempt,
-                "semantic_takeover": takeover,
+                "exception": f"{type(exc).__name__}: {exc}",
+                "modal_recovery": recovery_after_find,
             }
+    if not found.get("ok") and recover_after_failure is not None:
+        recovery_after_find = recover_after_failure()
+        if recovery_after_find.get("attempted") and recovery_after_find.get("ok"):
+            found = find_by_path()
+    path_attempt = found
+    if not found.get("ok"):
+        return {
+            "ok": False,
+            "stage": "resolve",
+            "path_attempt": path_attempt,
+            "modal_recovery": recovery_after_find,
+        }
     context = found["context"]
     vm_id = found["vm_id"]
     owned_contexts = found["owned_contexts"]
     window_info = found["window"]
-    try:
+
+    def write_current_context(initial_recovery=None):
         info_before = jab.get_context_info(vm_id, context)
         before = jab.get_text_context_value(vm_id, context)
-        set_ok = bool(jab.set_text_context(vm_id, context, value))
-        if set_ok and hasattr(jab.dll, "requestFocus"):
-            jab.dll.requestFocus(vm_id, context)
-        commit_action = (
-            do_context_commit_action(jab, vm_id, context) if set_ok else None
-        )
-        enter_ok = (
-            post_key_to_hwnd(window_info.get("hwnd"), "enter") if set_ok else False
-        )
-        backend_state = wait_backend_field_state(
+        set_text_ok = False
+        modal_recovery = initial_recovery
+        guarded_paste = guarded_paste_header_value(
             jab,
             vm_id,
             context,
-            value=value,
-            accepted_text=accepted_text,
-            timeout=3.5,
+            window_info,
+            value,
+        )
+        set_ok = bool(guarded_paste.get("ok"))
+        if not set_ok and recover_after_failure is not None:
+            recovery_after_set = recover_after_failure()
+            modal_recovery = recovery_after_set or modal_recovery
+            if recovery_after_set.get("attempted") and recovery_after_set.get("ok"):
+                guarded_paste = guarded_paste_header_value(
+                    jab,
+                    vm_id,
+                    context,
+                    window_info,
+                    value,
+                )
+                set_ok = bool(guarded_paste.get("ok"))
+        if set_ok and hasattr(jab.dll, "requestFocus"):
+            jab.dll.requestFocus(vm_id, context)
+        commit_action = None
+        enter_ok = (
+            bool(guarded_paste.get("enter_ok"))
+            if guarded_paste and guarded_paste.get("ok")
+            else False
         )
         info_after = jab.get_context_info(vm_id, context)
         after = jab.get_text_context_value(vm_id, context)
+        backend_state = describe_backend_field_state(
+            info_after,
+            after,
+            value=value,
+            accepted_text=accepted_text,
+        )
         return {
-            "ok": bool(
-                set_ok
-                and (
-                    backend_state.get("written")
-                    or backend_state.get("accepted")
-                    or backend_state.get("unlocked")
-                )
-            ),
+            "ok": bool(set_ok),
             "path": found.get("path"),
             "label_path": found.get("label_path"),
             "dynamic_index": found.get("dynamic_index"),
             "dynamic_prefix": found.get("dynamic_prefix"),
             "source": found.get("source") or "path",
             "path_attempt": path_attempt,
-            "semantic_takeover": None
-            if found is path_attempt
-            else {
-                "ok": True,
-                "path": found.get("path"),
-                "label_path": found.get("label_path"),
-                "source": found.get("source"),
-            },
             "text_before": before,
             "description_before": (
                 info_before.description.strip() if info_before else None
             ),
             "set_ok": bool(set_ok),
+            "set_text_ok": bool(set_text_ok),
+            "guarded_paste": guarded_paste,
+            "modal_recovery": modal_recovery,
             "commit_action": commit_action,
             "enter_ok": bool(enter_ok),
-            "backend_state": backend_state,
+            "post_write_snapshot": backend_state,
             "accepted_text": accepted_text_from_backend(
                 backend_state,
                 value,
@@ -558,60 +775,100 @@ def set_receipt_header_dynamic_field(
                 info_after.description.strip() if info_after else None
             ),
         }
+
+    try:
+        try:
+            return write_current_context(recovery_after_find)
+        except Exception as exc:
+            if recover_after_failure is None:
+                raise
+            recovery_after_exception = recover_after_failure()
+            if recovery_after_exception.get(
+                "attempted"
+            ) and recovery_after_exception.get("ok"):
+                try:
+                    retried = write_current_context(recovery_after_exception)
+                except Exception as retry_exc:
+                    return {
+                        "ok": False,
+                        "stage": "write",
+                        "exception": f"{type(retry_exc).__name__}: {retry_exc}",
+                        "first_exception": f"{type(exc).__name__}: {exc}",
+                        "path": found.get("path"),
+                        "label_path": found.get("label_path"),
+                        "dynamic_index": found.get("dynamic_index"),
+                        "dynamic_prefix": found.get("dynamic_prefix"),
+                        "modal_recovery": recovery_after_exception,
+                    }
+                retried["retried_after_modal_recovery"] = True
+                return retried
+            return {
+                "ok": False,
+                "stage": "write",
+                "exception": f"{type(exc).__name__}: {exc}",
+                "path": found.get("path"),
+                "label_path": found.get("label_path"),
+                "dynamic_index": found.get("dynamic_index"),
+                "dynamic_prefix": found.get("dynamic_prefix"),
+                "modal_recovery": recovery_after_exception,
+            }
     finally:
         jab.release_contexts(vm_id, owned_contexts)
 
 
-def find_receipt_header_field_by_semantic_cache(
-    jab,
-    label,
-    semantic_snapshot,
-    scope_hwnd,
-):
-    field = ((semantic_snapshot or {}).get("fields") or {}).get(label) or {}
-    path = field.get("path")
-    if not path:
-        return {"ok": False, "reason": "semantic preload path missing", "label": label}
-    context, vm_id, owned_contexts, window_info = jab.find_context_by_path_once(
-        path,
-        class_name="SunAwtCanvas",
-        scope_hwnd=scope_hwnd,
-        role="text",
-        require_showing=True,
-        require_valid_bounds=False,
-    )
-    if not context:
+def guarded_paste_header_value(jab, vm_id, context, window_info, value):
+    focus_ok = True
+    if hasattr(jab.dll, "requestFocus"):
+        focus_ok = bool(jab.dll.requestFocus(vm_id, context))
+    if not focus_ok:
         return {
             "ok": False,
-            "reason": "semantic preload path not found",
-            "label": label,
-            "path": path,
+            "method": "guarded-clipboard-paste",
+            "reason": "JAB requestFocus 失败，未发送剪贴板输入",
+            "focus_ok": False,
         }
-    dynamic_index = extract_receipt_header_dynamic_index(path)
-    return {
-        "ok": True,
-        "context": context,
-        "vm_id": vm_id,
-        "owned_contexts": owned_contexts,
-        "path": path,
-        "label_path": field.get("label_path"),
-        "window": window_info,
-        "dynamic_index": dynamic_index,
-        "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index)
-        if dynamic_index is not None
-        else None,
-        "source": "semantic_preload",
-    }
+    guard = foreground_matches_window({"hwnd": (window_info or {}).get("hwnd")})
+    if not guard.get("ok"):
+        return {
+            **guard,
+            "ok": False,
+            "method": "guarded-clipboard-paste",
+            "reason": f"{guard.get('reason')}，未发送表头剪贴板输入",
+            "focus_ok": True,
+        }
+    old_clipboard = get_clipboard_text()
+    result = None
+    try:
+        set_clipboard_text(str(value))
+        time.sleep(0.02)
+        send_hotkey_ctrl_a()
+        time.sleep(0.02)
+        send_hotkey_ctrl_v()
+        time.sleep(0.02)
+        send_virtual_key(VK_RETURN)
+        result = {
+            **guard,
+            "ok": True,
+            "method": "guarded-clipboard-paste",
+            "focus_ok": True,
+            "enter_ok": True,
+        }
+        return result
+    finally:
+        try:
+            clipboard_restored = restore_clipboard_text(old_clipboard)
+        except Exception:
+            clipboard_restored = False
+        if result is not None:
+            result["clipboard_restored"] = clipboard_restored
 
 
 def find_receipt_header_field_by_semantic_label(jab, label, scope_hwnd=None):
-    label_found = find_context_with_window(
+    label_found = find_header_label_context_with_window(
         jab,
         label,
-        roles=("label",),
         timeout=1.5,
-        require_showing=True,
-        window_class="SunAwtCanvas",
+        require_showing=label != HEADER_SCOPE_ANCHOR_LABEL,
         scope_hwnd=scope_hwnd,
     )
     label_context, vm_id, owned_contexts, owned_indexes, window = label_found
@@ -631,10 +888,11 @@ def find_receipt_header_field_by_semantic_label(jab, label, scope_hwnd=None):
             "label_path": label_path,
             "reason": "semantic label path cannot infer text path",
         }
+    label_window_hwnd = (window or {}).get("hwnd") or scope_hwnd
     context, vm_id, owned_contexts, window_info = jab.find_context_by_path_once(
         text_path,
         class_name="SunAwtCanvas",
-        scope_hwnd=scope_hwnd,
+        scope_hwnd=label_window_hwnd,
         role="text",
         require_showing=True,
         require_valid_bounds=False,
@@ -646,6 +904,8 @@ def find_receipt_header_field_by_semantic_label(jab, label, scope_hwnd=None):
             "label_path": label_path,
             "path": text_path,
             "reason": "semantic inferred text path not found",
+            "label_window": window,
+            "path_scope_hwnd": label_window_hwnd,
         }
     return {
         "ok": True,
@@ -659,13 +919,148 @@ def find_receipt_header_field_by_semantic_label(jab, label, scope_hwnd=None):
     }
 
 
+def find_header_label_context_with_window(
+    jab,
+    label,
+    timeout=1.5,
+    require_showing=True,
+    scope_hwnd=None,
+    strict_anchor=False,
+):
+    deadline = time.time() + max(float(timeout or 0), 0.0)
+    last_window_count = 0
+    while time.time() < deadline:
+        windows = jab.get_scoped_windows(scope_hwnd, include_children=True)
+        last_window_count = len(windows)
+        for hwnd, title, class_name, pid, visible in windows:
+            if not visible or class_name != "SunAwtCanvas":
+                continue
+            if not jab.dll.isJavaWindow(hwnd):
+                continue
+            from tools.jab_probe import JOBJECT
+
+            vm_id_ref = ctypes.c_long()
+            root_context = JOBJECT()
+            if not jab.dll.getAccessibleContextFromHWND(
+                hwnd,
+                ctypes.byref(vm_id_ref),
+                ctypes.byref(root_context),
+            ):
+                continue
+            context, owned_contexts, owned_indexes = find_header_label_in_tree(
+                jab,
+                vm_id_ref.value,
+                root_context.value,
+                label,
+                require_showing,
+                strict_anchor,
+                depth=0,
+                owned_contexts=[],
+                owned_indexes=[],
+            )
+            if context:
+                return (
+                    context,
+                    vm_id_ref.value,
+                    owned_contexts,
+                    owned_indexes,
+                    {
+                        "hwnd": int(hwnd),
+                        "title": title,
+                        "class_name": class_name,
+                        "pid": pid,
+                        "visible": visible,
+                    },
+                )
+            jab.release_contexts(vm_id_ref.value, [root_context.value])
+        time.sleep(0.1)
+    return None, None, [], [], {"window_count": last_window_count}
+
+
+def find_header_label_in_tree(
+    jab,
+    vm_id,
+    context,
+    label,
+    require_showing,
+    strict_anchor,
+    depth,
+    owned_contexts,
+    owned_indexes,
+):
+    info = jab.get_context_info(vm_id, context)
+    if not info:
+        return None, [], []
+    role = (info.role_en_US.strip() or info.role.strip()).lower()
+    states = (info.states_en_US.strip() or info.states.strip()).lower()
+    if (
+        role == "label"
+        and (
+            header_scope_anchor_text_matches(info)
+            if strict_anchor
+            else header_label_text_matches(info, label)
+        )
+        and (not require_showing or ("visible" in states and "showing" in states))
+    ):
+        return context, list(owned_contexts), list(owned_indexes)
+    if depth >= min(jab.max_depth, 50):
+        return None, [], []
+    if role == "table":
+        return None, [], []
+    for index in range(min(info.childrenCount, jab.max_children)):
+        child = jab.dll.getAccessibleChildFromContext(vm_id, context, index)
+        if not child:
+            continue
+        found, found_contexts, found_indexes = find_header_label_in_tree(
+            jab,
+            vm_id,
+            child,
+            label,
+            require_showing,
+            strict_anchor,
+            depth + 1,
+            owned_contexts + [child],
+            owned_indexes + [index],
+        )
+        if found:
+            return found, found_contexts, found_indexes
+        jab.release_contexts(vm_id, [child])
+    return None, [], []
+
+
+def header_label_text_matches(info, label):
+    expected = str(label or "").strip()
+    if not expected:
+        return False
+    texts = (
+        info.name.strip(),
+        info.description.strip(),
+    )
+    for text in texts:
+        if not text:
+            continue
+        normalized = text.replace("（", "(").replace("）", ")")
+        if normalized == expected or normalized.startswith(f"{expected}("):
+            return True
+    return False
+
+
+def header_scope_anchor_text_matches(info):
+    if not info:
+        return False
+    for text in (info.name.strip(), info.description.strip()):
+        if text.strip() == HEADER_SCOPE_ANCHOR_TEXT:
+            return True
+    return False
+
+
 def infer_header_text_path_from_label_path(label, label_path):
     parts = split_header_path(label_path)
     if not parts:
         return None
     if label == "财务组织":
         if parts[-1] == 0:
-            return ".".join(str(part) for part in [*parts[:-1], 1, 0])
+            return ".".join(str(part) for part in [*parts[:-1], 2, 1, 0])
         return None
     if parts[-1] % 2 != 0:
         return None
@@ -691,7 +1086,8 @@ def accepted_text_from_backend(backend_state, raw_value=None, preferred=None):
 
 def build_receipt_header_dynamic_path(dynamic_index, label):
     if label == "财务组织":
-        return f"{HEADER_DYNAMIC_PREFIX_BASE}.{dynamic_index}.{FINANCE_ORG_SUFFIX}"
+        label_path = build_receipt_header_dynamic_label_path(dynamic_index, label)
+        return infer_header_text_path_from_label_path(label, label_path)
     index = HEADER_FORM_TEXT_INDEXES.get(label)
     if index is None:
         return None
@@ -771,139 +1167,176 @@ def find_receipt_header_field_by_dynamic_path(
     }
 
 
-def infer_receipt_header_dynamic_prefix(
-    jab,
-    scope_hwnd=None,
-    dynamic_max=HEADER_DYNAMIC_MAX_INDEX,
-    require_showing=True,
-    require_valid_bounds=True,
-):
-    attempts = []
-    for dynamic_index in range(dynamic_max + 1):
-        ok_labels = []
-        label_results = {}
-        for label in HEADER_REQUIRED_LABELS:
-            found = find_receipt_header_field_by_dynamic_path(
-                jab,
-                label,
-                dynamic_index,
-                scope_hwnd=scope_hwnd,
-                require_showing=require_showing,
-                require_valid_bounds=require_valid_bounds,
-            )
-            label_results[label] = {
-                "ok": bool(found.get("ok")),
-                "path": found.get("path"),
-                "reason": found.get("reason"),
-            }
-            if found.get("ok"):
-                ok_labels.append(label)
-                jab.release_contexts(found["vm_id"], found["owned_contexts"])
-        if ok_labels:
-            attempts.append(
-                {
-                    "dynamic_index": dynamic_index,
-                    "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
-                    "ok_labels": ok_labels,
-                    "ok_count": len(ok_labels),
-                    "labels": label_results,
-                }
-            )
-        if len(ok_labels) == len(HEADER_REQUIRED_LABELS):
-            return {
-                "ok": True,
-                "dynamic_index": dynamic_index,
-                "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
-                "matched_labels": ok_labels,
-                "attempts": attempts,
-            }
-    return {
-        "ok": False,
-        "reason": "header dynamic prefix not found",
-        "attempts": attempts,
-    }
+def find_receipt_header_field_by_scoped_label(jab, label, scope_hwnd=None):
+    aliases = HEADER_LABEL_ALIASES.get(label, (label,))
+    for hwnd, title, class_name, pid, visible in jab.get_scoped_windows(
+        scope_hwnd, include_children=True
+    ):
+        if not visible or class_name != "SunAwtCanvas":
+            continue
+        if scope_hwnd is not None and int(hwnd) != int(scope_hwnd):
+            continue
+        if not jab.dll.isJavaWindow(hwnd):
+            continue
+        from tools.jab_probe import JOBJECT
 
-
-def infer_receipt_header_scope_fast(jab):
-    foreground_root = foreground_root_hwnd()
-    windows = jab.get_scoped_windows(None, include_children=True)
-    candidates = []
-    for window in windows:
-        hwnd, _title, class_name, _pid, visible = window
-        if (
-            not visible
-            or class_name != "SunAwtCanvas"
-            or not jab.dll.isJavaWindow(hwnd)
+        vm_id_ref = ctypes.c_long()
+        root_context = JOBJECT()
+        if not jab.dll.getAccessibleContextFromHWND(
+            hwnd,
+            ctypes.byref(vm_id_ref),
+            ctypes.byref(root_context),
         ):
             continue
-        if foreground_root and window_root_hwnd(hwnd) != foreground_root:
-            continue
-        prefix = infer_receipt_header_dynamic_prefix(
-            jab,
-            scope_hwnd=hwnd,
-            require_showing=False,
-            require_valid_bounds=False,
-        )
-        if not prefix.get("ok"):
-            continue
-        finance_org = find_receipt_header_field_by_dynamic_path(
-            jab,
-            FAST_HEADER_SCOPE_LABEL,
-            prefix["dynamic_index"],
-            scope_hwnd=hwnd,
-            require_showing=False,
-            require_valid_bounds=False,
-        )
-        if not finance_org.get("ok"):
-            continue
-        jab.release_contexts(finance_org["vm_id"], finance_org["owned_contexts"])
-        candidates.append(
-            {
-                "hwnd": int(hwnd),
-                "path": finance_org.get("path"),
-                "dynamic_index": prefix["dynamic_index"],
-                "dynamic_prefix": prefix["dynamic_prefix"],
-                "matched_labels": prefix.get("matched_labels"),
-            }
-        )
-    if len(candidates) == 1:
-        return {
-            "ok": True,
-            "scope_hwnd": candidates[0]["hwnd"],
-            "mode": "fast-path",
-            "dynamic_index": candidates[0]["dynamic_index"],
-            "dynamic_prefix": candidates[0]["dynamic_prefix"],
-            "candidates": candidates,
-        }
+        for alias in aliases:
+            result = find_label_following_text(
+                jab,
+                vm_id_ref.value,
+                root_context.value,
+                alias,
+                path="0",
+                depth=0,
+                owned_contexts=[root_context.value],
+            )
+            if result:
+                context, owned_contexts, path, label_path = result
+                return {
+                    "ok": True,
+                    "label": label,
+                    "matched_alias": alias,
+                    "context": context,
+                    "vm_id": vm_id_ref.value,
+                    "owned_contexts": owned_contexts,
+                    "path": path,
+                    "label_path": label_path,
+                    "window": {
+                        "hwnd": int(hwnd),
+                        "title": title,
+                        "class": class_name,
+                        "pid": pid,
+                        "visible": visible,
+                    },
+                    "dynamic_index": extract_receipt_header_dynamic_index(path),
+                    "dynamic_prefix": receipt_header_dynamic_prefix(
+                        extract_receipt_header_dynamic_index(path)
+                    )
+                    if extract_receipt_header_dynamic_index(path) is not None
+                    else None,
+                    "source": "scoped-label-following-text",
+                }
+        jab.release_contexts(vm_id_ref.value, [root_context.value])
     return {
         "ok": False,
-        "mode": "fast-path",
-        "candidates": candidates,
-        "reason": f"快速表头 scope 候选数量不是 1：{len(candidates)}",
+        "label": label,
+        "reason": "scoped label-following text not found",
+        "scope_hwnd": scope_hwnd,
+        "aliases": aliases,
     }
 
 
-def locate_receipt_header_scope(jab):
-    fast = infer_receipt_header_scope_fast(jab)
-    if fast.get("ok"):
-        return fast
-    semantic = infer_receipt_header_scope_by_semantic(jab)
+def find_label_following_text(jab, vm_id, context, label, path, depth, owned_contexts):
+    info = jab.get_context_info(vm_id, context)
+    if not info:
+        return None
+    role = (info.role_en_US.strip() or info.role.strip()).lower()
+    if depth >= jab.max_depth or role == "table":
+        return None
+
+    child_infos = []
+    for index in range(min(info.childrenCount, jab.max_children)):
+        child = jab.dll.getAccessibleChildFromContext(vm_id, context, index)
+        if not child:
+            continue
+        child_info = jab.get_context_info(vm_id, child)
+        child_path = f"{path}.{index}"
+        if child_info:
+            child_infos.append((index, child, child_info, child_path))
+        else:
+            jab.release_contexts(vm_id, [child])
+
+    for position, (_index, child, child_info, child_path) in enumerate(child_infos):
+        child_role = (child_info.role_en_US.strip() or child_info.role.strip()).lower()
+        child_states = (
+            child_info.states_en_US.strip() or child_info.states.strip()
+        ).lower()
+        child_texts = {child_info.name.strip(), child_info.description.strip()}
+        if child_role == "label" and label in child_texts and "visible" in child_states:
+            for _next_index, next_child, _next_info, next_path in child_infos[
+                position + 1 :
+            ]:
+                text_context, text_owned, text_path = first_text_descendant(
+                    jab,
+                    vm_id,
+                    next_child,
+                    next_path,
+                    depth + 1,
+                )
+                if text_context:
+                    keep = [item[1] for item in child_infos] + text_owned
+                    return text_context, owned_contexts + keep, text_path, child_path
+
+    for _index, child, _child_info, child_path in child_infos:
+        result = find_label_following_text(
+            jab,
+            vm_id,
+            child,
+            label,
+            child_path,
+            depth + 1,
+            owned_contexts + [item[1] for item in child_infos],
+        )
+        if result:
+            return result
+    for _index, child, _child_info, _child_path in child_infos:
+        jab.release_contexts(vm_id, [child])
+    return None
+
+
+def first_text_descendant(jab, vm_id, context, path, depth):
+    info = jab.get_context_info(vm_id, context)
+    if not info:
+        return None, [], None
+    role = (info.role_en_US.strip() or info.role.strip()).lower()
+    states = (info.states_en_US.strip() or info.states.strip()).lower()
+    if role == "text" and "visible" in states and "editable" in states:
+        return context, [], path
+    if depth >= jab.max_depth or role == "table":
+        return None, [], None
+    owned = []
+    for index in range(min(info.childrenCount, jab.max_children)):
+        child = jab.dll.getAccessibleChildFromContext(vm_id, context, index)
+        if not child:
+            continue
+        child_path = f"{path}.{index}"
+        found, found_owned, found_path = first_text_descendant(
+            jab,
+            vm_id,
+            child,
+            child_path,
+            depth + 1,
+        )
+        if found:
+            return found, owned + [child] + found_owned, found_path
+        jab.release_contexts(vm_id, [child])
+    return None, owned, None
+
+
+def locate_receipt_header_scope(jab, scope_hwnd=None):
+    semantic = infer_receipt_header_scope_by_semantic(jab, scope_hwnd=scope_hwnd)
     if semantic.get("ok"):
-        semantic["fast_path_attempt"] = fast
         return semantic
     return {
         "ok": False,
-        "fast_path_attempt": fast,
         "semantic_attempt": semantic,
-        "reason": "未能用固定表头后缀 path 或语义路径推断唯一定位当前收款单表头 scope",
+        "reason": "未能用语义路径推断当前收款单表头 scope",
     }
 
 
-def infer_receipt_header_scope_by_semantic(jab):
+def infer_receipt_header_scope_by_semantic(jab, scope_hwnd=None):
     found = find_receipt_header_field_by_semantic_label(
         jab,
-        FAST_HEADER_SCOPE_LABEL,
-        scope_hwnd=None,
+        HEADER_SCOPE_ANCHOR_LABEL,
+        scope_hwnd=scope_hwnd,
     )
     if not found.get("ok"):
         return {
@@ -926,28 +1359,13 @@ def infer_receipt_header_scope_by_semantic(jab):
                 "window": found.get("window"),
             },
         }
-    prefix = infer_receipt_header_dynamic_prefix(
-        jab,
-        scope_hwnd=scope_hwnd,
-        dynamic_max=dynamic_index,
-        require_showing=False,
-        require_valid_bounds=False,
-    )
-    if not prefix.get("ok"):
-        return {
-            "ok": False,
-            "mode": "semantic-path-inference",
-            "reason": "语义推出前缀后未能通过必填表头字段校验",
-            "attempt": found,
-            "prefix_check": prefix,
-        }
     return {
         "ok": True,
         "scope_hwnd": scope_hwnd,
         "mode": "semantic-path-inference",
         "dynamic_index": dynamic_index,
         "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
-        "matched_labels": prefix.get("matched_labels"),
+        "matched_labels": [HEADER_SCOPE_ANCHOR_LABEL],
         "semantic_label_path": found.get("label_path"),
         "semantic_text_path": found.get("path"),
     }
@@ -1072,39 +1490,8 @@ def do_context_commit_action(jab, vm_id, context):
                 "actions": actions,
             }
         if ok:
-            time.sleep(0.8)
             return {"ok": True, "action": action_name, "actions": actions}
     return {"ok": False, "reason": "no commit action", "actions": actions}
-
-
-def wait_backend_field_state(
-    jab,
-    vm_id,
-    context,
-    value=None,
-    accepted_text=None,
-    unlock_query=None,
-    timeout=3.0,
-):
-    deadline = time.time() + timeout
-    last = {
-        "accepted": False,
-        "written": False,
-        "unlocked": False,
-        "text": None,
-        "name": None,
-        "description": None,
-    }
-    while time.time() < deadline:
-        info = jab.get_context_info(vm_id, context)
-        text = jab.get_text_context_value(vm_id, context)
-        last = describe_backend_field_state(info, text, value, accepted_text)
-        if unlock_query:
-            last["unlocked"] = contains_visible_control(jab, unlock_query, timeout=0.2)
-        if last.get("accepted") or last.get("written") or last.get("unlocked"):
-            return last
-        time.sleep(0.2)
-    return last
 
 
 def describe_backend_field_state(info, text, value=None, accepted_text=None):
@@ -1161,65 +1548,6 @@ def context_contains(info, expected_text):
         if part
     )
     return expected in haystack
-
-
-def contains_visible_control(jab, query, timeout=2.0):
-    if not query:
-        return False
-    deadline = time.time() + timeout
-    needle = str(query).lower()
-    while time.time() < deadline:
-        for window in jab.get_scoped_windows(None, include_children=True):
-            hwnd, title, class_name, pid, visible = window
-            if (
-                not visible
-                or class_name != "SunAwtCanvas"
-                or not jab.dll.isJavaWindow(hwnd)
-            ):
-                continue
-            import ctypes
-            from tools.jab_probe import JOBJECT
-
-            vm_id = ctypes.c_long()
-            root_context = JOBJECT()
-            if not jab.dll.getAccessibleContextFromHWND(
-                hwnd,
-                ctypes.byref(vm_id),
-                ctypes.byref(root_context),
-            ):
-                continue
-            try:
-                if tree_contains_control(
-                    jab, vm_id.value, root_context.value, needle, depth=0
-                ):
-                    return True
-            finally:
-                jab.release_contexts(vm_id.value, [root_context.value])
-        time.sleep(0.2)
-    return False
-
-
-def tree_contains_control(jab, vm_id, context, needle, depth):
-    info = jab.get_context_info(vm_id, context)
-    if not info:
-        return False
-    role = info.role_en_US.strip() or info.role.strip()
-    states = (info.states_en_US.strip() or info.states.strip()).lower()
-    text = f"{info.name} {info.description} {role} {states}".lower()
-    if "visible" in states and "showing" in states and needle in text:
-        return True
-    if depth >= jab.max_depth or role.lower() == "table":
-        return False
-    for index in range(min(info.childrenCount, jab.max_children)):
-        child = jab.dll.getAccessibleChildFromContext(vm_id, context, index)
-        if not child:
-            continue
-        try:
-            if tree_contains_control(jab, vm_id, child, needle, depth + 1):
-                return True
-        finally:
-            jab.release_contexts(vm_id, [child])
-    return False
 
 
 def fill_detail_line(jab, business):

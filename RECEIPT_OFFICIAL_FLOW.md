@@ -6,7 +6,7 @@
 
 ## 1. 正式入口
 
-主入口：
+底层正式业务入口：
 
 ```bash
 /mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_full_flow_entry.py --excel-rows 811,839,828 --limit 3 --save --query-after-save --write-selected-plan-sheet
@@ -24,9 +24,22 @@ H:\python脚本\.venv\nc_auto_v2
 /mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_full_flow_entry.py --excel-row 1791 --limit 1
 ```
 
-真实保存必须显式传 `--save`，并且需要交互确认 `SAVE`，或由 `tools/nc_auto_test_menu.bat` 菜单二次确认后加 `--yes-i-understand`。
+现场测试只使用这个入口，一个文件内选择保存、不保存、故障恢复或 verify 审查：
 
-禁止把 `tools/tmp_*`、`tools/archive/*` 或历史真实保存 T0 脚本当正式入口。明细单独测试入口是 `tools/receipt_detail_entry.py` 或 `tools/receipt_detail_test_menu.bat`，但它们只测当前自制录入页明细，不负责开单、表头、保存和后验查询。
+```bash
+/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_full_flow_save_query_write_test.py
+```
+
+该脚本直接回车默认选择“保存 + 后验查询 + 写 Sheet2”，默认使用当前三笔 `811,839,828`，条数默认 `3`，启动前等待默认 `2` 秒。可选功能：
+
+1. 保存 + 后验查询 + 写 Sheet2。
+2. 不保存，只跑到保存前并执行 verifier。
+3. 故障恢复诊断：客户写完后暂停，人工打开干扰窗口后继续；后续动作失败时才触发 `Alt+C` 恢复并重试当前动作一次。
+4. verify 审查：不保存，输出 JSON，重点看后台 verifier 和最终报告。
+
+真实保存必须显式传 `--save` 或使用上述现场测试 wrapper；两种方式都需要交互确认 `SAVE`，除非自动化调用方明确传 `--yes-i-understand`。
+
+禁止把 `tools/tmp_*`、`tools/archive/*` 或历史真实保存 T0 脚本当正式入口。明细单独测试入口是 `tools/receipt_detail_entry.py`，但它只测当前自制录入页明细，不负责开单、表头、保存和后验查询。
 
 ## 2. 整体流程
 
@@ -34,11 +47,13 @@ H:\python脚本\.venv\nc_auto_v2
 
 1. 读取 `config.json` 和 Excel Sheet1。
 2. 用 `ReceiptEntryWorkbook.build_local_plan()` 做本地预检，生成 `ReceiptPlanRow`。
-3. 对选中行逐笔执行 NC 录入：`新增 -> 自制 -> 表头 -> 明细主行 -> 手续费分支 -> 保存前守卫 -> 可选保存`。
+3. 对选中行逐笔执行 NC 录入：启动主 JAB -> `新增 -> 自制` -> 表头 -> 明细主行 -> 手续费分支 -> 可选保存。
 4. 如果启用 `--query-after-save`，保存成功后按主体分组做统一后验查询。
 5. 如果启用 `--write-selected-plan-sheet`，把本批结果写入 Sheet2 `收款单自动化结果`。
 
 录入前不查 NC，不再用 Sheet1 的 `是否NC已做过` 决定候选。当前前提是交给机器的行就是本批待录入行；录入完成后再用 NC 后验查询验证保存结果。
+
+完整流程默认从收款单录入父页开始执行 `新增 -> 自制`，不先探测“是否已经在自制录入态”。若现场已经停在自制录入页，应先人工回到父页再启动完整流程；当前自制页明细单独诊断才使用 `tools/receipt_detail_entry.py`。开单、表头、明细和保存复用同一个主 JAB，不在 `自制` 后重新起子进程或重新启动主 JAB。
 
 ## 3. 本地预检
 
@@ -80,8 +95,18 @@ Sheet1 银行 -> receipt_entry.accounts -> organization_code -> finance_organiza
 表头正式策略是：
 
 ```text
-语义定位当前收款单页面 -> 推导动态前缀 -> 拼接稳定后缀 path 写字段 -> 失败时语义接管
+开单点击自制 -> 从当前 canvas/缓存取得动态前缀 -> 用 `财务组织(O)` 锚点确认前缀 -> 拼接稳定后缀 path 直接写字段 -> 失败时只做弹窗故障判断并重试当前动作一次，仍失败即停止
 ```
+
+> 2026-06-16 晚现场阻塞更新：上面这条“稳定后缀 path 直接写字段”的口径当前不能继续当作已验证事实。
+> 最新测试停在 Sheet 行 811 的表头 `客户` resolve 阶段：`财务组织` 步骤日志显示已在当前 canvas 内用
+> `财务组织(O)` 找到 `0.0.1.0.0.0.0.2.0.0.0.1.1.0.0.0.1.1.1.2.1.0`，并执行了
+> guarded clipboard paste + Enter，但 JAB snapshot 仍为空，肉眼也未确认财务组织落值；随后 `客户`
+> scoped label-following-text 未找到，固定 path
+> `0.0.1.0.0.0.0.2.0.0.0.1.1.0.0.0.0.1.0.2.0.0.0.0.0.0.0.17.0`
+> 也未找到。`setTextContents(A001)` 已由日志确认返回失败，不得再作为财务组织写入主路径。
+> 后续接手必须先只读/小探针确认：财务组织真实进入编辑器的动作、A001 落值证据、客户字段在财务组织成功提交后的真实路径。
+> 未确认前不要继续改保存、明细、查询，也不要再靠猜测后缀推进。
 
 稳定事实：
 
@@ -91,11 +116,13 @@ Sheet1 银行 -> receipt_entry.accounts -> organization_code -> finance_organiza
 
 当前正式代码：
 
-- `locate_receipt_header_scope()` 先用稳定后缀扫描当前前台收款单表头 scope。
-- 快速 path 定位失败时，用语义定位 `财务组织` 推断表头动态前缀。
-- `fill_header()` 启动 `HeaderSemanticPreload` 并发预热客户、日期、币种、结算方式等语义路径。
-- 每个字段主路仍走动态前缀 + 固定后缀 path。
-- 主路 path 失败时，等待语义预热结果接管。
+- `新增 -> 自制` 后复用开单结果里的当前页窗口和动态索引；已有缓存命中时直接复用。
+- `fill_header()` 正常路径不做 `0..8` 动态 index 扫描，不用所谓 fast path 在主线程试探财务组织。
+- 当前代码曾改为“当前 canvas scoped label-following-text 优先，固定后缀 path 仅作诊断 fallback”，但该方案还没有现场跑通到客户字段；不要把它写成已验证正式口径。
+- 主路 path 失败时，先判断是否被可取消 Java 弹窗打断；如是，聚焦弹窗并 `Alt+C` 后重试当前失败动作。
+- 不是弹窗导致的 path 失败时直接停止，不再等待或使用语义预热 path 接管。
+- 字段写完后的 JAB text/description 只记录快照，不作为同步阻塞 oracle；保存前和后验查询才是业务闭包。
+- 开单成功后立即进入表头写入；下方表格 path 预热只在财务组织写入成功后后台启动，不得阻塞财务组织首字段写入。
 
 表头字段顺序：
 
@@ -107,7 +134,7 @@ Sheet1 银行 -> receipt_entry.accounts -> organization_code -> finance_organiza
 
 表头收款银行账户不直接写。它由下方明细收款银行账户同步带出，所以保存前只读回校验，不作为表头输入步骤。
 
-客户是保存前硬门槛。客户为空时必须停止，不能软通过、不能写明细、不能保存。
+客户不再在表头刚写完后用 JAB 同步读回空值阻塞流程。客户是否真正落入 NC 由后续明细 verifier、保存结果和后验查询共同闭包。
 
 ## 5. 明细表录入策略
 
@@ -160,6 +187,8 @@ Sheet1 银行 -> receipt_entry.accounts -> organization_code -> finance_organiza
 
 写明细时，每个字段提交后会把验证任务交给后台 verifier；主线程继续写后续字段，不逐字段同步等待。
 
+明细表 path 定位后立即启动后台 verifier，由后台线程做 path 预热和阶段快照；完整流程不在写明细前同步读一次整表。
+
 当前同步等待点只保留在必要闭包：
 
 - 等最后一个字段验证结果。
@@ -167,31 +196,21 @@ Sheet1 银行 -> receipt_entry.accounts -> organization_code -> finance_organiza
 
 如果后台 verifier 失败，才执行整表 `read-after-fallback` 做同步读表兜底。
 
-表头语义预热也是并发的。正常路径不等待全扫描；只有动态 path 定位失败时才等待语义预热接管。
+表头不再做逐字段语义预热或语义接管。正常路径只走当前 canvas 下的动态 path；动态 path 定位失败时只允许弹窗恢复后重试一次，仍失败就停止。表头字段写完后不再同步等待 JAB text/description 读回再判成功。
 
-## 7. 保存前守卫
+## 7. 故障恢复与保存前闭包
 
-保存前必须确认：
+可取消 Java 弹窗恢复不是正常路径前置扫描。正式流程只在某个动作失败、异常、前台窗口不匹配、JAB 写入失败、剪贴板失败或键盘写入失败后，才检查是否出现 `SunAwtDialog` 且带 `取消/Alt+C` 控件的可恢复弹窗。若确认是该弹窗打断，则先聚焦弹窗，再发送 `Alt+C`，随后只重试刚才失败的当前动作一次。
 
-- 财务组织正确
-- 客户非空
-- 单据日期正确
-- 币种正确
-- 表头结算方式为 `网银`
-- 表头收款银行账户已由明细同步带出
-- 明细主行正确
-- 手续费行正确或已跳过
-- 多余空行已处理
+当前保存前闭包由已完成的写入步骤和 verifier 结果组成：表头字段按 path 写入返回成功；明细主行、手续费行和最终行数由后台 verifier 校验；表头收款银行账户由明细收款银行账户同步带出，JAB 读回为空只记录 warning，不作为保存前硬失败 oracle。没有单独的“逐字段保存前同步总扫描”，避免把 JAB 同步读回空值误判为失败。
 
-如果保存前守卫识别不到收款单自制录入态，且当前是误打开的阻塞式查询/参照/异常窗口，正式逻辑允许用 `Alt+C` 关闭可取消弹窗，然后重新检查页面状态。
-
-`Alt+C` 只用于保存前恢复。未知状态下禁止继续写字段或保存。
+未知状态下禁止继续写字段或保存。`Alt+C` 只用于已识别的可取消 Java 弹窗恢复，不作为通用关闭窗口手段。
 
 ## 8. 保存
 
 默认不保存，停在保存前。
 
-启用 `--save` 后，正式流程发送保存动作。保存成功 oracle 是 NC 回到可新增状态，而不是单纯快捷键发送成功。
+启用 `--save` 后，正式流程在确认当前前台窗口属于收款单录入页后，用键盘热键触发 `Ctrl+S`。保存成功 oracle 是 NC 回到可新增状态，而不是单纯快捷键触发成功，也不是查找/点击凭证制单保存按钮；不要走 `SendInput(Ctrl+S)`。
 
 真实保存前必须确保：
 
@@ -323,6 +342,9 @@ Sheet2 当前字段：
 
 以下逻辑不得回到正式主线：
 
+- 表头主 path 成功时同步等待语义扫描或读回确认。
+- 旧 near-label 或窗口邻近搜索兜底。
+- 表头字段写完后等待 JAB text/description 同步读回再判成功。
 - 表头收款银行账户参照搜索。
 - `fallback_reference` 配置。
 - 查询条件旧 near-label 写入兜底。
@@ -337,7 +359,7 @@ Sheet2 当前字段：
 Linux 侧检查：
 
 ```bash
-.venv/bin/python -m pytest -q tests/test_receipt_full_flow_entry.py tests/test_receipt_query_fill.py tests/test_receipt_post_save_query.py tests/test_receipt_self_made_fill_trial.py tests/test_receipt_entry.py tests/test_validate_config.py
+.venv/bin/python -m pytest -q tests/test_receipt_full_flow_entry.py tests/test_receipt_full_flow_test_wrappers.py tests/test_receipt_query_fill.py tests/test_receipt_post_save_query.py tests/test_receipt_self_made_fill_trial.py tests/test_receipt_entry.py tests/test_validate_config.py
 .venv/bin/python tools/check.py changed
 python3 tools/validate_config.py config.json
 git diff --check

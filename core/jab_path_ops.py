@@ -219,17 +219,6 @@ def set_text_context(jab, vm_id, context, text):
     if not ok:
         log.warning(f"JAB setTextContents 失败: text={value!r}")
         return False
-
-    actual = get_text_context_value(jab, vm_id, context)
-    if actual is None:
-        log.info("JAB 文本写入成功，但当前控件不支持读回验证")
-        return True
-    if actual != value:
-        log.info(
-            f"JAB 文本写入返回成功，读回值不一致: expected={value!r} actual={actual!r}"
-        )
-        return True
-
     return True
 
 

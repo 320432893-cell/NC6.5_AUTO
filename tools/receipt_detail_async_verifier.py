@@ -2,7 +2,7 @@
 # 不做什么：不写入 NC，不决定业务字段顺序，不处理保存/暂存
 # 允许依赖层：core JAB 操作、tools.receipt_detail_fields/reader
 # 谁不应该 import：底层 core、Excel/Sheet 写入模块不应 import
-# 生命周期：T0 试验能力（删除条件：正式收款单完整流程接入并通过多窗口/重登验证）
+# 生命周期：正式完整流程组件
 
 from __future__ import annotations
 
@@ -24,10 +24,14 @@ class DetailPipelineVerifier:
         located,
         flow_started_at=None,
         force_cached_path_fail=False,
+        jab=None,
+        jab_lock=None,
     ):
         self.config = config
         self.located = self._clone_located(located)
         self.force_cached_path_fail = bool(force_cached_path_fail)
+        self.jab = jab
+        self.jab_lock = jab_lock
         self.forced_cached_path_report = None
         self.flow_started_at = flow_started_at
         self.started_at = None
@@ -182,10 +186,12 @@ class DetailPipelineVerifier:
         }
 
     def _run(self):
-        jab = JABOperator(self.config)
+        jab = self.jab or JABOperator(self.config)
+        owns_jab = self.jab is None
         try:
-            jab.ensure_started()
-            self._preload_table(jab)
+            if owns_jab:
+                jab.ensure_started()
+            self._with_jab_lock(self._preload_table, jab)
             if self.force_cached_path_fail:
                 self._force_cached_path_fail()
             while not self._stopped.is_set():
@@ -211,7 +217,14 @@ class DetailPipelineVerifier:
                     "reason": f"{type(exc).__name__}: {exc}",
                 }
         finally:
-            jab.close()
+            if owns_jab:
+                jab.close()
+
+    def _with_jab_lock(self, func, *args, **kwargs):
+        if self.jab_lock is None:
+            return func(*args, **kwargs)
+        with self.jab_lock:
+            return func(*args, **kwargs)
 
     def _preload_table(self, jab):
         started_at = time.perf_counter()
@@ -247,7 +260,8 @@ class DetailPipelineVerifier:
         deadline = started_at + task["timeout"]
         last_snapshot = None
         while True:
-            snapshot = read_body_table_by_path(
+            snapshot = self._with_jab_lock(
+                read_body_table_by_path,
                 jab,
                 self.located,
                 task["label"],
@@ -339,7 +353,8 @@ class DetailPipelineVerifier:
         deadline = started_at + task["timeout"]
         last_snapshot = None
         while True:
-            snapshot = read_body_table_by_path(
+            snapshot = self._with_jab_lock(
+                read_body_table_by_path,
                 jab,
                 self.located,
                 "row_count_readback",

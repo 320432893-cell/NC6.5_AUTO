@@ -146,6 +146,7 @@ def run_fee_only(
     after_field=None,
     known_row_count=None,
     defer_delete_wait=False,
+    recover_after_failure=None,
 ):
     timings = StepTimer()
     fee_business = build_fee_business(fee_amount)
@@ -258,6 +259,7 @@ def run_fee_only(
         fields=FEE_FIELDS,
         row_index=target_row,
         after_field=after_field,
+        recover_after_failure=recover_after_failure,
     )
     fee_cells = cells_from_steps(steps)
     clear_account = {

@@ -7,6 +7,8 @@ import threading
 import time
 from ctypes import wintypes
 
+from tools.jab_environment import uclient_access_bridge_dll_patterns
+
 
 JOBJECT64 = ctypes.c_longlong
 JOBJECT32 = ctypes.c_int
@@ -111,6 +113,7 @@ def iter_candidate_dlls():
             yield path
 
     patterns = [
+        *uclient_access_bridge_dll_patterns(),
         rf"C:\Program Files\Java\*\bin\{dll_name}",
         rf"C:\Program Files\Eclipse Adoptium\*\bin\{dll_name}",
         rf"C:\Program Files\Microsoft\jdk-*\bin\{dll_name}",

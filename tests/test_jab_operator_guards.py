@@ -100,6 +100,45 @@ def test_operator_window_methods_delegate_to_window_helpers(monkeypatch):
     assert calls == [("单据", "SunAwtDialog", 0.1, 0.3, True)]
 
 
+def test_operator_lifecycle_does_not_auto_cleanup_awt(monkeypatch):
+    operator = JABOperator({"jab": {"startup_wait": 0}})
+    calls = []
+
+    class FakeDll:
+        def initializeAccessBridge(self):
+            return True
+
+    monkeypatch.setattr("core.jab_operator.os.name", "nt")
+    monkeypatch.setattr(
+        "core.jab_operator.load_access_bridge",
+        lambda _path: (FakeDll(), "fake.dll"),
+    )
+    monkeypatch.setattr("core.jab_operator.configure_jab", lambda _dll: None)
+    monkeypatch.setattr(
+        jab_window,
+        "hide_blank_awt_windows",
+        lambda enabled: calls.append(enabled) or [],
+    )
+
+    operator.ensure_started()
+    operator.close()
+
+    assert calls == []
+
+
+def test_operator_explicit_awt_cleanup_still_available(monkeypatch):
+    operator = JABOperator({"jab": {"hide_blank_awt_windows": True}})
+    calls = []
+    monkeypatch.setattr(
+        jab_window,
+        "hide_blank_awt_windows",
+        lambda enabled: calls.append(enabled) or [{"hwnd": 1}],
+    )
+
+    assert operator.hide_blank_awt_windows() == [{"hwnd": 1}]
+    assert calls == [True]
+
+
 def test_table_reader_keeps_row_shape_and_selection(monkeypatch):
     class TableInfo:
         rowCount = 2

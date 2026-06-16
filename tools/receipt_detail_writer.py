@@ -1,29 +1,21 @@
-# 职责：按字段映射写入收款单明细行，并通过表格读回校验
+# 职责：按字段映射写入收款单明细行，并把字段校验交给调用方的后台 verifier
 # 不做什么：不增删明细行，不读取 Excel，不处理 CLI/打印
 # 允许依赖层：tools.receipt_detail_fields/reader/screen_writer、tools.receipt_body_table_locator
 # 谁不应该 import：配置校验、Sheet 写入、收款匹配模块不应 import
 
 import time
 
-from tools.receipt_body_table_locator import locate_receipt_body_table_cached
 from tools.receipt_detail_fields import (
     DETAIL_FIELDS,
-    apply_readback_to_steps,
-    field_mismatch_reason,
-    field_matches,
     make_detail_step,
 )
-from tools.receipt_detail_reader import read_row_cells
 from tools.receipt_detail_screen_writer import (
     KEYBOARD_INPUT_COMMIT_KEY,
     focus_detail_cell,
     keyboard_write_selected_cell,
     move_selected_cell_by_arrows,
-    read_selected_cell,
 )
 from tools.receipt_keyboard_utils import STOP_HOTKEY, is_stop_hotkey_pressed
-
-MAX_FIELD_RETRIES = 3
 
 
 def write_field_once(
@@ -37,6 +29,7 @@ def write_field_once(
     business,
     attempt_no,
     current_col=None,
+    recover_after_failure=None,
 ):
     value = str(business[field["value_key"]])
     attempt_start = time.perf_counter()
@@ -58,28 +51,6 @@ def write_field_once(
     else:
         focus = {"ok": True, "skipped": True, "reason": "沿用当前选中单元格"}
         navigation = move_selected_cell_by_arrows(table_window, current_col, target_col)
-    selected_before = None
-    if focus.get("ok") and navigation.get("ok"):
-        selected_before = read_selected_cell(jab, located)
-        selected = selected_before.get("single") if selected_before.get("ok") else None
-        selected_row = selected.get("row") if selected else None
-        selected_col = selected.get("col") if selected else None
-        if not (
-            selected
-            and selected_row is not None
-            and selected_col is not None
-            and int(selected_row) == int(row_index)
-            and int(selected_col) == target_col
-        ):
-            navigation = {
-                **navigation,
-                "ok": False,
-                "selected_before_write": selected_before,
-                "reason": (
-                    f"方向键导航后当前格不匹配：期望第 {row_index + 1} 行第 {target_col} 列，"
-                    f"实际 {selected!r}"
-                ),
-            }
     if focus.get("ok") and navigation.get("ok"):
         commit_key = field.get("commit_key") or KEYBOARD_INPUT_COMMIT_KEY
         screen = keyboard_write_selected_cell(
@@ -92,6 +63,7 @@ def write_field_once(
             edit_mode=field.get("edit_mode", "editor"),
             input_mode=field.get("input_mode", "paste"),
             pre_commit_wait=field.get("pre_commit_wait", 0.025),
+            recover_after_failure=recover_after_failure,
         )
     else:
         screen = {
@@ -100,9 +72,6 @@ def write_field_once(
             "focus": focus,
             "navigation": navigation,
         }
-    selected_after = None
-    if screen.get("ok"):
-        selected_after = {"ok": True, "skipped": True, "reason": "最终统一读回校验"}
     return {
         "attempt": attempt_no,
         "seconds": round(time.perf_counter() - attempt_start, 3),
@@ -115,7 +84,6 @@ def write_field_once(
         "cell_height": None,
         "focus": focus,
         "navigation": navigation,
-        "selected_before_write": selected_before,
         "commit_ok": bool(screen.get("ok")),
         "commit_key": field.get("commit_key") or KEYBOARD_INPUT_COMMIT_KEY,
         "accept_key": field.get("accept_key"),
@@ -124,9 +92,15 @@ def write_field_once(
         "input_mode": field.get("input_mode", "paste"),
         "pre_commit_wait": field.get("pre_commit_wait", 0.025),
         "commit_col": current_col_after_commit(target_col, field.get("commit_key")),
-        "commit_target": selected_after,
+        "commit_target": {
+            "ok": True,
+            "skipped": True,
+            "reason": "字段写入后不做同步读回；由后台 verifier 或调用方统一闭包",
+        },
         "commit_reason": screen.get("reason"),
         "ok": bool(screen.get("ok")),
+        "modal_recovery": screen.get("modal_recovery"),
+        "retry_modal_recovery": screen.get("retry_modal_recovery"),
     }
 
 
@@ -139,38 +113,6 @@ def current_col_after_commit(target_col, commit_key):
     return int(target_col)
 
 
-def refresh_unmatched_settlement_steps(
-    jab, steps, row_index, timeout=0.35, interval=0.07, located=None
-):
-    if not any(step.get("name") == "结算方式" and not step.get("ok") for step in steps):
-        return None
-    deadline = time.perf_counter() + timeout
-    last_snapshot = None
-    last_cells = None
-    while True:
-        snapshot, cells = read_row_cells(jab, row_index, located)
-        last_snapshot = snapshot
-        last_cells = cells
-        if snapshot.get("ok"):
-            apply_readback_to_steps(steps, cells)
-            if all(step.get("ok") for step in steps if step.get("name") == "结算方式"):
-                return {
-                    "ok": True,
-                    "seconds": round(
-                        timeout - max(deadline - time.perf_counter(), 0), 3
-                    ),
-                    "snapshot": snapshot,
-                }
-        if time.perf_counter() >= deadline:
-            return {
-                "ok": False,
-                "seconds": timeout,
-                "snapshot": last_snapshot,
-                "cells": last_cells,
-            }
-        time.sleep(interval)
-
-
 def write_detail_line_by_screen(
     jab,
     business,
@@ -178,6 +120,7 @@ def write_detail_line_by_screen(
     fields=None,
     row_index=0,
     after_field=None,
+    recover_after_failure=None,
 ):
     fields = fields or DETAIL_FIELDS
     best = located.get("best") or {}
@@ -225,6 +168,7 @@ def write_detail_line_by_screen(
             business,
             attempt_no=1,
             current_col=current_col,
+            recover_after_failure=recover_after_failure,
         )
         if attempt.get("ok"):
             commit_col = attempt.get("commit_col")
@@ -252,88 +196,19 @@ def write_detail_line_by_screen(
         steps.append(step)
         if not attempt.get("ok"):
             break
-    else:
-        if after_field:
-            for step in steps:
-                step["ok"] = bool(step.get("input_ok"))
-                step["blocked"] = not step["ok"]
-                step["reason"] = None if step["ok"] else step.get("reason")
-                step["actual"] = None
-                step["deferred_readback"] = {
-                    "ok": True,
-                    "reason": "后台 pipeline verifier 批量读回校验",
-                }
-        else:
-            _snapshot, cells = read_row_cells(jab, row_index, located)
-            apply_readback_to_steps(steps, cells)
-            settle_refresh = refresh_unmatched_settlement_steps(
-                jab,
-                steps,
-                row_index,
-                located=located,
-            )
-            if settle_refresh:
-                for step in steps:
-                    if step.get("name") == "结算方式":
-                        step["settlement_stability_check"] = settle_refresh
-
-        for step in steps:
-            while (
-                not step.get("ok")
-                and len(step.get("attempts") or []) < MAX_FIELD_RETRIES
-            ):
-                field = next(item for item in fields if item["col"] == step["col"])
-                field_index = fields.index(field)
-                next_field = (
-                    fields[field_index + 1]
-                    if field_index + 1 < len(fields)
-                    else fields[0]
-                )
-                refreshed = locate_receipt_body_table_cached(
-                    jab,
-                    cached=located,
-                    max_rows=max(5, row_count),
-                    scope_hwnd=(table_window or {}).get("hwnd"),
-                )
-                attempt = write_field_once(
-                    jab,
-                    refreshed,
-                    table_window,
-                    row_index,
-                    row_count,
-                    field,
-                    next_field["col"],
-                    business,
-                    attempt_no=len(step["attempts"]) + 1,
-                    current_col=None,
-                )
-                step["attempts"].append(attempt)
-                step["input_ok"] = bool(attempt.get("input_ok"))
-                step["target"] = attempt.get("target")
-                step["commit_click"] = {
-                    "ok": attempt.get("commit_ok"),
-                    "target": attempt.get("commit_target"),
-                    "reason": attempt.get("commit_reason"),
-                }
-                _snapshot, cells = read_row_cells(jab, row_index, refreshed)
-                actual = cells.get(str(step["col"]))
-                step["actual"] = actual
-                ok = bool(attempt.get("ok")) and field_matches(
-                    actual, step.get("raw_value") or step["value"], step.get("kind")
-                )
-                step["ok"] = ok
-                step["blocked"] = not ok
-                step["reason"] = (
-                    None
-                    if ok
-                    else (
-                        attempt.get("input_reason")
-                        or attempt.get("commit_reason")
-                        or field_mismatch_reason(step, actual, "修复后校验失败")
-                    )
-                )
-            if not step.get("ok"):
-                break
+    for step in steps:
+        step["ok"] = bool(step.get("input_ok"))
+        step["blocked"] = not step["ok"]
+        step["reason"] = None if step["ok"] else step.get("reason")
+        step["actual"] = None
+        step["deferred_readback"] = {
+            "ok": True,
+            "reason": (
+                "后台 pipeline verifier 批量读回校验"
+                if after_field
+                else "调用方后续整表读回/行数闭包校验"
+            ),
+        }
     any_changed = any(
         attempt.get("input_ok")
         for step in steps

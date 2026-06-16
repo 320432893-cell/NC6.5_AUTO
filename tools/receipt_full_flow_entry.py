@@ -8,6 +8,7 @@ from dataclasses import asdict
 from decimal import Decimal
 import json
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -20,24 +21,32 @@ from core.receipt_entry import ReceiptEntryWorkbook  # noqa: E402
 from core.receipt_models import ReceiptBatchResultRow  # noqa: E402
 from core.run_state import RunStateRecorder  # noqa: E402
 from core.utils import load_config  # noqa: E402
-from tools.jab_health_check import check_jab_ready  # noqa: E402
 from tools.receipt_body_table_locator import locate_receipt_body_table_cached  # noqa: E402
 from tools.receipt_detail_async_verifier import DetailPipelineVerifier  # noqa: E402
 from tools.receipt_detail_row_cleanup import delete_extra_row_if_present  # noqa: E402
 from tools.receipt_detail_rows import StepTimer, run_fee_only  # noqa: E402
-from tools.receipt_detail_writer import write_detail_line_by_screen  # noqa: E402
-from tools.receipt_modal_guard import recover_cancelable_modal_before_save  # noqa: E402
+from tools.receipt_detail_writer import (  # noqa: E402
+    write_detail_line_by_screen,
+    write_field_once,
+)
+from tools.receipt_keyboard_utils import foreground_matches_window  # noqa: E402
+from tools.receipt_modal_guard import recover_cancelable_modal_now  # noqa: E402
 from tools.receipt_new_probe import (  # noqa: E402
+    annotate_foreground_root_for_targets,
     collect_receipt_new_windows,
     detect_self_made_entry_state,
+    filter_usable_new_buttons,
+    find_named_controls_in_windows,
+    foreground_info,
 )
 from tools.receipt_post_save_query import run_post_save_batch_query  # noqa: E402
 from tools.receipt_self_made_fill_trial import (  # noqa: E402
-    detect_existing_self_made_entry,
     fill_header,
-    locate_receipt_header_scope,
+    find_receipt_header_field_by_dynamic_path,
     read_body_table,
+    resolve_receipt_header_anchor_in_canvas,
     run_receipt_new_probe,
+    run_receipt_new_probe_with_jab,
     wait_header_account_description,
 )
 
@@ -79,7 +88,7 @@ def parse_args(argv=None):
     parser.add_argument(
         "--save",
         action="store_true",
-        help="高风险：发送 Ctrl+S 保存收款单。默认不保存。",
+        help="高风险：键盘触发 Ctrl+S 保存收款单。默认不保存。",
     )
     parser.add_argument(
         "--yes-i-understand",
@@ -94,8 +103,23 @@ def parse_args(argv=None):
     parser.add_argument(
         "--start-delay",
         type=float,
-        default=2.0,
-        help="启动真实 NC 动作前等待秒数，默认 2。",
+        default=0.0,
+        help="启动真实 NC 动作前等待秒数，默认 0。",
+    )
+    parser.add_argument(
+        "--pause-after-header-field",
+        default=None,
+        help="诊断用：指定表头字段写完后暂停，回车后继续；例如 客户。",
+    )
+    parser.add_argument(
+        "--diagnose-header-after-pause",
+        action="store_true",
+        help="诊断用：暂停恢复后读回已写表头字段，只报告不补救。",
+    )
+    parser.add_argument(
+        "--diagnose-detail-repair",
+        action="store_true",
+        help="诊断用：明细 verifier 首次通过后强制模拟 1 个字段 pending，演练正式修复分支。",
     )
     parser.add_argument("--json", action="store_true", help="只输出 JSON 报告")
     return parser.parse_args(argv)
@@ -164,8 +188,12 @@ def main(argv=None):
         print("收款单完整流程测试入口")
         print(f"模式：{'真实保存' if args.save else '不保存，停在保存前'}")
         print(f"计划行：{[row.row for row in selected_rows]}")
-        print(f"启动后等待 {args.start_delay:g} 秒，请切到 NC 收款单录入页面。")
-    time.sleep(max(args.start_delay, 0))
+        if args.start_delay > 0:
+            print(f"启动后等待 {args.start_delay:g} 秒，请切到 NC 收款单录入页面。")
+        else:
+            print("启动后立即执行；请提前切到 NC 收款单录入页面。")
+    if args.start_delay > 0:
+        time.sleep(args.start_delay)
 
     exit_code = 0
     _succeeded = 0
@@ -179,7 +207,13 @@ def main(argv=None):
                 excel_row=row.row,
             )
             row_report = run_one_row(
-                config, row, save_enabled=args.save, recorder=recorder
+                config,
+                row,
+                save_enabled=args.save,
+                recorder=recorder,
+                pause_after_header_field=args.pause_after_header_field,
+                diagnose_header_after_pause=args.diagnose_header_after_pause,
+                diagnose_detail_repair=args.diagnose_detail_repair,
             )
             report["rows"].append(row_report)
             if row_report.get("ok"):
@@ -221,6 +255,7 @@ def main(argv=None):
 
         report["ok"] = exit_code == 0
         report["total_seconds"] = round(time.perf_counter() - started, 3)
+        write_last_report(report)
         recorder.finish("success" if exit_code == 0 else "failed")
         print_report(report, args)
         return exit_code
@@ -230,7 +265,7 @@ def main(argv=None):
 
 
 def confirm_save(args):
-    print("高风险：--save 会发送 Ctrl+S，真实保存 NC 收款单。")
+    print("高风险：--save 会用键盘热键 Ctrl+S 真实保存 NC 收款单。")
     print("保存前请确认：当前账号权限、Excel 行、NC 页面、测试单据清理方案均已确认。")
     if args.yes_i_understand:
         return
@@ -289,8 +324,19 @@ def filter_issues_for_rows(issues, selected_rows):
     ]
 
 
-def run_one_row(config, row, save_enabled=False, recorder=None):
+def run_one_row(
+    config,
+    row,
+    save_enabled=False,
+    recorder=None,
+    pause_after_header_field=None,
+    diagnose_header_after_pause=False,
+    diagnose_detail_repair=False,
+):
+    current_stage = {"name": ""}
+
     def _stage(stage, **fields):
+        current_stage["name"] = stage
         if recorder is not None:
             recorder.set_stage(stage, **fields)
 
@@ -307,61 +353,205 @@ def run_one_row(config, row, save_enabled=False, recorder=None):
         "save_enabled": bool(save_enabled),
     }
     business = business_from_plan_row(row)
-    _stage("开单", excel_row=row.row)
-    open_step = timings.measure("open.self-made", open_self_made_entry, config)
-    row_report["steps"].append({"name": "open-self-made", **open_step})
-    if not open_step.get("ok"):
-        _event("open-failed", excel_row=row.row, error=open_step.get("reason"))
-        return fail(row_report, "open-self-made", timings, open_step.get("reason"))
-
     jab = JABOperator(config)
+    jab_lock = threading.RLock()
     pipeline_verifier = None
+    body_path_preload = None
+    modal_events = []
     try:
         timings.measure("jab.ensure-started", jab.ensure_started)
-        health = timings.measure("jab.health-check", check_jab_ready, jab)
-        row_report["jab_health"] = health
-        if not health.get("ok"):
-            _event("jab-health-failed", excel_row=row.row, error=health.get("reason"))
-            return fail(row_report, "jab-health-check", timings, health.get("reason"))
-        _stage("表头", excel_row=row.row)
-        header_steps = timings.measure(
-            "header.fill",
-            fill_header,
+        _stage("开单", excel_row=row.row)
+        open_step = timings.measure(
+            "open.self-made",
+            run_with_jab_lock,
+            jab_lock,
+            open_self_made_entry,
+            config,
             jab,
-            business,
         )
+        row_report["steps"].append({"name": "open-self-made", **open_step})
+        if not open_step.get("ok"):
+            _event("open-failed", excel_row=row.row, error=open_step.get("reason"))
+            return fail(row_report, "open-self-made", timings, open_step.get("reason"))
+        row_report["modal_recovery"] = {"events": modal_events}
+
+        def recover_modal_after_failure():
+            result = recover_cancelable_modal_now(
+                jab,
+                stage=current_stage.get("name") or "",
+            )
+            if result.get("attempted"):
+                modal_events.append(result)
+            return result
+
+        entry_scope_hwnd = extract_entry_scope_hwnd(open_step)
+        entry_dynamic_index = extract_entry_dynamic_index(open_step)
+        entry_anchor_path = extract_entry_anchor_path(open_step)
+        if entry_scope_hwnd and entry_dynamic_index is None:
+            anchor_retry = timings.measure(
+                "header.anchor-retry-current-canvas",
+                run_with_jab_lock,
+                jab_lock,
+                wait_receipt_header_anchor_in_current_canvas,
+                jab,
+                entry_scope_hwnd,
+                timeout=1.2,
+                interval=0.2,
+            )
+            row_report["entry_header_anchor_retry"] = anchor_retry
+            if anchor_retry.get("ok"):
+                entry_dynamic_index = anchor_retry.get("dynamic_index")
+                entry_anchor_path = anchor_retry.get("label_path") or entry_anchor_path
+        row_report["entry_scope_hwnd"] = entry_scope_hwnd
+        row_report["entry_dynamic_index"] = entry_dynamic_index
+        row_report["entry_anchor_path"] = entry_anchor_path
+        row_report["preheat"] = {
+            "body_path_initial": None,
+            "start_policy": "表头用当前 canvas + 财务组织(O) 锚点确认；明细表 path 在财务组织写入成功后后台预热",
+        }
+        if not entry_scope_hwnd or entry_dynamic_index is None:
+            reason = "当前 canvas 未解析到财务组织(O) 前缀，停止；不走语义兜底"
+            _event("header-anchor-failed", excel_row=row.row, error=reason)
+            return fail(row_report, "header-anchor", timings, reason)
+        _stage("表头", excel_row=row.row)
+        header_pause_reports = []
+        header_steps_so_far_labels = []
+
+        def after_header_field(label, _value, step):
+            nonlocal body_path_preload
+            if label and label not in header_steps_so_far_labels:
+                header_steps_so_far_labels.append(label)
+            if label == "财务组织" and body_path_preload is None:
+                body_path_preload = timings.measure(
+                    "preheat.body-path-start-after-finance",
+                    start_body_table_preload,
+                    config,
+                    jab,
+                    jab_lock,
+                    entry_scope_hwnd,
+                    flow_started_at,
+                )
+                row_report.setdefault("preheat", {})["body_path_initial"] = (
+                    preload_result(body_path_preload)
+                )
+            if pause_after_header_field != label:
+                return None
+            print(
+                f"诊断暂停：表头字段 [{label}] 已写入。"
+                "可以现在人工打开干扰窗口或清理已输入字段；回车后继续检查。"
+            )
+            input("完成干扰后按回车继续: ")
+            report = {
+                "ok": True,
+                "paused_after": label,
+                "field_path": step.get("path"),
+            }
+            if diagnose_header_after_pause:
+                report["header_readback"] = diagnose_written_header_fields(
+                    jab,
+                    list(header_steps_so_far_labels),
+                    step.get("dynamic_index"),
+                    step.get("dynamic_prefix"),
+                    entry_scope_hwnd,
+                )
+                report["ok"] = all(
+                    item.get("present") for item in report["header_readback"]
+                )
+                if not report["ok"]:
+                    report["reason"] = "暂停恢复后检测到已写表头字段为空或不可读"
+            header_pause_reports.append(report)
+            return report
+
+        if pause_after_header_field:
+            header_steps = timings.measure(
+                "header.fill",
+                run_with_jab_lock,
+                jab_lock,
+                fill_header,
+                jab,
+                business,
+                scope_hwnd=entry_scope_hwnd,
+                dynamic_index=entry_dynamic_index,
+                anchor_path=entry_anchor_path,
+                recover_after_failure=recover_modal_after_failure,
+                after_field=after_header_field,
+            )
+        else:
+            header_steps = timings.measure(
+                "header.fill",
+                run_with_jab_lock,
+                jab_lock,
+                fill_header,
+                jab,
+                business,
+                after_field=after_header_field,
+                scope_hwnd=entry_scope_hwnd,
+                dynamic_index=entry_dynamic_index,
+                anchor_path=entry_anchor_path,
+                recover_after_failure=recover_modal_after_failure,
+            )
+        if header_pause_reports:
+            row_report["header_pause_diagnostics"] = header_pause_reports
         row_report["header_steps"] = header_steps
         row_report["nc_customer_name"] = extract_header_accepted_text(
             header_steps,
             "客户",
         )
         if any(not step.get("ok") for step in header_steps):
-            _event("header-fill-failed", excel_row=row.row, error="表头字段写入失败")
-            return fail(row_report, "header-fill", timings, "表头字段写入失败")
+            header_error = summarize_header_failure(header_steps)
+            _event("header-fill-failed", excel_row=row.row, error=header_error)
+            return fail(row_report, "header-fill", timings, header_error)
         if not row_report["nc_customer_name"]:
-            _event("header-fill-failed", excel_row=row.row, error="客户名称未读回")
-            return fail(row_report, "header-fill", timings, "客户名称未读回")
+            row_report["header_customer_readback_warning"] = {
+                "ok": False,
+                "reason": "客户名称未从 JAB 后端读回；继续执行，交由后续明细/保存/后验查询校验",
+            }
+            _event(
+                "header-customer-readback-warning",
+                excel_row=row.row,
+                warning="客户名称未从 JAB 后端读回，继续执行",
+            )
         _stage("明细主行", excel_row=row.row)
+        preloaded_body = (
+            body_path_preload.result(timeout=0.0) if body_path_preload else None
+        )
         located = timings.measure(
             "body.locate",
-            locate_receipt_body_table_cached,
+            run_with_jab_lock,
+            jab_lock,
+            resolve_body_table_from_preload,
             jab,
-            max_rows=5,
+            body_path_preload,
+            preloaded_body,
+            entry_scope_hwnd,
         )
+        row_report["body_locate"] = {
+            "source": located.get("source"),
+            "cache_hit": located.get("cache_hit"),
+            "fallback_used": located.get("fallback_used"),
+            "status": located.get("status"),
+            "seconds": located.get("seconds"),
+            "started_offset_seconds": located.get("started_offset_seconds"),
+        }
         row_report["table_candidates"] = located.get("candidates", [])[:5]
         if not located.get("best"):
             _event("locate-table-failed", excel_row=row.row, error="未定位到明细表")
             return fail(row_report, "locate-body-table", timings, "未定位到明细表")
-        row_report["before_table"] = timings.measure(
-            "body.read-before", read_body_table, jab, "before_detail_fill"
-        )
+        row_report["before_table"] = {
+            "ok": True,
+            "skipped": True,
+            "reason": "明细表 path 已定位；后台 pipeline verifier 负责预热 path 和并发读回",
+        }
         pipeline_verifier = DetailPipelineVerifier(
             config,
             located,
             flow_started_at=flow_started_at,
+            jab=jab,
+            jab_lock=jab_lock,
         )
         pipeline_verifier.start()
         pipeline_field_task_ids = []
+        pipeline_field_tasks = {}
         pipeline_snapshot_task_ids = []
         pipeline_row_count_task_id = None
 
@@ -372,15 +562,23 @@ def run_one_row(config, row, save_enabled=False, recorder=None):
                 business_values,
             )
             pipeline_field_task_ids.append(task_id)
+            pipeline_field_tasks[task_id] = {
+                "row_index": int(row_index),
+                "field": dict(field),
+                "business": business_values,
+            }
             return task_id
 
         detail_steps = timings.measure(
             "detail.main-line",
+            run_with_jab_lock,
+            jab_lock,
             write_detail_line_by_screen,
             jab,
             business,
             located,
             after_field=submit_detail_verify,
+            recover_after_failure=recover_modal_after_failure,
         )
         row_report["detail_steps"] = detail_steps
         pipeline_snapshot_task_ids.append(
@@ -402,11 +600,14 @@ def run_one_row(config, row, save_enabled=False, recorder=None):
             }
             add_row, fee_steps, clear_account, delete_extra = timings.measure(
                 "detail.fee-line",
+                run_with_jab_lock,
+                jab_lock,
                 run_fee_only,
                 jab,
                 located,
                 str(row.fee),
                 after_field=submit_detail_verify,
+                recover_after_failure=recover_modal_after_failure,
             )
             row_report["fee_row_add"] = add_row
             row_report["fee_steps"] = fee_steps
@@ -431,6 +632,8 @@ def run_one_row(config, row, save_enabled=False, recorder=None):
         else:
             row_report["extra_row_delete"] = timings.measure(
                 "detail.delete-extra-after-main",
+                run_with_jab_lock,
+                jab_lock,
                 delete_extra_row_if_present,
                 jab,
                 located,
@@ -453,6 +656,7 @@ def run_one_row(config, row, save_enabled=False, recorder=None):
                 "reason": "手续费为 0，跳过手续费行",
             }
             pipeline_row_count_task_id = pipeline_verifier.submit_row_count(1)
+        expected_detail_rows = 2 if row.fee > 0 else 1
         pipeline_wait_ids = []
         if pipeline_field_task_ids:
             pipeline_wait_ids.append(pipeline_field_task_ids[-1])
@@ -463,14 +667,67 @@ def run_one_row(config, row, save_enabled=False, recorder=None):
             pipeline_wait_ids,
             timeout=2.0,
         )
+        if diagnose_detail_repair:
+            row_report["detail_pipeline_verify_before_repair_drill"] = dict(
+                row_report["detail_pipeline_verify"]
+            )
+            row_report["detail_pipeline_verify"] = force_one_detail_field_pending(
+                row_report["detail_pipeline_verify"],
+                pipeline_field_task_ids,
+            )
+        row_report["detail_pipeline_state"] = verifier_snapshot(pipeline_verifier)
         timings.add(
             "detail.pipeline-final-wait",
             time.perf_counter() - pipeline_wait_started,
         )
         row_report["detail_pipeline_snapshots"] = pipeline_snapshot_task_ids
-        if not row_report["detail_pipeline_verify"].get("ok"):
+        detail_pipeline_ok = bool(row_report["detail_pipeline_verify"].get("ok"))
+        if not detail_pipeline_ok:
+            repair_report = timings.measure(
+                "detail.pipeline-repair",
+                repair_detail_pipeline_failures,
+                jab,
+                jab_lock,
+                located,
+                pipeline_verifier,
+                row_report["detail_pipeline_verify"],
+                pipeline_field_tasks,
+                pipeline_row_count_task_id,
+                expected_detail_rows,
+                entry_scope_hwnd,
+                recover_modal_after_failure,
+            )
+            row_report["detail_pipeline_repair"] = repair_report
+            if repair_report.get("snapshot_task_id"):
+                pipeline_snapshot_task_ids.append(repair_report["snapshot_task_id"])
+            repair_wait_ids = repair_report.get("wait_ids") or []
+            if repair_wait_ids:
+                repair_wait_started = time.perf_counter()
+                row_report["detail_pipeline_verify_after_repair"] = (
+                    pipeline_verifier.wait(
+                        repair_wait_ids,
+                        timeout=2.0,
+                    )
+                )
+                row_report["detail_pipeline_state_after_repair"] = verifier_snapshot(
+                    pipeline_verifier
+                )
+                timings.add(
+                    "detail.pipeline-repair-wait",
+                    time.perf_counter() - repair_wait_started,
+                )
+                detail_pipeline_ok = bool(
+                    row_report["detail_pipeline_verify_after_repair"].get("ok")
+                )
+        if not detail_pipeline_ok:
             row_report["after_table"] = timings.measure(
-                "body.read-after-fallback", read_body_table, jab, "after_detail_fill"
+                "body.read-after-fallback",
+                run_with_jab_lock,
+                jab_lock,
+                read_body_table,
+                jab,
+                "after_detail_fill",
+                entry_scope_hwnd,
             )
             _event(
                 "pipeline-verify-failed",
@@ -490,45 +747,56 @@ def run_one_row(config, row, save_enabled=False, recorder=None):
         }
         account_check = timings.measure(
             "header.account-readback-after-detail",
+            run_with_jab_lock,
+            jab_lock,
             wait_header_account_description,
             jab,
-            1.0,
+            0.0,
+            scope=build_header_scope_for_followup(
+                entry_scope_hwnd,
+                entry_dynamic_index,
+            ),
         )
         row_report["header_account"] = account_check
         if not account_check.get("accepted"):
+            row_report["header_account_readback_warning"] = {
+                "ok": False,
+                "reason": "表头收款银行账户未从 JAB 后端读回；明细账号已由后台 pipeline 校验，继续保存/后验查询闭包",
+                "account_check": account_check,
+            }
             _event(
-                "account-readback-failed",
+                "account-readback-warning",
                 excel_row=row.row,
-                error="收款银行账户为空",
-            )
-            return fail(
-                row_report,
-                "header-account-readback-after-detail",
-                timings,
-                "收款银行账户为空",
-            )
-        _stage("保存前守卫", excel_row=row.row)
-        row_report["pre_save_modal_recovery"] = timings.measure(
-            "guard.pre-save-modal-recovery",
-            recover_cancelable_modal_before_save,
-            jab,
-            probe_receipt_entry_page,
-        )
-        if not row_report["pre_save_modal_recovery"].get("ok"):
-            _event(
-                "pre-save-guard-failed",
-                excel_row=row.row,
-                error=row_report["pre_save_modal_recovery"].get("reason"),
-            )
-            return fail(
-                row_report,
-                "pre-save-modal-recovery",
-                timings,
-                row_report["pre_save_modal_recovery"].get("reason"),
+                warning="表头收款银行账户未从 JAB 后端读回，继续执行",
             )
         if save_enabled:
             _stage("保存", excel_row=row.row)
-            save_result = timings.measure("save.ctrl-s", save_receipt_by_ctrl_s, jab)
+            save_result = timings.measure(
+                "save.ctrl-s",
+                run_with_jab_lock,
+                jab_lock,
+                save_receipt_by_ctrl_s,
+                jab,
+                entry_scope_hwnd,
+            )
+            if not save_result.get("ok"):
+                recovery = timings.measure(
+                    "save.modal-recovery-after-failure",
+                    recover_modal_after_failure,
+                )
+                if recovery.get("attempted") and recovery.get("ok"):
+                    save_result = timings.measure(
+                        "save.ctrl-s-retry-after-modal",
+                        run_with_jab_lock,
+                        jab_lock,
+                        save_receipt_by_ctrl_s,
+                        jab,
+                        entry_scope_hwnd,
+                    )
+                    save_result["retried_after_modal_recovery"] = True
+                    save_result["modal_recovery"] = recovery
+                else:
+                    save_result["modal_recovery"] = recovery
             row_report["save"] = save_result
             if not save_result.get("ok"):
                 _event(
@@ -539,40 +807,471 @@ def run_one_row(config, row, save_enabled=False, recorder=None):
             row_report["save"] = {
                 "ok": True,
                 "skipped": True,
-                "reason": "no-save 模式：已停在保存前，未发送 Ctrl+S",
+                "reason": "no-save 模式：已停在保存前，未触发 Ctrl+S",
             }
         row_report["ok"] = True
         row_report["timings"] = timings.items
         return row_report
+    except Exception as exc:
+        row_report["exception"] = {
+            "type": type(exc).__name__,
+            "message": str(exc),
+            "stage": current_stage.get("name") or "",
+        }
+        _event(
+            "row-exception",
+            excel_row=row.row,
+            stage=current_stage.get("name") or "",
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        return fail(
+            row_report,
+            "exception",
+            timings,
+            f"{type(exc).__name__}: {exc}",
+        )
     finally:
+        if body_path_preload is not None:
+            row_report.setdefault("preheat", {})["body_path_final"] = preload_result(
+                body_path_preload
+            )
         if pipeline_verifier is not None:
             pipeline_verifier.close(timeout=0.2)
+        if body_path_preload is not None:
+            body_path_preload.close(timeout=0.2)
+        row_report["modal_recovery"] = {"events": modal_events}
         jab.close()
 
 
-def open_self_made_entry(config):
-    existing = detect_existing_self_made_entry(config)
-    if existing.get("ok"):
-        return existing
-    opened = run_receipt_new_probe()
+def open_self_made_entry(config, jab=None):
+    opened = (
+        run_receipt_new_probe_with_jab(jab)
+        if jab is not None
+        else run_receipt_new_probe()
+    )
     if opened.get("ok"):
         return opened
     opened["reason"] = opened.get("reason") or "未能进入收款单自制录入态"
     return opened
 
 
+def run_with_jab_lock(jab_lock, func, *args, **kwargs):
+    if jab_lock is None:
+        return func(*args, **kwargs)
+    with jab_lock:
+        return func(*args, **kwargs)
+
+
+class BodyTablePreload:
+    def __init__(
+        self, config, jab, jab_lock=None, scope_hwnd=None, flow_started_at=None
+    ):
+        self.config = config
+        self.jab = jab
+        self.jab_lock = jab_lock
+        self.scope_hwnd = scope_hwnd
+        self.flow_started_at = flow_started_at
+        self.started_at = time.perf_counter()
+        self.finished_at = None
+        self._result = {"ok": False, "status": "running", "scope_hwnd": scope_hwnd}
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        try:
+            located = run_with_jab_lock(
+                self.jab_lock,
+                locate_receipt_body_table_cached,
+                self.jab,
+                max_rows=5,
+                scope_hwnd=self.scope_hwnd,
+            )
+            self._result = {
+                **located,
+                "ok": bool(located.get("best")),
+                "status": "ready",
+                "scope_hwnd": self.scope_hwnd,
+            }
+        except Exception as exc:
+            self._result = {
+                "ok": False,
+                "status": "error",
+                "scope_hwnd": self.scope_hwnd,
+                "reason": f"{type(exc).__name__}: {exc}",
+            }
+        finally:
+            self.finished_at = time.perf_counter()
+            self._result["seconds"] = round(self.finished_at - self.started_at, 3)
+            if self.flow_started_at is not None:
+                self._result["started_offset_seconds"] = round(
+                    self.started_at - self.flow_started_at,
+                    3,
+                )
+
+    def result(self, timeout=0.0):
+        self._thread.join(timeout=max(float(timeout or 0), 0.0))
+        return dict(self._result)
+
+    def close(self, timeout=0.2):
+        self._thread.join(timeout=max(float(timeout or 0), 0.0))
+
+
+def start_body_table_preload(
+    config, jab, jab_lock=None, scope_hwnd=None, flow_started_at=None
+):
+    return BodyTablePreload(
+        config,
+        jab,
+        jab_lock=jab_lock,
+        scope_hwnd=scope_hwnd,
+        flow_started_at=flow_started_at,
+    )
+
+
+def preload_result(preload):
+    if preload is None or not hasattr(preload, "result"):
+        return None
+    return preload.result(timeout=0.0)
+
+
+def verifier_snapshot(verifier):
+    if verifier is None or not hasattr(verifier, "snapshot"):
+        return None
+    return verifier.snapshot()
+
+
+def wait_receipt_header_anchor_in_current_canvas(
+    jab,
+    scope_hwnd,
+    timeout=1.2,
+    interval=0.2,
+):
+    started_at = time.perf_counter()
+    deadline = started_at + max(float(timeout or 0), 0.0)
+    interval = max(float(interval or 0.2), 0.01)
+    attempts = []
+    while True:
+        remaining = max(deadline - time.perf_counter(), 0.0)
+        attempt = resolve_receipt_header_anchor_in_canvas(
+            jab,
+            scope_hwnd,
+            timeout=min(0.05, remaining) if remaining > 0 else 0.05,
+        )
+        attempts.append(attempt)
+        if attempt.get("ok"):
+            return {
+                **attempt,
+                "attempts": attempts,
+                "poll_interval": interval,
+                "seconds": round(time.perf_counter() - started_at, 3),
+            }
+        if time.perf_counter() >= deadline:
+            return {
+                "ok": False,
+                "reason": attempt.get("reason") or "当前 canvas 未找到财务组织(O) 锚点",
+                "scope_hwnd": scope_hwnd,
+                "attempts": attempts,
+                "poll_interval": interval,
+                "seconds": round(time.perf_counter() - started_at, 3),
+            }
+        time.sleep(min(interval, max(deadline - time.perf_counter(), 0.0)))
+
+
+def force_one_detail_field_pending(report, field_task_ids):
+    forced = dict(report or {})
+    results = dict(forced.get("results") or {})
+    target_id = next(
+        (task_id for task_id in field_task_ids if task_id in results), None
+    )
+    if target_id is None and field_task_ids:
+        target_id = field_task_ids[-1]
+    if target_id and target_id in results:
+        results.pop(target_id, None)
+    submitted = list(forced.get("submitted") or [])
+    if target_id and target_id not in submitted:
+        submitted.append(target_id)
+    pending = int(forced.get("pending") or 0)
+    forced.update(
+        {
+            "ok": False,
+            "pending": max(1, pending),
+            "results": results,
+            "submitted": submitted,
+            "forced_detail_repair_drill": True,
+            "forced_pending_field_task_id": target_id,
+        }
+    )
+    return forced
+
+
+def repair_detail_pipeline_failures(
+    jab,
+    jab_lock,
+    located,
+    pipeline_verifier,
+    pipeline_report,
+    pipeline_field_tasks,
+    pipeline_row_count_task_id,
+    expected_rows,
+    scope_hwnd,
+    recover_after_failure=None,
+):
+    results = (pipeline_report or {}).get("results") or {}
+    best = (located or {}).get("best") or {}
+    table_window = best.get("window") or {}
+    row_count = int(best.get("row_count") or 0)
+    repair = {
+        "ok": False,
+        "policy": (
+            "只用当前已定位的明细表 path 修复一次；不重扫表格，不切换到旧语义兜底"
+        ),
+        "field_repairs": [],
+        "row_count_repair": None,
+        "wait_ids": [],
+        "snapshot_task_id": None,
+    }
+    repair_field_ids = []
+    for task_id, task in (pipeline_field_tasks or {}).items():
+        result = results.get(task_id)
+        if result and result.get("ok"):
+            continue
+        field = task["field"]
+        if not best or not table_window:
+            attempt = {
+                "ok": False,
+                "reason": "明细表缓存窗口不可用，不能执行字段修复",
+            }
+        else:
+            attempt = run_with_jab_lock(
+                jab_lock,
+                write_field_once,
+                jab,
+                located,
+                table_window,
+                int(task["row_index"]),
+                row_count,
+                field,
+                field["col"],
+                task["business"],
+                2,
+                current_col=None,
+                recover_after_failure=recover_after_failure,
+            )
+        field_report = {
+            "original_task_id": task_id,
+            "name": field.get("name"),
+            "row_index": int(task["row_index"]),
+            "col": field.get("col"),
+            "attempt": attempt,
+        }
+        if attempt.get("ok"):
+            verify_task_id = pipeline_verifier.submit_field(
+                int(task["row_index"]),
+                field,
+                task["business"],
+            )
+            repair_field_ids.append(verify_task_id)
+            field_report["verify_task_id"] = verify_task_id
+        else:
+            field_report["reason"] = (
+                attempt.get("input_reason")
+                or attempt.get("commit_reason")
+                or attempt.get("reason")
+            )
+        repair["field_repairs"].append(field_report)
+
+    row_count_result = results.get(pipeline_row_count_task_id)
+    row_count_needs_repair = bool(pipeline_row_count_task_id) and (
+        row_count_result is None or not row_count_result.get("ok")
+    )
+    row_count_wait_id = None
+    if row_count_needs_repair:
+        row_repair = run_with_jab_lock(
+            jab_lock,
+            delete_extra_row_if_present,
+            jab,
+            located,
+            int(expected_rows),
+            scope_hwnd=scope_hwnd,
+        )
+        repair["row_count_repair"] = row_repair
+        if row_repair.get("ok"):
+            row_count_wait_id = pipeline_verifier.submit_row_count(int(expected_rows))
+
+    if repair_field_ids:
+        repair["snapshot_task_id"] = pipeline_verifier.submit_snapshot(
+            "after-detail-repair",
+            max_rows=max(3, int(expected_rows) + 1),
+            min_matches=len(repair_field_ids),
+        )
+    wait_ids = [*repair_field_ids]
+    if row_count_wait_id:
+        wait_ids.append(row_count_wait_id)
+    repair["wait_ids"] = wait_ids
+    attempted = bool(repair["field_repairs"]) or bool(repair["row_count_repair"])
+    if not attempted:
+        repair["ok"] = False
+        repair["reason"] = "pipeline 失败但没有可修复的字段或行数任务"
+    elif not wait_ids:
+        repair["ok"] = False
+        repair["reason"] = "已尝试修复，但没有成功提交二次校验任务"
+    else:
+        repair["ok"] = True
+    return repair
+
+
+def resolve_body_table_from_preload(jab, preload=None, snapshot=None, scope_hwnd=None):
+    if snapshot and snapshot.get("best"):
+        return {**snapshot, "source": "early-body-preload"}
+    if preload is not None:
+        waited = preload.result(timeout=0.2)
+        if waited.get("best"):
+            return {**waited, "source": "early-body-preload-wait"}
+    located = locate_receipt_body_table_cached(
+        jab,
+        max_rows=5,
+        scope_hwnd=scope_hwnd,
+    )
+    return {**located, "source": "main-thread-locate"}
+
+
+def build_header_scope_for_followup(scope_hwnd, dynamic_index):
+    if not scope_hwnd or dynamic_index is None:
+        return None
+    return {
+        "ok": True,
+        "scope_hwnd": scope_hwnd,
+        "dynamic_index": dynamic_index,
+        "mode": "provided-canvas-anchor",
+    }
+
+
 def probe_receipt_entry_page(jab):
-    scope = locate_receipt_header_scope(jab)
-    if scope.get("ok"):
-        return {"ok": True, "method": "header-scope", "scope": scope}
     windows = collect_receipt_new_windows(jab)
     state = detect_self_made_entry_state(windows)
+    scope_hwnd = extract_entry_scope_hwnd({"entry_state": state, "windows": windows})
     return {
         "ok": bool(state.get("ok")),
         "method": "entry-state",
-        "scope": scope,
+        "scope_hwnd": scope_hwnd,
+        "windows": windows,
         "entry_state": state,
     }
+
+
+def extract_entry_scope_hwnd(report):
+    state = (report or {}).get("entry_state") or {}
+    hwnd = extract_entry_state_hwnd(state, prefer_canvas=True)
+    if hwnd:
+        return hwnd
+    parsed = (report or {}).get("parsed") or {}
+    for key in ("entry_state", "quick_entry_state"):
+        hwnd = extract_entry_state_hwnd(parsed.get(key) or {}, prefer_canvas=True)
+        if hwnd:
+            return hwnd
+    hwnd = extract_entry_state_hwnd(state, prefer_canvas=False)
+    if hwnd:
+        return hwnd
+    for key in ("entry_state", "quick_entry_state"):
+        hwnd = extract_entry_state_hwnd(parsed.get(key) or {}, prefer_canvas=False)
+        if hwnd:
+            return hwnd
+    for key in (
+        "windows_after_choose",
+        "windows_after_open",
+        "windows",
+        "after_windows",
+    ):
+        for window in (report or {}).get(key) or parsed.get(key) or []:
+            if (
+                window.get("is_java")
+                and window.get("visible")
+                and window.get("hwnd")
+                and window.get("class_name") == "SunAwtCanvas"
+            ):
+                return int(window["hwnd"])
+    return None
+
+
+def extract_entry_dynamic_index(report):
+    state = (report or {}).get("entry_state") or {}
+    dynamic_index = extract_dynamic_index_from_entry_state(state)
+    if dynamic_index is not None:
+        return dynamic_index
+    parsed = (report or {}).get("parsed") or {}
+    for key in ("entry_state", "quick_entry_state"):
+        dynamic_index = extract_dynamic_index_from_entry_state(parsed.get(key) or {})
+        if dynamic_index is not None:
+            return dynamic_index
+    return None
+
+
+def extract_entry_anchor_path(report):
+    state = (report or {}).get("entry_state") or {}
+    path = extract_anchor_path_from_entry_state(state)
+    if path:
+        return path
+    parsed = (report or {}).get("parsed") or {}
+    for key in ("entry_state", "quick_entry_state"):
+        path = extract_anchor_path_from_entry_state(parsed.get(key) or {})
+        if path:
+            return path
+    return None
+
+
+def extract_anchor_path_from_entry_state(state):
+    for hit in (state or {}).get("hits") or []:
+        control = hit.get("control") or {}
+        if (
+            control.get("name") == "财务组织(O)"
+            or control.get("description") == "财务组织(O)"
+        ):
+            path = control.get("path")
+            if path:
+                return str(path)
+    return None
+
+
+def extract_dynamic_index_from_entry_state(state):
+    for hit in (state or {}).get("hits") or []:
+        control = hit.get("control") or {}
+        direct = control.get("dynamic_index")
+        if direct is not None:
+            try:
+                return int(direct)
+            except (TypeError, ValueError):
+                pass
+        path = control.get("path") or ""
+        dynamic_index = extract_receipt_module_dynamic_index(path)
+        if dynamic_index is not None:
+            return dynamic_index
+    return None
+
+
+def extract_receipt_module_dynamic_index(path):
+    prefix = "0.0.1.0.0.0.0."
+    text = str(path or "")
+    if not text.startswith(prefix):
+        return None
+    part = text[len(prefix) :].split(".", 1)[0]
+    try:
+        return int(part)
+    except ValueError:
+        return None
+
+
+def extract_entry_state_hwnd(state, prefer_canvas=False):
+    if prefer_canvas:
+        for hit in (state or {}).get("hits") or []:
+            window = hit.get("window") or {}
+            if window.get("class_name") == "SunAwtCanvas" and window.get("hwnd"):
+                return int(window["hwnd"])
+    for hit in (state or {}).get("hits") or []:
+        window = hit.get("window") or {}
+        hwnd = window.get("hwnd")
+        if hwnd:
+            return int(hwnd)
+    return None
 
 
 def business_from_plan_row(row):
@@ -603,7 +1302,7 @@ def extract_header_accepted_text(header_steps, label):
         text = str(step.get("accepted_text") or "").strip()
         if text:
             return text
-        backend = step.get("backend_state") or {}
+        backend = step.get("post_write_snapshot") or step.get("backend_state") or {}
         for key in ("description", "text", "name"):
             value = str(backend.get(key) or "").strip()
             if value and value != str(step.get("value") or "").strip():
@@ -642,33 +1341,179 @@ def format_row_failure_reason(report):
     return reason or "录入失败"
 
 
-def save_receipt_by_ctrl_s(jab, timeout=12.0):
-    clicked = jab.click_save(timeout=3.0)
-    prompt_seen = jab.wait_save_success(timeout=2.0)
+def save_receipt_by_ctrl_s(jab, scope_hwnd=None, timeout=1.0):
+    page = None
+    if not scope_hwnd:
+        page = probe_receipt_entry_page(jab)
+        if not page.get("ok"):
+            return {
+                "ok": False,
+                "triggered": False,
+                "reason": "Ctrl+S 保存前未确认当前是收款单自制录入页",
+                "page": page,
+            }
+        scope = page.get("scope") or {}
+        scope_hwnd = scope.get("scope_hwnd") or page.get("scope_hwnd")
+    if not scope_hwnd:
+        return {
+            "ok": False,
+            "triggered": False,
+            "reason": "Ctrl+S 保存前未取得收款单窗口句柄",
+            "page": page,
+        }
+    guard = foreground_matches_window({"hwnd": scope_hwnd})
+    if not guard.get("ok"):
+        return {
+            "ok": False,
+            "triggered": False,
+            "reason": guard.get("reason") or "当前前台窗口不是目标 NC 窗口",
+            "guard": guard,
+            "page": page,
+        }
+    try:
+        jab.press_hotkey("ctrl", "s", wait=0)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "triggered": False,
+            "reason": f"Ctrl+S 键盘热键触发失败：{type(exc).__name__}: {exc}",
+            "guard": guard,
+            "page": page,
+        }
     started = time.perf_counter()
     last_state = None
     while time.perf_counter() - started < timeout:
         windows = collect_receipt_new_windows(jab)
         state = detect_self_made_entry_state(windows)
         last_state = state
-        if not state.get("ok"):
+        parent_new_state = detect_receipt_parent_new_ready(windows)
+        if parent_new_state.get("ok") and not state.get("ok"):
             return {
                 "ok": True,
-                "clicked": bool(clicked),
-                "prompt_seen": bool(prompt_seen),
+                "triggered": True,
+                "hotkey": {"ok": True, "mode": "jab.press_hotkey", "key": "Ctrl+S"},
+                "precondition": {
+                    "page": page,
+                    "foreground_guard": guard,
+                },
                 "seconds": round(time.perf_counter() - started, 3),
-                "oracle": "自制录入态按钮消失",
+                "oracle": {
+                    "name": "receipt_parent_new_ready_after_save",
+                    "ok": True,
+                    "evidence": "保存后重新检测到收款单录入父页前台【新增】按钮，且保存/暂存/取消三按钮不再同时存在",
+                    "parent_new_state": parent_new_state,
+                    "self_made_entry_state": state,
+                },
                 "entry_state": state,
+                "parent_new_state": parent_new_state,
             }
-        time.sleep(0.3)
+        time.sleep(0.2)
+    final_windows = collect_receipt_new_windows(jab)
+    parent_new_state = detect_receipt_parent_new_ready(final_windows)
     return {
         "ok": False,
-        "clicked": bool(clicked),
-        "prompt_seen": bool(prompt_seen),
+        "triggered": True,
+        "hotkey": {"ok": True, "mode": "jab.press_hotkey", "key": "Ctrl+S"},
+        "precondition": {
+            "page": page,
+            "foreground_guard": guard,
+        },
         "seconds": round(time.perf_counter() - started, 3),
-        "reason": "保存后仍检测到自制录入态按钮，未确认回到新增态",
+        "reason": "保存后未确认收款单父页【新增】已恢复，不能证明保存成功",
+        "oracle": {
+            "name": "receipt_parent_new_ready_after_save",
+            "ok": False,
+            "evidence": "需要同时满足：前台收款单父页【新增】按钮可用，且保存/暂存/取消三按钮不再同时存在",
+            "parent_new_state": parent_new_state,
+            "self_made_entry_state": last_state,
+        },
         "entry_state": last_state,
+        "parent_new_state": parent_new_state,
     }
+
+
+def detect_receipt_parent_new_ready(windows):
+    foreground = foreground_info()
+    buttons = find_named_controls_in_windows(
+        windows,
+        "新增",
+        role=None,
+        class_name="SunAwtFrame",
+        require_action=True,
+    )
+    annotate_foreground_root_for_targets(buttons, foreground)
+    usable = filter_usable_new_buttons(buttons, foreground)
+    return {
+        "ok": bool(usable),
+        "foreground": foreground,
+        "usable_new_button_count": len(usable),
+        "usable_new_buttons": [
+            {
+                "window": item.get("window"),
+                "control": {
+                    key: (item.get("control") or {}).get(key)
+                    for key in ("name", "description", "role", "states", "path")
+                },
+            }
+            for item in usable[:3]
+        ],
+        "candidate_count": len(buttons),
+    }
+
+
+def diagnose_written_header_fields(
+    jab,
+    labels,
+    dynamic_index,
+    dynamic_prefix,
+    scope_hwnd,
+):
+    results = []
+    for label in labels or []:
+        found = find_receipt_header_field_by_dynamic_path(
+            jab,
+            label,
+            dynamic_index,
+            scope_hwnd=scope_hwnd,
+            require_showing=False,
+            require_valid_bounds=False,
+        )
+        if not found.get("ok"):
+            results.append(
+                {
+                    "label": label,
+                    "ok": False,
+                    "present": False,
+                    "reason": found.get("reason") or "field path not found",
+                    "dynamic_prefix": dynamic_prefix,
+                    "path": found.get("path"),
+                }
+            )
+            continue
+        context = found["context"]
+        vm_id = found["vm_id"]
+        owned_contexts = found["owned_contexts"]
+        try:
+            info = jab.get_context_info(vm_id, context)
+            text = jab.get_text_context_value(vm_id, context)
+            description = info.description.strip() if info else ""
+            name = info.name.strip() if info else ""
+            present = bool(str(text or "").strip() or description or name)
+            results.append(
+                {
+                    "label": label,
+                    "ok": True,
+                    "present": present,
+                    "text": text,
+                    "description": description,
+                    "name": name,
+                    "path": found.get("path"),
+                    "dynamic_prefix": found.get("dynamic_prefix") or dynamic_prefix,
+                }
+            )
+        finally:
+            jab.release_contexts(vm_id, owned_contexts)
+    return results
 
 
 def fail(row_report, failed_step, timings, reason):
@@ -683,6 +1528,22 @@ def fail(row_report, failed_step, timings, reason):
     return row_report
 
 
+def summarize_header_failure(header_steps):
+    for step in header_steps or []:
+        if step.get("ok"):
+            continue
+        label = step.get("label")
+        reason = (
+            step.get("reason")
+            or step.get("stage")
+            or ((step.get("scope") or {}).get("reason"))
+            or ((step.get("path_attempt") or {}).get("reason"))
+            or "表头字段写入失败"
+        )
+        return f"表头字段写入失败: {label or step.get('step') or '未知字段'} - {reason}"
+    return "表头字段写入失败"
+
+
 def serializable(value):
     if isinstance(value, Decimal):
         return str(value)
@@ -693,17 +1554,130 @@ def serializable(value):
     return value
 
 
+def write_last_report(report):
+    path = ROOT / "logs" / "last_receipt_full_flow_report.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_suffix(".json.tmp")
+    with tmp_path.open("w", encoding="utf-8") as file:
+        json.dump(report, file, ensure_ascii=False, indent=2, default=str)
+        file.write("\n")
+    tmp_path.replace(path)
+    summary_path = ROOT / "logs" / "last_receipt_failure_summary.txt"
+    summary_path.write_text(
+        "\n".join(build_console_report_lines(report, path, summary_path)) + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
 def print_report(report, args):
-    text = json.dumps(report, ensure_ascii=False, indent=2, default=str)
-    print(text)
     if args.json:
+        text = json.dumps(report, ensure_ascii=False, indent=2, default=str)
+        print(text)
         return
-    print()
-    if report.get("ok"):
-        print("成功：完整流程测试通过。")
-    else:
-        print(f"失败：{report.get('reason') or '至少一行完整流程测试失败'}")
-    print(f"总用时：{report.get('total_seconds')}s")
+    report_path = ROOT / "logs" / "last_receipt_full_flow_report.json"
+    summary_path = ROOT / "logs" / "last_receipt_failure_summary.txt"
+    for line in build_console_report_lines(report, report_path, summary_path):
+        print(line)
+
+
+def build_console_report_lines(report, report_path=None, summary_path=None):
+    lines = ["收款单完整流程结果摘要"]
+    lines.append(f"结果：{'成功' if report.get('ok') else '失败'}")
+    lines.append(f"总用时：{report.get('total_seconds')}s")
+    rows = report.get("rows") or []
+    failed_row = next((row for row in rows if not row.get("ok")), None)
+    if failed_row:
+        lines.append(f"失败行：Sheet 行 {failed_row.get('excel_row')}")
+        lines.append(f"失败阶段：{failed_row.get('failed_step') or '未知'}")
+        if failed_row.get("reason"):
+            lines.append(f"失败原因：{failed_row.get('reason')}")
+        entry_scope_hwnd = failed_row.get("entry_scope_hwnd")
+        entry_dynamic_index = failed_row.get("entry_dynamic_index")
+        if entry_scope_hwnd is not None or entry_dynamic_index is not None:
+            lines.append(
+                "入口上下文："
+                f"scope_hwnd={entry_scope_hwnd}, "
+                f"entry_dynamic_index={entry_dynamic_index}"
+            )
+        header_step = first_failed_step(failed_row.get("header_steps"))
+        if header_step:
+            lines.extend(format_header_failure_lines(header_step))
+        modal_events = ((failed_row.get("modal_recovery") or {}).get("events")) or []
+        if modal_events:
+            last_modal = modal_events[-1]
+            lines.append(
+                "弹窗恢复："
+                f"attempted={last_modal.get('attempted')}, "
+                f"ok={last_modal.get('ok')}, "
+                f"reason={last_modal.get('reason') or ''}"
+            )
+        else:
+            lines.append("弹窗恢复：本次失败点没有检测到可取消弹窗")
+        timings = failed_row.get("timings") or []
+        if timings:
+            lines.append("关键耗时：" + format_timings(timings))
+    elif report.get("ok"):
+        ok_rows = [row.get("excel_row") for row in rows if row.get("ok")]
+        lines.append(f"通过行：{ok_rows}")
+    elif report.get("reason"):
+        lines.append(f"失败原因：{report.get('reason')}")
+    if report_path:
+        lines.append(f"完整报告：{report_path}")
+    if summary_path:
+        lines.append(f"摘要文件：{summary_path}")
+    return lines
+
+
+def first_failed_step(steps):
+    for step in steps or []:
+        if step.get("ok"):
+            continue
+        return step
+    return None
+
+
+def format_header_failure_lines(step):
+    lines = []
+    label = step.get("label") or step.get("step") or "未知字段"
+    lines.append(f"表头失败字段：{label}")
+    if step.get("stage"):
+        lines.append(f"表头失败阶段：{step.get('stage')}")
+    scope = step.get("scope") or {}
+    if scope:
+        lines.append(
+            "表头 scope："
+            f"mode={scope.get('mode')}, "
+            f"dynamic_index={scope.get('dynamic_index')}, "
+            f"dynamic_prefix={scope.get('dynamic_prefix')}"
+        )
+    path_attempt = step.get("path_attempt") or {}
+    if path_attempt:
+        lines.append(
+            "path 尝试："
+            f"{path_attempt.get('path') or ''} "
+            f"({path_attempt.get('reason') or '无原因'})"
+        )
+    modal_recovery = step.get("modal_recovery") or {}
+    if modal_recovery:
+        lines.append(
+            "字段级弹窗恢复："
+            f"attempted={modal_recovery.get('attempted')}, "
+            f"ok={modal_recovery.get('ok')}, "
+            f"reason={modal_recovery.get('reason') or ''}"
+        )
+    return lines
+
+
+def format_timings(timings):
+    chunks = []
+    for item in timings:
+        name = item.get("name")
+        seconds = item.get("seconds")
+        if name is None or seconds is None:
+            continue
+        chunks.append(f"{name}={seconds}s")
+    return ", ".join(chunks)
 
 
 if __name__ == "__main__":

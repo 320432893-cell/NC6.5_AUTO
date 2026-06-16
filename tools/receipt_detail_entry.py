@@ -255,7 +255,7 @@ def _check_health(jab, report, timings):
         "header.account-read",
         wait_header_account_description,
         jab,
-        timeout=2.0,
+        timeout=0.0,
     )
     return True
 

@@ -73,11 +73,9 @@ class JABOperator(JABControlMixin, JABNearLabelMixin, JABPathMixin, JABTableMixi
             self.pump_thread.start()
 
         time.sleep(self.startup_wait)
-        self.hide_blank_awt_windows()
         log.info(f"JAB 已加载: {self.loaded_path}")
 
     def close(self):
-        self.hide_blank_awt_windows()
         self.clear_table_cache()
         if self.stop_pump:
             self.stop_pump.set()

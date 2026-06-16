@@ -15,6 +15,10 @@ if str(ROOT) not in sys.path:
 from core.jab_operator import JABOperator  # noqa: E402
 from core.utils import load_config  # noqa: E402
 from tools.jab_probe import AccessibleActions, JOBJECT, enum_windows  # noqa: E402
+from tools.receipt_query_guard import (  # noqa: E402
+    ReceiptPageGuardError,
+    guard_receipt_parent_page,
+)
 
 
 SELF_MADE_NAMES = {"自制"}
@@ -81,7 +85,7 @@ def main():
         return (
             0
             if report.get("open", {}).get("ok")
-            and report.get("entry_state", {}).get("ok")
+            and report.get("choose_self_made", {}).get("ok")
             else 1
         )
     return 0 if report.get("open", {}).get("ok") else 1
@@ -90,6 +94,7 @@ def main():
 def run(args, jab=None, before=None, buttons=None):
     timings = []
     owns_jab = jab is None
+    cfg = None
     if owns_jab:
         cfg = load_config(args.config)
         jab = JABOperator(cfg)
@@ -99,6 +104,35 @@ def run(args, jab=None, before=None, buttons=None):
             measure(timings, "new-probe.jab.ensure-started", jab.ensure_started)
         else:
             timings.append({"name": "new-probe.jab.ensure-started", "seconds": 0.0})
+        parent_guard = measure(
+            timings,
+            "new-probe.receipt-parent-guard",
+            guard_receipt_new_parent_page,
+            jab,
+            cfg or getattr(jab, "config", {}) or {},
+        )
+        if not parent_guard.get("ok"):
+            return {
+                "foreground": foreground_info(),
+                "matches": [],
+                "buttons": [],
+                "usable_buttons": [],
+                "open": {
+                    "ok": False,
+                    "method": "receipt-parent-guard",
+                    "reason": parent_guard.get("reason")
+                    or "新增前未确认当前是收款单录入父页",
+                },
+                "receipt_parent_guard": parent_guard,
+                "tracked_popup": None,
+                "popup_cleanup": None,
+                "new_or_changed_after_open": [],
+                "windows_after_open": [],
+                "choose_self_made": None,
+                "windows_after_choose": None,
+                "entry_state": {"ok": False, "reason": "新增前页面守卫失败"},
+                "timings": timings,
+            }
         if before is None:
             before = measure(
                 timings, "new-probe.collect-before", collect_receipt_new_windows, jab
@@ -176,7 +210,6 @@ def run(args, jab=None, before=None, buttons=None):
         after_choose = None
         entry_wait = None
         popup_cleanup = None
-        residue_cleanup = None
         if args.choose_self_made and initial_entry_state.get("ok"):
             choose_report = {
                 "ok": True,
@@ -191,42 +224,21 @@ def run(args, jab=None, before=None, buttons=None):
             }
             after_choose = before
         elif args.choose_self_made and open_report.get("ok"):
-            pre_choose_entry = None
-            if not tracked_popup:
-                pre_choose_entry = measure(
-                    timings,
-                    "new-probe.pre-choose-entry-state",
-                    wait_for_self_made_entry_state,
-                    jab,
-                    0.35,
-                    0.04,
-                )
-            if pre_choose_entry and (
-                pre_choose_entry.get("ok") or pre_choose_entry.get("partial_ok")
-            ):
-                choose_report = {
-                    "ok": True,
-                    "method": "entry-state-already-open",
-                    "reason": "self-made entry state detected without visible popup",
-                }
-                entry_wait = pre_choose_entry
-                after_choose = entry_wait.get("windows") or []
-            else:
-                choose_report = measure(
-                    timings,
-                    "new-probe.choose-self-made",
-                    choose_self_made_menu_item,
-                    jab,
-                    after_open,
-                    args.self_made_index,
-                    popup_hwnd=tracked_popup.get("hwnd") if tracked_popup else None,
-                )
+            choose_report = measure(
+                timings,
+                "new-probe.choose-self-made",
+                choose_self_made_menu_item,
+                jab,
+                after_open,
+                args.self_made_index,
+                popup_hwnd=tracked_popup.get("hwnd") if tracked_popup else None,
+            )
             if choose_report.get("ok"):
                 if entry_wait is None:
                     entry_wait = measure(
                         timings,
-                        "new-probe.wait-for-entry-state",
-                        quick_check_self_made_entry_state,
+                        "new-probe.entry-context-snapshot",
+                        collect_entry_context_snapshot,
                         jab,
                     )
                     after_choose = entry_wait.get("windows") or []
@@ -240,16 +252,6 @@ def run(args, jab=None, before=None, buttons=None):
                     "new-probe.popup-cleanup",
                     close_popup_hwnd,
                     tracked_popup["hwnd"],
-                )
-            if (
-                choose_report.get("ok")
-                and entry_wait
-                and (entry_wait.get("ok") or entry_wait.get("partial_ok"))
-            ):
-                residue_cleanup = measure(
-                    timings,
-                    "new-probe.residue-cleanup",
-                    cleanup_awt_popup_residue,
                 )
         elif args.choose_self_made:
             choose_report = {
@@ -279,15 +281,31 @@ def run(args, jab=None, before=None, buttons=None):
         "open": open_report,
         "tracked_popup": tracked_popup,
         "popup_cleanup": popup_cleanup,
-        "residue_cleanup": residue_cleanup,
         "new_or_changed_after_open": diff_windows(before, after_open),
         "windows_after_open": after_open,
         "choose_self_made": choose_report,
         "windows_after_choose": after_choose,
         "entry_state": entry_state,
+        "receipt_parent_guard": parent_guard,
         "timings": timings,
     }
     return report
+
+
+def guard_receipt_new_parent_page(jab, config):
+    query_cfg = ((config or {}).get("receipt_entry") or {}).get("query") or {}
+    try:
+        report = guard_receipt_parent_page(jab, config or {}, query_cfg)
+    except ReceiptPageGuardError as exc:
+        return {
+            "ok": False,
+            "enabled": True,
+            "reason": str(exc),
+        }
+    return {
+        **report,
+        "purpose": "before-new-self-made",
+    }
 
 
 def open_new_menu_with_known_buttons(
@@ -305,29 +323,30 @@ def open_new_menu_with_known_buttons(
         )
         if action_report.get("ok"):
             return action_report
-        fallback = open_new_menu_with_ctrl_n(foreground)
-        fallback["button_action"] = action_report
-        return fallback
+        return {
+            "ok": False,
+            "method": "button",
+            "reason": "新增按钮 action 失败；正式收款流程不回退 Ctrl+N",
+            "button_action": action_report,
+        }
     if args.method == "button" and all_buttons:
-        fallback = open_new_menu_with_ctrl_n(foreground)
-        fallback.update(
-            {
-                "button_reason": "new button candidates were found, but none were usable in the foreground NC window",
-                "rejected_count": len(all_buttons),
-                "rejected": summarize_candidates(all_buttons[:20]),
-            }
-        )
-        return fallback
+        return {
+            "ok": False,
+            "method": "button",
+            "reason": "找到新增候选，但没有前台收款单窗口内可用的新增按钮；正式流程不回退 Ctrl+N",
+            "button_reason": "new button candidates were found, but none were usable in the foreground NC window",
+            "rejected_count": len(all_buttons),
+            "rejected": summarize_candidates(all_buttons[:20]),
+        }
     if args.method == "button":
-        fallback = open_new_menu_with_ctrl_n(foreground)
-        fallback.update(
-            {
-                "button_reason": "new button not found",
-                "rejected_count": 0,
-                "rejected": [],
-            }
-        )
-        return fallback
+        return {
+            "ok": False,
+            "method": "button",
+            "reason": "未找到新增按钮；正式收款流程不回退 Ctrl+N",
+            "button_reason": "new button not found",
+            "rejected_count": 0,
+            "rejected": [],
+        }
     return open_new_menu(jab, args)
 
 
@@ -452,76 +471,67 @@ def wait_for_self_made_popup(jab, before, timeout=0.8, interval=0.08):
     }
 
 
-def wait_for_self_made_entry_state(jab, timeout=0.45, interval=0.04):
-    start = time.perf_counter()
-    deadline = time.perf_counter() + max(float(timeout or 0), 0)
-    attempts = 0
-    last_windows = []
-    last_state = None
-    while True:
-        attempts += 1
-        last_windows = collect_receipt_new_windows_compat(
-            jab, max_depth=12, max_children=320
-        )
-        last_state = detect_self_made_entry_state(last_windows)
-        if last_state.get("ok") or last_state.get("partial_ok"):
-            return {
-                "ok": True,
-                "partial_ok": bool(last_state.get("partial_ok"))
-                and not bool(last_state.get("ok")),
-                "attempts": attempts,
-                "wait_seconds": elapsed(start),
-                "state": last_state,
-                "windows": last_windows,
-            }
-        remaining = deadline - time.perf_counter()
-        if remaining <= 0:
-            break
-        time.sleep(min(interval, remaining))
-    full_windows = collect_receipt_new_windows_compat(
-        jab, max_depth=18, max_children=520
-    )
-    full_state = detect_self_made_entry_state(full_windows)
-    if full_state.get("ok") or full_state.get("partial_ok"):
-        return {
-            "ok": True,
-            "partial_ok": bool(full_state.get("partial_ok"))
-            and not bool(full_state.get("ok")),
-            "attempts": attempts,
-            "wait_seconds": elapsed(start),
-            "state": full_state,
-            "windows": full_windows,
-        }
-    return {
+def collect_entry_context_snapshot(jab):
+    windows = collect_receipt_new_windows_compat(jab, max_depth=0, max_children=0)
+    anchor = resolve_current_canvas_header_anchor(jab, windows)
+    state = {
         "ok": False,
-        "attempts": attempts,
-        "wait_seconds": max(float(timeout or 0), 0),
-        "state": last_state or {"ok": False, "names": [], "hits": []},
-        "windows": last_windows,
+        "partial_ok": bool(anchor.get("ok")),
+        "names": [],
+        "hits": [],
+        "reason": "self-made action succeeded; header 财务组织(O) anchor will confirm entry scope",
+    }
+    if anchor.get("ok"):
+        state["reason"] = "财务组织(O) anchor resolved in current canvas"
+        state["hits"].append(
+            {
+                "window": anchor.get("window") or {},
+                "control": {
+                    "path": anchor.get("label_path"),
+                    "role": "label",
+                    "name": ((anchor.get("anchor_text") or {}).get("name") or ""),
+                    "description": (
+                        (anchor.get("anchor_text") or {}).get("description") or ""
+                    ),
+                    "dynamic_index": anchor.get("dynamic_index"),
+                    "dynamic_prefix": anchor.get("dynamic_prefix"),
+                },
+            }
+        )
+    return {
+        "ok": True,
+        "confirmed": bool(anchor.get("ok")),
+        "state": state,
+        "windows": windows,
+        "anchor": anchor,
     }
 
 
-def quick_check_self_made_entry_state(jab):
-    windows = collect_receipt_new_windows_compat(jab, max_depth=12, max_children=320)
-    state = detect_self_made_entry_state(windows)
-    confirmed = bool(state.get("ok") or state.get("partial_ok"))
-    if not confirmed:
-        windows = collect_receipt_new_windows_compat(
-            jab, max_depth=18, max_children=520
-        )
-        state = detect_self_made_entry_state(windows)
-        confirmed = bool(state.get("ok") or state.get("partial_ok"))
-    if not confirmed:
-        state = {
-            **state,
-            "partial_ok": True,
-            "reason": "quick check did not see entry buttons; trusting successful self-made action and deferring to header fill",
-        }
+def resolve_current_canvas_header_anchor(jab, windows):
+    canvas_hwnds = [
+        int(window["hwnd"])
+        for window in windows or []
+        if window.get("is_java")
+        and window.get("visible")
+        and window.get("hwnd")
+        and window.get("class_name") == "SunAwtCanvas"
+    ]
+    if not canvas_hwnds:
+        return {"ok": False, "reason": "current SunAwtCanvas not found"}
+    from tools.receipt_self_made_fill_trial import (
+        resolve_receipt_header_anchor_in_canvas,
+    )
+
+    attempts = []
+    for hwnd in canvas_hwnds:
+        attempt = resolve_receipt_header_anchor_in_canvas(jab, hwnd, timeout=0.4)
+        attempts.append(attempt)
+        if attempt.get("ok"):
+            return attempt
     return {
-        "ok": True,
-        "confirmed": confirmed,
-        "state": state,
-        "windows": windows,
+        "ok": False,
+        "reason": "财务组织(O) anchor not resolved in current canvas",
+        "attempts": attempts,
     }
 
 
@@ -1086,46 +1096,6 @@ def close_popup_hwnd(hwnd):
     return {"ok": True, "before": before, "after": describe_hwnd(user32, hwnd_obj)}
 
 
-def cleanup_awt_popup_residue():
-    if os.name != "nt":
-        return {"ok": False, "reason": "Windows only", "targets": []}
-    user32 = ctypes.windll.user32
-    targets = []
-    enum_proc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
-
-    def callback(hwnd, _lparam):
-        hwnd_obj = wintypes.HWND(int(hwnd))
-        item = describe_hwnd(user32, hwnd_obj)
-        if (
-            item.get("exists")
-            and item.get("class_name") == "SunAwtWindow"
-            and item.get("title") == ""
-            and 0 < item.get("width", 0) <= 250
-            and 0 < item.get("height", 0) <= 250
-        ):
-            targets.append(item)
-        return True
-
-    user32.EnumWindows(enum_proc(callback), 0)
-    for item in targets:
-        hwnd_obj = wintypes.HWND(int(item["hwnd"]))
-        user32.EnableWindow(hwnd_obj, True)
-        user32.ShowWindow(hwnd_obj, 0)
-        user32.SetWindowPos(
-            hwnd_obj, 0, -32000, -32000, 0, 0, 0x0001 | 0x0010 | 0x0080 | 0x0200
-        )
-        user32.PostMessageW(hwnd_obj, 0x0010, 0, 0)
-        item["after"] = describe_hwnd(user32, hwnd_obj)
-    if targets:
-        user32.RedrawWindow(
-            user32.GetDesktopWindow(),
-            None,
-            0,
-            0x0001 | 0x0004 | 0x0080 | 0x0100,
-        )
-    return {"ok": True, "targets": targets}
-
-
 def describe_hwnd(user32, hwnd):
     if not user32.IsWindow(hwnd):
         return {"exists": False}
@@ -1246,7 +1216,6 @@ def summarize_report(report):
         "open": summarize_action_report(report.get("open")),
         "tracked_popup": report.get("tracked_popup"),
         "popup_cleanup": report.get("popup_cleanup"),
-        "residue_cleanup": report.get("residue_cleanup"),
         "changed_windows": [
             {
                 "hwnd": item.get("hwnd"),

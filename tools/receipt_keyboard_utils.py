@@ -19,6 +19,7 @@ VK_A = 0x41
 VK_D = 0x44
 VK_I = 0x49
 VK_C = 0x43
+VK_V = 0x56
 VK_MENU = 0x12
 VK_DELETE = 0x2E
 
@@ -239,6 +240,13 @@ def send_hotkey_ctrl_a():
     send_virtual_key(VK_CONTROL, key_up=True)
 
 
+def send_hotkey_ctrl_v():
+    send_virtual_key(VK_CONTROL, key_up=False)
+    send_virtual_key(VK_V, key_up=False)
+    send_virtual_key(VK_V, key_up=True)
+    send_virtual_key(VK_CONTROL, key_up=True)
+
+
 def send_hotkey_ctrl_i():
     send_virtual_key(VK_CONTROL, key_up=False)
     send_virtual_key(VK_I, key_up=False)
@@ -312,7 +320,8 @@ def guarded_send_table_hotkey(table_window, key_name, sender, settle_seconds=0.8
             "key": key_name,
             "reason": f"{type(exc).__name__}: {exc}",
         }
-    time.sleep(float(settle_seconds or 0))
+    if settle_seconds and float(settle_seconds) > 0:
+        time.sleep(float(settle_seconds))
     return {
         **guard,
         "ok": True,
@@ -322,11 +331,21 @@ def guarded_send_table_hotkey(table_window, key_name, sender, settle_seconds=0.8
 
 
 def guarded_send_ctrl_i(table_window):
-    return guarded_send_table_hotkey(table_window, "Ctrl+I", send_hotkey_ctrl_i)
+    return guarded_send_table_hotkey(
+        table_window,
+        "Ctrl+I",
+        send_hotkey_ctrl_i,
+        settle_seconds=0.0,
+    )
 
 
 def guarded_send_ctrl_d(table_window):
-    return guarded_send_table_hotkey(table_window, "Ctrl+D", send_hotkey_ctrl_d)
+    return guarded_send_table_hotkey(
+        table_window,
+        "Ctrl+D",
+        send_hotkey_ctrl_d,
+        settle_seconds=0.0,
+    )
 
 
 def guarded_send_delete(table_window):

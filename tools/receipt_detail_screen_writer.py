@@ -251,12 +251,46 @@ def keyboard_write_selected_cell(
     edit_mode="editor",
     input_mode="paste",
     pre_commit_wait=0.025,
+    recover_after_failure=None,
+    _recovery_retry=False,
 ):
     guard = foreground_matches_table(table_window)
     if not guard.get("ok"):
-        return guard
+        recovery = recover_after_failure() if recover_after_failure else None
+        if recovery and recovery.get("attempted") and recovery.get("ok"):
+            guard = foreground_matches_table(table_window)
+        if not guard.get("ok"):
+            return {**guard, "modal_recovery": recovery}
+
+    def retry_current_cell_after_failure(failure):
+        if _recovery_retry or recover_after_failure is None:
+            return failure
+        recovery = recover_after_failure()
+        if not (recovery.get("attempted") and recovery.get("ok")):
+            return {**failure, "retry_modal_recovery": recovery}
+        retried = keyboard_write_selected_cell(
+            table_window,
+            value,
+            commit_key=commit_key,
+            clear_only=clear_only,
+            accept_key=accept_key,
+            typing_interval=typing_interval,
+            edit_mode=edit_mode,
+            input_mode=input_mode,
+            pre_commit_wait=pre_commit_wait,
+            recover_after_failure=recover_after_failure,
+            _recovery_retry=True,
+        )
+        return {
+            **retried,
+            "retried_after_modal_recovery": True,
+            "retry_modal_recovery": recovery,
+            "first_failure": failure,
+        }
+
     old_clipboard = None
     clipboard_restored = None
+    retry_recovery = None
     try:
         if edit_mode != "selected":
             send_virtual_key(VK_KEYS["F2"])
@@ -267,20 +301,34 @@ def keyboard_write_selected_cell(
         if clear_only:
             clear = guarded_press_virtual_key(table_window, "Delete")
             if not clear.get("ok"):
-                return {
-                    **guard,
-                    "ok": False,
-                    "mode": "keyboard",
-                    "clear_only": clear_only,
-                    "clear": clear,
-                    "accept_key": accept_key,
-                    "commit_key": commit_key,
-                    "reason": clear.get("reason"),
-                }
+                return retry_current_cell_after_failure(
+                    {
+                        **guard,
+                        "ok": False,
+                        "mode": "keyboard",
+                        "clear_only": clear_only,
+                        "clear": clear,
+                        "accept_key": accept_key,
+                        "commit_key": commit_key,
+                        "reason": clear.get("reason"),
+                    }
+                )
         else:
             if input_mode == "paste":
                 old_clipboard = safe_clipboard_read()
-                set_clipboard_text(str(value))
+                try:
+                    set_clipboard_text(str(value))
+                except RuntimeError as exc:
+                    if (
+                        str(exc) != "OpenClipboard failed"
+                        or recover_after_failure is None
+                    ):
+                        raise
+                    retry_recovery = recover_after_failure()
+                    if not retry_recovery.get("ok"):
+                        raise
+                    time.sleep(0.05)
+                    set_clipboard_text(str(value))
                 send_hotkey_ctrl_v()
             else:
                 send_text_slow(value, typing_interval)
@@ -289,30 +337,35 @@ def keyboard_write_selected_cell(
         if accept_key:
             accept = guarded_press_virtual_key(table_window, accept_key)
             if not accept.get("ok"):
-                return {
-                    **guard,
-                    "ok": False,
-                    "mode": "keyboard",
-                    "clear_only": clear_only,
-                    "accept_key": accept_key,
-                    "accept": accept,
-                    "commit_key": commit_key,
-                    "reason": accept.get("reason"),
-                }
+                return retry_current_cell_after_failure(
+                    {
+                        **guard,
+                        "ok": False,
+                        "mode": "keyboard",
+                        "clear_only": clear_only,
+                        "accept_key": accept_key,
+                        "accept": accept,
+                        "commit_key": commit_key,
+                        "reason": accept.get("reason"),
+                    }
+                )
             time.sleep(REFERENCE_ACCEPT_SETTLE_SECONDS)
         commit = guarded_press_virtual_key(table_window, commit_key)
     except Exception as exc:
-        return {
-            **guard,
-            "ok": False,
-            "reason": f"键盘输入失败：{type(exc).__name__}: {exc}",
-            "accept_key": accept_key,
-            "commit_key": commit_key,
-        }
+        return retry_current_cell_after_failure(
+            {
+                **guard,
+                "ok": False,
+                "reason": f"键盘输入失败：{type(exc).__name__}: {exc}",
+                "accept_key": accept_key,
+                "commit_key": commit_key,
+                "retry_modal_recovery": retry_recovery,
+            }
+        )
     finally:
         if old_clipboard is not None:
             clipboard_restored = restore_clipboard_text(old_clipboard)
-    return {
+    result = {
         **guard,
         "ok": bool(commit.get("ok")),
         "mode": "keyboard",
@@ -323,12 +376,16 @@ def keyboard_write_selected_cell(
         "edit_mode": edit_mode,
         "input_mode": input_mode,
         "pre_commit_wait": float(pre_commit_wait or 0),
+        "retry_modal_recovery": retry_recovery,
         "clipboard_restored": clipboard_restored,
         "accept": accept,
         "commit_key": commit_key,
         "commit": commit,
         "reason": None if commit.get("ok") else commit.get("reason"),
     }
+    if not result["ok"]:
+        return retry_current_cell_after_failure(result)
+    return result
 
 
 def send_text_slow(value, interval=0.0):
@@ -354,46 +411,3 @@ def send_hotkey_ctrl_v():
     send_virtual_key(VK_V, key_up=False)
     send_virtual_key(VK_V, key_up=True)
     send_virtual_key(VK_CONTROL, key_up=True)
-
-
-def read_selected_cell(jab, located):
-    best = located.get("best") or {}
-    context, vm_id, owned, _window_info = jab.find_context_by_path_once(
-        best.get("path"),
-        class_name=(best.get("window") or {}).get("class_name"),
-        scope_hwnd=(best.get("window") or {}).get("hwnd"),
-        require_showing=False,
-        require_valid_bounds=False,
-    )
-    if not context:
-        return {"ok": False, "reason": "按 path 重新取得明细表 context 失败"}
-    try:
-        table_info = jab.get_table_info(vm_id, context)
-        if not table_info:
-            return {"ok": False, "reason": "getAccessibleTableInfo 失败"}
-        selected = []
-        for row in range(table_info.rowCount):
-            for col in range(table_info.columnCount):
-                cell_info = AccessibleTableCellInfo()
-                ok = jab.dll.getAccessibleTableCellInfo(
-                    vm_id,
-                    context,
-                    row,
-                    col,
-                    ctypes.byref(cell_info),
-                )
-                if not ok or not cell_info.isSelected:
-                    continue
-                text = ""
-                if cell_info.accessibleContext:
-                    info = jab.get_context_info(vm_id, cell_info.accessibleContext)
-                    if info:
-                        text = info.name.strip() or info.description.strip()
-                selected.append({"row": row, "col": col, "text": text})
-        return {
-            "ok": True,
-            "selected": selected,
-            "single": selected[0] if len(selected) == 1 else None,
-        }
-    finally:
-        jab.release_contexts(vm_id, owned)
