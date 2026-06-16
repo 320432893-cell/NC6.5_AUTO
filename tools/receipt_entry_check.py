@@ -3,6 +3,7 @@ from collections import Counter
 import json
 from pathlib import Path
 import sys
+import time
 from typing import Any, cast
 
 stdout_reconfigure = getattr(sys.stdout, "reconfigure", None)
@@ -55,7 +56,14 @@ def main():
         default=None,
         help="override receipt_entry.validation_policy.mode for this run",
     )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="在 stdout 最后一行输出统一结果信封（GUI 解析用）。",
+    )
     args = parser.parse_args()
+    _started_at = time.perf_counter()
 
     config = load_json(args.config)
     if args.validation_mode:
@@ -96,6 +104,12 @@ def main():
                 f"issue row={issue.excel_row} reason={issue.reason} "
                 f"nc_rows={issue.nc_rows}"
             )
+        if args.json_output:
+            _print_check_envelope(
+                issues=list(issues),
+                exit_code=0,
+                started_at=_started_at,
+            )
         return 0
 
     rows, issues, summary = workbook.build_local_plan(write_sheet=args.write)
@@ -122,9 +136,60 @@ def main():
             f"action={issue.action} "
             f"message={issue.message}"
         )
-    if issues and summary["validation_policy"] == "strict":
-        return 2
-    return 0
+    has_blocking = bool(issues) and summary["validation_policy"] == "strict"
+    exit_code = 2 if has_blocking else 0
+    if args.json_output:
+        _print_check_envelope(
+            issues=list(issues),
+            exit_code=exit_code,
+            started_at=_started_at,
+        )
+    return exit_code
+
+
+def _print_check_envelope(
+    *,
+    issues: list,
+    exit_code: int,
+    started_at: float,
+) -> None:
+    """在 stdout 最后一行打印统一结果信封（§1.2 契约）。"""
+    items = []
+    for issue in issues:
+        ref = str(getattr(issue, "excel_row", ""))
+        reason_parts = []
+        for attr in ("reason", "message", "issue_type"):
+            val = getattr(issue, attr, None)
+            if val:
+                reason_parts.append(str(val))
+        items.append(
+            {
+                "ref": ref,
+                "outcome": "failed",
+                "reason": " | ".join(reason_parts),
+            }
+        )
+    ok = exit_code == 0
+    elapsed = round(time.perf_counter() - started_at, 3)
+    envelope = {
+        "ok": ok,
+        "command": "receipt-entry-check",
+        "exit_code": exit_code,
+        "summary": {
+            "total": len(items),
+            "succeeded": 0,
+            "failed": len(items),
+            "skipped": 0,
+        },
+        "items": items,
+        "error": {
+            "category": "none" if ok else "business",
+            "message": "" if ok else f"{len(items)} issue(s) found",
+        },
+        "elapsed_s": elapsed,
+        "resumable": {"can_resume": False, "resume_command": None},
+    }
+    print(json.dumps(envelope, ensure_ascii=True))
 
 
 if __name__ == "__main__":

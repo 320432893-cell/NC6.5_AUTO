@@ -2,7 +2,8 @@ import json
 import time
 from contextlib import contextmanager
 from datetime import datetime
-from pathlib import Path
+
+from core.paths import logs_dir
 
 
 class PerfRecorder:
@@ -12,8 +13,7 @@ class PerfRecorder:
         self.label = label or self.run_id
         self.path = None
         if self.enabled:
-            log_dir = Path("logs")
-            log_dir.mkdir(exist_ok=True)
+            log_dir = logs_dir()
             self.path = log_dir / f"perf_{self.label}_{self.run_id}.jsonl"
             self.event(
                 "perf_start",

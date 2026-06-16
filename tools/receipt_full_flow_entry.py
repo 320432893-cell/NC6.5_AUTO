@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
 from core.jab_operator import JABOperator  # noqa: E402
 from core.receipt_entry import ReceiptEntryWorkbook  # noqa: E402
 from core.receipt_models import ReceiptBatchResultRow  # noqa: E402
+from core.run_state import RunStateRecorder  # noqa: E402
 from core.utils import load_config  # noqa: E402
 from tools.jab_health_check import check_jab_ready  # noqa: E402
 from tools.receipt_body_table_locator import locate_receipt_body_table_cached  # noqa: E402
@@ -113,6 +114,12 @@ def main(argv=None):
         confirm_save(args)
     if args.query_after_save and not args.save:
         raise SystemExit("--query-after-save 当前只允许配合 --save 使用")
+    # CLI 参数校验在创建记录器之前完成,避免早退把 run_state 留在 running 态
+    if args.write_plan_sheet and args.write_selected_plan_sheet:
+        raise SystemExit("--write-plan-sheet 和 --write-selected-plan-sheet 只能选一个")
+
+    recorder = RunStateRecorder(command="receipt-full-flow", config=config)
+    recorder.set_stage("预检计划")
 
     report = {
         "launcher": "receipt_full_flow_entry.py",
@@ -123,8 +130,6 @@ def main(argv=None):
     }
     started = time.perf_counter()
     workbook = ReceiptEntryWorkbook(config, excel_path=args.excel_path)
-    if args.write_plan_sheet and args.write_selected_plan_sheet:
-        raise SystemExit("--write-plan-sheet 和 --write-selected-plan-sheet 只能选一个")
     plan_rows, issues, summary = workbook.build_local_plan(write_sheet=False)
     selected_rows = select_plan_rows(plan_rows, issues, args)
     report["local_plan"] = {
@@ -142,8 +147,11 @@ def main(argv=None):
                 "total_seconds": round(time.perf_counter() - started, 3),
             }
         )
+        recorder.event("no-rows", reason="没有可测试的通过预检计划行")
+        recorder.finish("failed", error="没有可测试的通过预检计划行")
         print_report(report, args)
         return 2
+    recorder.update_counts(total=len(selected_rows), succeeded=0, failed=0, skipped=0)
     if args.write_plan_sheet:
         workbook.write_plan_sheet(plan_rows, issues)
     elif args.write_selected_plan_sheet:
@@ -160,27 +168,65 @@ def main(argv=None):
     time.sleep(max(args.start_delay, 0))
 
     exit_code = 0
-    for row in selected_rows:
-        row_report = run_one_row(config, row, save_enabled=args.save)
-        report["rows"].append(row_report)
-        if not row_report.get("ok"):
-            exit_code = 1
-            break
-    batch_results = build_batch_results(selected_rows, report["rows"])
-    if args.query_after_save and report["rows"] and exit_code == 0:
-        batch_results, post_query = run_post_save_batch_query(
-            config,
-            selected_rows,
-            report["rows"],
-        )
-        report["post_query"] = post_query
-    if args.write_selected_plan_sheet:
-        workbook.write_batch_result_sheet(batch_results)
+    _succeeded = 0
+    _failed = 0
+    try:
+        for _step_idx, row in enumerate(selected_rows):
+            recorder.set_stage(
+                "处理行",
+                step_index=_step_idx + 1,
+                total_steps=len(selected_rows),
+                excel_row=row.row,
+            )
+            row_report = run_one_row(
+                config, row, save_enabled=args.save, recorder=recorder
+            )
+            report["rows"].append(row_report)
+            if row_report.get("ok"):
+                _succeeded += 1
+                recorder.update_counts(
+                    total=len(selected_rows),
+                    succeeded=_succeeded,
+                    failed=_failed,
+                    skipped=0,
+                )
+                recorder.event("row-done", excel_row=row.row, outcome="success")
+            else:
+                _failed += 1
+                recorder.update_counts(
+                    total=len(selected_rows),
+                    succeeded=_succeeded,
+                    failed=_failed,
+                    skipped=0,
+                )
+                recorder.event(
+                    "row-done",
+                    excel_row=row.row,
+                    outcome="failed",
+                    error=row_report.get("reason") or row_report.get("failed_step"),
+                )
+                exit_code = 1
+                break
+        batch_results = build_batch_results(selected_rows, report["rows"])
+        if args.query_after_save and report["rows"] and exit_code == 0:
+            recorder.set_stage("后验查询")
+            batch_results, post_query = run_post_save_batch_query(
+                config,
+                selected_rows,
+                report["rows"],
+            )
+            report["post_query"] = post_query
+        if args.write_selected_plan_sheet:
+            workbook.write_batch_result_sheet(batch_results)
 
-    report["ok"] = exit_code == 0
-    report["total_seconds"] = round(time.perf_counter() - started, 3)
-    print_report(report, args)
-    return exit_code
+        report["ok"] = exit_code == 0
+        report["total_seconds"] = round(time.perf_counter() - started, 3)
+        recorder.finish("success" if exit_code == 0 else "failed")
+        print_report(report, args)
+        return exit_code
+    except Exception as _exc:
+        recorder.finish("failed", error=str(_exc))
+        raise
 
 
 def confirm_save(args):
@@ -243,7 +289,15 @@ def filter_issues_for_rows(issues, selected_rows):
     ]
 
 
-def run_one_row(config, row, save_enabled=False):
+def run_one_row(config, row, save_enabled=False, recorder=None):
+    def _stage(stage, **fields):
+        if recorder is not None:
+            recorder.set_stage(stage, **fields)
+
+    def _event(name, **fields):
+        if recorder is not None:
+            recorder.event(name, **fields)
+
     timings = StepTimer()
     flow_started_at = time.perf_counter()
     row_report = {
@@ -253,9 +307,11 @@ def run_one_row(config, row, save_enabled=False):
         "save_enabled": bool(save_enabled),
     }
     business = business_from_plan_row(row)
+    _stage("开单", excel_row=row.row)
     open_step = timings.measure("open.self-made", open_self_made_entry, config)
     row_report["steps"].append({"name": "open-self-made", **open_step})
     if not open_step.get("ok"):
+        _event("open-failed", excel_row=row.row, error=open_step.get("reason"))
         return fail(row_report, "open-self-made", timings, open_step.get("reason"))
 
     jab = JABOperator(config)
@@ -265,7 +321,9 @@ def run_one_row(config, row, save_enabled=False):
         health = timings.measure("jab.health-check", check_jab_ready, jab)
         row_report["jab_health"] = health
         if not health.get("ok"):
+            _event("jab-health-failed", excel_row=row.row, error=health.get("reason"))
             return fail(row_report, "jab-health-check", timings, health.get("reason"))
+        _stage("表头", excel_row=row.row)
         header_steps = timings.measure(
             "header.fill",
             fill_header,
@@ -278,9 +336,12 @@ def run_one_row(config, row, save_enabled=False):
             "客户",
         )
         if any(not step.get("ok") for step in header_steps):
+            _event("header-fill-failed", excel_row=row.row, error="表头字段写入失败")
             return fail(row_report, "header-fill", timings, "表头字段写入失败")
         if not row_report["nc_customer_name"]:
+            _event("header-fill-failed", excel_row=row.row, error="客户名称未读回")
             return fail(row_report, "header-fill", timings, "客户名称未读回")
+        _stage("明细主行", excel_row=row.row)
         located = timings.measure(
             "body.locate",
             locate_receipt_body_table_cached,
@@ -289,6 +350,7 @@ def run_one_row(config, row, save_enabled=False):
         )
         row_report["table_candidates"] = located.get("candidates", [])[:5]
         if not located.get("best"):
+            _event("locate-table-failed", excel_row=row.row, error="未定位到明细表")
             return fail(row_report, "locate-body-table", timings, "未定位到明细表")
         row_report["before_table"] = timings.measure(
             "body.read-before", read_body_table, jab, "before_detail_fill"
@@ -329,8 +391,10 @@ def run_one_row(config, row, save_enabled=False):
             )
         )
         if not all(step.get("ok") for step in detail_steps):
+            _event("detail-main-failed", excel_row=row.row, error="明细主行写入失败")
             return fail(row_report, "detail-main-line", timings, "明细主行写入失败")
         if row.fee > 0:
+            _stage("手续费", excel_row=row.row)
             row_report["extra_row_delete"] = {
                 "ok": True,
                 "skipped": True,
@@ -362,6 +426,7 @@ def run_one_row(config, row, save_enabled=False):
                 or not clear_account.get("ok")
                 or not delete_extra.get("ok")
             ):
+                _event("fee-line-failed", excel_row=row.row, error="手续费行处理失败")
                 return fail(row_report, "detail-fee-line", timings, "手续费行处理失败")
         else:
             row_report["extra_row_delete"] = timings.measure(
@@ -372,6 +437,11 @@ def run_one_row(config, row, save_enabled=False):
                 1,
             )
             if not row_report["extra_row_delete"].get("ok"):
+                _event(
+                    "delete-extra-failed",
+                    excel_row=row.row,
+                    error="主行后多余行删除失败",
+                )
                 return fail(
                     row_report,
                     "detail-delete-extra-after-main",
@@ -402,6 +472,11 @@ def run_one_row(config, row, save_enabled=False):
             row_report["after_table"] = timings.measure(
                 "body.read-after-fallback", read_body_table, jab, "after_detail_fill"
             )
+            _event(
+                "pipeline-verify-failed",
+                excel_row=row.row,
+                error="后台明细验证未通过，已执行整表读 fallback",
+            )
             return fail(
                 row_report,
                 "detail-pipeline-verify",
@@ -421,12 +496,18 @@ def run_one_row(config, row, save_enabled=False):
         )
         row_report["header_account"] = account_check
         if not account_check.get("accepted"):
+            _event(
+                "account-readback-failed",
+                excel_row=row.row,
+                error="收款银行账户为空",
+            )
             return fail(
                 row_report,
                 "header-account-readback-after-detail",
                 timings,
                 "收款银行账户为空",
             )
+        _stage("保存前守卫", excel_row=row.row)
         row_report["pre_save_modal_recovery"] = timings.measure(
             "guard.pre-save-modal-recovery",
             recover_cancelable_modal_before_save,
@@ -434,6 +515,11 @@ def run_one_row(config, row, save_enabled=False):
             probe_receipt_entry_page,
         )
         if not row_report["pre_save_modal_recovery"].get("ok"):
+            _event(
+                "pre-save-guard-failed",
+                excel_row=row.row,
+                error=row_report["pre_save_modal_recovery"].get("reason"),
+            )
             return fail(
                 row_report,
                 "pre-save-modal-recovery",
@@ -441,9 +527,13 @@ def run_one_row(config, row, save_enabled=False):
                 row_report["pre_save_modal_recovery"].get("reason"),
             )
         if save_enabled:
+            _stage("保存", excel_row=row.row)
             save_result = timings.measure("save.ctrl-s", save_receipt_by_ctrl_s, jab)
             row_report["save"] = save_result
             if not save_result.get("ok"):
+                _event(
+                    "save-failed", excel_row=row.row, error=save_result.get("reason")
+                )
                 return fail(row_report, "save", timings, save_result.get("reason"))
         else:
             row_report["save"] = {

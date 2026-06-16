@@ -1,11 +1,11 @@
 import logging
-from pathlib import Path
 from datetime import datetime
+
+from core.paths import logs_dir
 
 
 def setup_logger():
-    log_dir = Path("logs")
-    log_dir.mkdir(exist_ok=True)
+    log_dir = logs_dir()
 
     filename = log_dir / f"run_{datetime.now():%Y%m%d_%H%M%S}.log"
 

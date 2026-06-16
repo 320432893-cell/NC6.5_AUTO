@@ -1,9 +1,12 @@
 import argparse
+import json
 import sys
-from pathlib import Path
+import time
 from datetime import date
 
-ROOT = Path(__file__).resolve().parents[1]
+from core.paths import base_dir
+
+ROOT = base_dir()
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -121,10 +124,16 @@ def build_parser():
         action="store_true",
         help="backfill 时不从待生成页自动切到已生成列表，只做状态校验",
     )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="在 stdout 最后一行输出结构化结果信封 JSON（供 GUI 外壳解析）",
+    )
     return parser
 
 
-def main():
+def main():  # noqa: C901 (intentional single-function dispatch)
     args = build_parser().parse_args()
     if args.generated_date is not None:
         try:
@@ -156,6 +165,31 @@ def main():
         hotkey_activate_policy=args.hotkey_activate_policy,
     )
     state_finished = False
+    t_start = time.monotonic()
+
+    # 信封构建辅助 —— 只在 --json 模式下调用，不改任何业务分支
+    def _emit_envelope(
+        *,
+        ok: bool,
+        exit_code: int,
+        summary: dict,
+        items: list,
+        error_category: str = "none",
+        error_message: str = "",
+        can_resume: bool = False,
+        resume_command: "str | None" = None,
+    ) -> None:
+        envelope = {
+            "ok": ok,
+            "command": args.command,
+            "exit_code": exit_code,
+            "summary": summary,
+            "items": items,
+            "error": {"category": error_category, "message": error_message},
+            "elapsed_s": round(time.monotonic() - t_start, 3),
+            "resumable": {"can_resume": can_resume, "resume_command": resume_command},
+        }
+        print(json.dumps(envelope, ensure_ascii=False))
 
     try:
         if args.command == "plan":
@@ -165,6 +199,49 @@ def main():
                 end_row=args.end_row,
             )
             print_summary(result)
+            if args.json_output:
+                matches = result["matches"]
+                issues = result["issues"]
+                parse_errors = result["parse_errors"]
+                failed_count = len(issues) + len(parse_errors)
+                total = len(matches) + failed_count
+                items = []
+                for pe in parse_errors:
+                    items.append(
+                        {
+                            "ref": f"Excel行{pe.row}",
+                            "outcome": "failed",
+                            "reason": f"格式错误: {pe.parse_error}",
+                        }
+                    )
+                for iss in issues:
+                    items.append(
+                        {
+                            "ref": f"Excel行{iss.item.row}",
+                            "outcome": "failed",
+                            "reason": iss.reason,
+                        }
+                    )
+                for m in matches:
+                    items.append(
+                        {
+                            "ref": f"Excel行{m.item.row}",
+                            "outcome": "success",
+                            "reason": "",
+                        }
+                    )
+                exit_code = 0 if failed_count == 0 else (2 if len(matches) == 0 else 1)
+                _emit_envelope(
+                    ok=(exit_code == 0),
+                    exit_code=exit_code,
+                    summary={
+                        "total": total,
+                        "succeeded": len(matches),
+                        "failed": failed_count,
+                        "skipped": 0,
+                    },
+                    items=items,
+                )
             return
 
         if args.command == "generate":
@@ -176,6 +253,20 @@ def main():
                     processor.run_state.set_stage("generate_cancelled")
                     processor.finish_run_state("cancelled")
                     state_finished = True
+                    if args.json_output:
+                        _emit_envelope(
+                            ok=False,
+                            exit_code=3,
+                            summary={
+                                "total": 0,
+                                "succeeded": 0,
+                                "failed": 0,
+                                "skipped": 0,
+                            },
+                            items=[],
+                            error_category="aborted",
+                            error_message="用户取消",
+                        )
                     return
             saved = processor.generate_and_save(
                 limit=args.limit,
@@ -184,6 +275,20 @@ def main():
                 end_row=args.end_row,
             )
             print(f"生成保存完成: {saved} 张")
+            if args.json_output:
+                _emit_envelope(
+                    ok=True,
+                    exit_code=0,
+                    summary={
+                        "total": saved,
+                        "succeeded": saved,
+                        "failed": 0,
+                        "skipped": 0,
+                    },
+                    items=[],
+                    can_resume=True,
+                    resume_command="resume-voucher",
+                )
             return
 
         if args.command == "resume-voucher":
@@ -193,11 +298,32 @@ def main():
                 end_row=args.end_row,
             )
             print(f"恢复制单窗口保存完成: {saved} 张")
+            if args.json_output:
+                _emit_envelope(
+                    ok=True,
+                    exit_code=0,
+                    summary={
+                        "total": saved,
+                        "succeeded": saved,
+                        "failed": 0,
+                        "skipped": 0,
+                    },
+                    items=[],
+                )
             return
 
         if args.command == "switch-generated":
             processor.switch_to_generated_list()
             print("已切换到已生成列表")
+            if args.json_output:
+                _emit_envelope(
+                    ok=True,
+                    exit_code=0,
+                    summary={"total": 1, "succeeded": 1, "failed": 0, "skipped": 0},
+                    items=[
+                        {"ref": "switch-generated", "outcome": "success", "reason": ""}
+                    ],
+                )
             return
 
         if args.command == "backfill":
@@ -208,6 +334,23 @@ def main():
                 auto_switch=not args.no_backfill_auto_switch,
             )
             print(f"回填完成: {len(updates)} 行")
+            if args.json_output:
+                items = [
+                    {"ref": str(ref), "outcome": "success", "reason": ""}
+                    for ref in updates
+                ]
+                succeeded = len(updates)
+                _emit_envelope(
+                    ok=True,
+                    exit_code=0,
+                    summary={
+                        "total": succeeded,
+                        "succeeded": succeeded,
+                        "failed": 0,
+                        "skipped": 0,
+                    },
+                    items=items,
+                )
             return
 
         if args.command == "split-keys":
@@ -218,11 +361,48 @@ def main():
                 f"金额列={result['amount_col']}, 对手方列={result['partner_col']}, "
                 f"错误={len(result['errors'])} 行"
             )
+            if args.json_output:
+                errors = result.get("errors", [])
+                succeeded = int(result.get("updates", 0))
+                failed = len(errors)
+                total = succeeded + failed
+                items = [
+                    {"ref": str(e), "outcome": "failed", "reason": str(e)}
+                    for e in errors
+                ]
+                exit_code = 0 if failed == 0 else 1
+                _emit_envelope(
+                    ok=(exit_code == 0),
+                    exit_code=exit_code,
+                    summary={
+                        "total": total,
+                        "succeeded": succeeded,
+                        "failed": failed,
+                        "skipped": 0,
+                    },
+                    items=items,
+                )
             return
     except BaseException as exc:
         status = "aborted" if isinstance(exc, SystemExit) else "failed"
         processor.finish_run_state(status, error=f"{type(exc).__name__}: {exc}")
         state_finished = True
+        if args.json_output:
+            is_aborted = isinstance(exc, KeyboardInterrupt) or (
+                isinstance(exc, SystemExit) and getattr(exc, "code", 0) == 3
+            )
+            _emit_envelope(
+                ok=False,
+                exit_code=3 if is_aborted else 4,
+                summary={"total": 0, "succeeded": 0, "failed": 0, "skipped": 0},
+                items=[],
+                error_category="aborted" if is_aborted else "environment",
+                error_message=f"{type(exc).__name__}: {exc}",
+                can_resume=(args.command == "generate"),
+                resume_command=(
+                    "resume-voucher" if args.command == "generate" else None
+                ),
+            )
         raise
     finally:
         if not state_finished:

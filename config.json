@@ -1,10 +1,10 @@
 {
-    "excel_path": "C:\\Users\\Queclink\\Desktop\\6.1凭证.xlsx",
+    "excel_path": "",
     "sheet_my": "Sheet1",
     "has_header": true,
     "jab": {
         "enabled": true,
-        "dll_path": "C:\\Users\\Queclink\\AppData\\Local\\UClient\\share\\java1.7.0_51-x64\\bin\\WindowsAccessBridge-64.dll",
+        "dll_path": "",
         "startup_wait": 0.5,
         "search_timeout": 5.0,
         "max_depth": 50,
@@ -124,7 +124,7 @@
         "schema_version": 2,
         "state_label": "收款单录入",
         "excel": {
-            "path": "C:\\Users\\Queclink\\Downloads\\📊Pending Order & Credit Management_💸Payments来款通知.xlsx",
+            "path": "📊Pending Order & Credit Management_💸Payments来款通知.xlsx",
             "sheet_name": "💸Payments来款通知",
             "header_row": 1,
             "start_row": 2,

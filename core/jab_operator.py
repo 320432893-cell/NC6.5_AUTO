@@ -28,10 +28,7 @@ class JABOperator(JABControlMixin, JABNearLabelMixin, JABPathMixin, JABTableMixi
     def __init__(self, config):
         self.config = config
         jab_cfg = config.get("jab", {})
-        self.dll_path = jab_cfg.get(
-            "dll_path",
-            r"C:\Users\Queclink\AppData\Local\UClient\share\java1.7.0_51-x64\bin\WindowsAccessBridge-64.dll",
-        )
+        self.dll_path = jab_cfg.get("dll_path") or None
         self.startup_wait = jab_cfg.get("startup_wait", 2.0)
         self.search_timeout = jab_cfg.get("search_timeout", 5.0)
         self.max_depth = jab_cfg.get("max_depth", 50)

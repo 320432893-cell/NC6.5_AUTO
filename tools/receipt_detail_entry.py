@@ -4,6 +4,7 @@
 # 谁不应该 import：Sheet 写入、收款匹配、凭证批量模块不应 import
 
 import argparse
+import json
 import sys
 import time
 import traceback
@@ -15,6 +16,7 @@ if str(ROOT) not in sys.path:
 
 from core.jab_operator import JABOperator  # noqa: E402
 from core.receipt_config import ReceiptEntryConfig  # noqa: E402
+from core.run_state import RunStateRecorder  # noqa: E402
 from core.utils import load_config  # noqa: E402
 from tools.jab_health_check import check_jab_ready  # noqa: E402
 from tools.receipt_keyboard_utils import (  # noqa: E402
@@ -70,6 +72,17 @@ def parse_args(argv=None):
         default=START_DELAY_SECONDS,
         help="启动后等待切到 NC 窗口的秒数，默认 2。",
     )
+    parser.add_argument(
+        "--no-wait",
+        action="store_true",
+        help="跳过结尾等待回车（GUI 调用时使用），默认不跳过。",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="在 stdout 最后一行输出结构化结果信封（GUI 解析用）。",
+    )
     return parser.parse_args(argv)
 
 
@@ -109,6 +122,8 @@ def main(argv=None):
     config = load_config(args.config)
     account = get_test_account(config, args.bank_label)
 
+    recorder = RunStateRecorder(command="receipt-detail", config=config)
+
     print_header(detail_bank_account_no(account), args, args.start_delay)
     print()
     print(f"请在 {args.start_delay:g} 秒内切到 NC 收款单窗口...")
@@ -129,13 +144,17 @@ def main(argv=None):
         "start_delay_seconds": args.start_delay,
     }
     try:
-        result = run_detail_trial(config, account, args, report, timings)
+        result = run_detail_trial(config, account, args, report, timings, recorder)
         report["total_seconds"] = round(time.perf_counter() - run_started_at, 3)
         report["timings"] = timings.items
         print()
         print_summary(report)
         print()
-        wait_exit()
+        if not args.no_wait:
+            wait_exit()
+        if args.json_output:
+            _print_envelope(report, result, run_started_at)
+        _finish_from_result(recorder, result, report)
         return result
     except Exception as exc:
         report.update(
@@ -151,7 +170,11 @@ def main(argv=None):
         print()
         print_summary(report)
         print()
-        wait_exit()
+        if not args.no_wait:
+            wait_exit()
+        if args.json_output:
+            _print_envelope(report, 1, run_started_at)
+        recorder.finish("failed", error=str(exc))
         return 1
 
 
@@ -161,7 +184,19 @@ def _mode_from_args(args):
     return "fee-only" if args.fee_only else "main-line"
 
 
-def run_detail_trial(config, account, args, report, timings):
+def _finish_from_result(recorder, result, report):
+    """将退出码映射到 RunStateRecorder.finish 状态,不改变返回值。"""
+    if report.get("stopped_by_hotkey"):
+        recorder.finish("aborted")
+    elif result == 0 and report.get("ok"):
+        recorder.finish("success")
+    else:
+        recorder.finish(
+            "failed", error=report.get("reason") or report.get("failed_step")
+        )
+
+
+def run_detail_trial(config, account, args, report, timings, recorder=None):
     if is_stop_hotkey_pressed():
         report.update(
             {
@@ -190,7 +225,9 @@ def run_detail_trial(config, account, args, report, timings):
             )
             return 1
 
-        steps = _run_selected_mode(jab, account, located, args, report, timings)
+        steps = _run_selected_mode(
+            jab, account, located, args, report, timings, recorder
+        )
         if not args.cleanup_extra_rows_only:
             report["fill_steps"] = steps
         report["after_table"] = timings.measure(
@@ -240,8 +277,10 @@ def _locate_body(jab, report, timings):
     return located
 
 
-def _run_selected_mode(jab, account, located, args, report, timings):
+def _run_selected_mode(jab, account, located, args, report, timings, recorder=None):
     if args.cleanup_extra_rows_only:
+        if recorder is not None:
+            recorder.set_stage("删多余行", step_index=1, total_steps=1)
         delete_extra = timings.measure(
             "cleanup.rows-after-first",
             cleanup_rows_after_first,
@@ -252,13 +291,19 @@ def _run_selected_mode(jab, account, located, args, report, timings):
         report["fill_steps"] = []
         if not delete_extra.get("ok"):
             report["failed_step"] = "cleanup-extra-rows"
+            if recorder is not None:
+                recorder.event(
+                    "cleanup-extra-rows-failed", error=delete_extra.get("reason")
+                )
         return []
     if args.fee_only:
-        return _run_fee_mode(jab, located, args, report, timings)
-    return _run_main_line_mode(jab, account, located, report, timings)
+        return _run_fee_mode(jab, located, args, report, timings, recorder)
+    return _run_main_line_mode(jab, account, located, report, timings, recorder)
 
 
-def _run_fee_mode(jab, located, args, report, timings):
+def _run_fee_mode(jab, located, args, report, timings, recorder=None):
+    if recorder is not None:
+        recorder.set_stage("手续费行", step_index=1, total_steps=1)
     add_row, steps, clear_account, delete_extra = timings.measure(
         "fee.total",
         run_fee_only,
@@ -273,16 +318,22 @@ def _run_fee_mode(jab, located, args, report, timings):
     report["extra_row_delete"] = delete_extra
     if not add_row.get("ok"):
         report["failed_step"] = "add-fee-row"
+        if recorder is not None:
+            recorder.event("add-fee-row-failed", error=add_row.get("reason"))
     elif not all(bool(step.get("ok")) for step in steps):
         report["failed_step"] = "fill-fee-line"
     elif not clear_account.get("ok"):
         report["failed_step"] = "clear-fee-account"
     elif not delete_extra.get("ok"):
         report["failed_step"] = "delete-extra-row"
+    if recorder is not None:
+        recorder.update_counts(fee_steps=len(steps))
     return steps
 
 
-def _run_main_line_mode(jab, account, located, report, timings):
+def _run_main_line_mode(jab, account, located, report, timings, recorder=None):
+    if recorder is not None:
+        recorder.set_stage("明细主行写入", step_index=1, total_steps=1)
     steps = timings.measure(
         "main.write-line",
         write_detail_line_by_screen,
@@ -301,6 +352,8 @@ def _run_main_line_mode(jab, account, located, report, timings):
         cached=located,
         max_rows=5,
     )
+    if recorder is not None:
+        recorder.set_stage("删多余行", step_index=2, total_steps=2)
     delete_extra = timings.measure(
         "main.delete-extra-after-write",
         delete_extra_row_if_present,
@@ -311,6 +364,10 @@ def _run_main_line_mode(jab, account, located, report, timings):
     report["extra_row_delete"] = delete_extra
     if not delete_extra.get("ok"):
         report["failed_step"] = "delete-extra-row"
+        if recorder is not None:
+            recorder.event("delete-extra-row-failed", error=delete_extra.get("reason"))
+    if recorder is not None:
+        recorder.update_counts(main_steps=len(steps))
     return steps
 
 
@@ -327,6 +384,61 @@ def _set_final_status(args, steps, report):
         report["failed_step"] = report.get("failed_step") or (
             "fill-fee-line" if args.fee_only else "fill-detail-line"
         )
+
+
+def _print_envelope(report: dict, exit_code: object, run_started_at: float) -> None:
+    """在 stdout 最后一行打印结构化结果信封（§1.2 契约）。"""
+    ok = bool(report.get("ok", False))
+    ec = int(exit_code) if isinstance(exit_code, int) else (0 if ok else 1)
+    steps = report.get("fill_steps") or []
+    items = []
+    for i, step in enumerate(steps):
+        outcome = "success" if step.get("ok") else "failed"
+        items.append(
+            {
+                "ref": step.get("name") or step.get("field") or str(i),
+                "outcome": outcome,
+                "reason": step.get("reason") or step.get("error") or "",
+            }
+        )
+    if not items:
+        # cleanup-only 或无步骤时生成单条汇总 item
+        outcome = "success" if ok else "failed"
+        items = [
+            {
+                "ref": report.get("mode") or "main",
+                "outcome": outcome,
+                "reason": report.get("reason") or "",
+            }
+        ]
+    succeeded = sum(1 for it in items if it["outcome"] == "success")
+    failed = sum(1 for it in items if it["outcome"] == "failed")
+    elapsed = round(time.perf_counter() - run_started_at, 3)
+    err_msg = report.get("reason") or report.get("exception") or ""
+    err_category = "none"
+    if not ok:
+        if report.get("stopped_by_hotkey"):
+            err_category = "aborted"
+        elif report.get("exception"):
+            err_category = "environment"
+        else:
+            err_category = "business"
+    envelope = {
+        "ok": ok,
+        "command": "receipt-detail",
+        "exit_code": ec,
+        "summary": {
+            "total": len(items),
+            "succeeded": succeeded,
+            "failed": failed,
+            "skipped": 0,
+        },
+        "items": items,
+        "error": {"category": err_category, "message": str(err_msg)},
+        "elapsed_s": elapsed,
+        "resumable": {"can_resume": False, "resume_command": None},
+    }
+    print(json.dumps(envelope, ensure_ascii=True))
 
 
 if __name__ == "__main__":
