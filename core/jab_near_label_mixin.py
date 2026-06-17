@@ -4,7 +4,6 @@
 # 谁不应该 import：收款匹配、Excel/Sheet 读写、CLI 模块不应直接 import
 
 from core import jab_near_label
-from core.logger import log
 from typing import TYPE_CHECKING
 
 
@@ -187,56 +186,3 @@ class JABNearLabelMixin:
             require_showing=require_showing,
             depth=depth,
         )
-
-    def find_text_near_label_in_tree(
-        self,
-        vm_id,
-        context,
-        label,
-        require_showing=True,
-        depth=0,
-        owned_path=None,
-    ):
-        return jab_near_label.find_text_near_label_in_tree(
-            self,
-            vm_id,
-            context,
-            label,
-            require_showing=require_showing,
-            depth=depth,
-            owned_path=owned_path,
-        )
-
-    def find_text_candidates_right_of_label(
-        self,
-        vm_id,
-        context,
-        label_info,
-        require_showing=True,
-        depth=0,
-        owned_path=None,
-        skip_contexts=None,
-    ):
-        return jab_near_label.find_text_candidates_right_of_label(
-            self,
-            vm_id,
-            context,
-            label_info,
-            require_showing=require_showing,
-            depth=depth,
-            owned_path=owned_path,
-            skip_contexts=skip_contexts,
-        )
-
-    def click_context_center(self, vm_id, context):
-        info = self.get_context_info(vm_id, context)
-        if not info:
-            log.warning("JAB bounds 点击失败: 控件信息不可读")
-            return False
-
-        log.warning(
-            "JAB bounds 点击已禁用: "
-            f"name={info.name.strip()!r} role={info.role_en_US.strip() or info.role.strip()!r} "
-            f"bounds={info.x},{info.y},{info.width},{info.height}"
-        )
-        return False

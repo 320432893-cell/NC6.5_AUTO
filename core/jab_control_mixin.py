@@ -117,9 +117,6 @@ class JABControlMixin:
         self.release_contexts(vm_id, owned_contexts)
         return True
 
-    def wait_save_success(self, timeout=None):
-        return self.wait_for_control("保存成功", timeout=timeout or self.search_timeout)
-
     def normalize_amount(self, value):
         return normalize_amount(value)
 

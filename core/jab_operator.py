@@ -187,9 +187,6 @@ class JABOperator(JABControlMixin, JABNearLabelMixin, JABPathMixin, JABTableMixi
 
         return pyperclip.paste()
 
-    def take_screenshot(self):
-        return take_desktop_screenshot()
-
     def do_generate_front(self):
         self.ensure_started()
 

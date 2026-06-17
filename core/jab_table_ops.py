@@ -13,128 +13,6 @@ from core.utils import check_abort
 from tools.jab_probe import JOBJECT, enum_windows
 
 
-def find_amount_rows(jab, amount, amount_col=None, timeout=None):
-    jab.ensure_started()
-    table_context, vm_id, owned_contexts, table_info = find_main_table(
-        jab, timeout=timeout
-    )
-    if not table_context:
-        log.warning("JAB 未找到业务表格")
-        return []
-
-    try:
-        amount_col = resolve_amount_col(jab, amount_col)
-        target = jab.normalize_amount(amount)
-        if target is None:
-            raise ValueError(f"金额格式无法识别: {amount!r}")
-
-        matched_rows = []
-        for row in range(table_info.rowCount):
-            check_abort()
-            cell_text = jab.get_table_cell_text(vm_id, table_context, row, amount_col)
-            if jab.normalize_amount(cell_text) == target:
-                matched_rows.append(row)
-
-        log.info(
-            f"JAB 表格金额匹配: amount={amount} col={amount_col} rows={matched_rows}"
-        )
-        return matched_rows
-    finally:
-        jab.release_contexts(vm_id, owned_contexts)
-
-
-def select_amount_row(jab, amount, amount_col=None, selection_col=None, timeout=None):
-    matched_rows = find_amount_rows(jab, amount, amount_col=amount_col, timeout=timeout)
-    if len(matched_rows) != 1:
-        log.warning(f"JAB 金额匹配行数不是 1: amount={amount} rows={matched_rows}")
-        return False
-    return select_table_rows(
-        jab, matched_rows, selection_col=selection_col, timeout=timeout
-    )
-
-
-def find_amount_partner_rows(
-    jab,
-    amount,
-    partner_name,
-    amount_col=None,
-    partner_col=None,
-    timeout=None,
-    match_mode="exact",
-):
-    jab.ensure_started()
-    table_context, vm_id, owned_contexts, table_info = find_main_table(
-        jab, timeout=timeout
-    )
-    if not table_context:
-        log.warning("JAB 未找到业务表格")
-        return []
-
-    try:
-        amount_col = resolve_amount_col(jab, amount_col)
-        partner_col = resolve_partner_col(jab, partner_col)
-        target_amount = jab.normalize_amount(amount)
-        target_partner = jab.normalize_text(partner_name)
-        if target_amount is None:
-            raise ValueError(f"金额格式无法识别: {amount!r}")
-        if not target_partner:
-            raise ValueError("业务关联方名称为空")
-
-        matched_rows = []
-        amount_rows = []
-        for row in range(table_info.rowCount):
-            check_abort()
-            amount_text = jab.get_table_cell_text(vm_id, table_context, row, amount_col)
-            if jab.normalize_amount(amount_text) != target_amount:
-                continue
-
-            amount_rows.append(row)
-            partner_text = jab.get_table_cell_text(
-                vm_id, table_context, row, partner_col
-            )
-            if jab.text_matches(partner_text, target_partner, match_mode):
-                matched_rows.append(row)
-
-        log.info(
-            "JAB 金额+关联方匹配: "
-            f"amount={amount} amount_col={amount_col} amount_rows={amount_rows} "
-            f"partner={partner_name} partner_col={partner_col} rows={matched_rows}"
-        )
-        return matched_rows
-    finally:
-        jab.release_contexts(vm_id, owned_contexts)
-
-
-def select_amount_partner_row(
-    jab,
-    amount,
-    partner_name,
-    amount_col=None,
-    partner_col=None,
-    selection_col=None,
-    timeout=None,
-    match_mode="exact",
-):
-    matched_rows = find_amount_partner_rows(
-        jab,
-        amount,
-        partner_name,
-        amount_col=amount_col,
-        partner_col=partner_col,
-        timeout=timeout,
-        match_mode=match_mode,
-    )
-    if len(matched_rows) != 1:
-        log.warning(
-            f"JAB 金额+关联方匹配行数不是 1: "
-            f"amount={amount} partner={partner_name} rows={matched_rows}"
-        )
-        return False
-    return select_table_rows(
-        jab, matched_rows, selection_col=selection_col, timeout=timeout
-    )
-
-
 def select_table_rows(jab, rows, selection_col=None, clear=True, timeout=None):
     jab.ensure_started()
     table_context, vm_id, owned_contexts, table_info = find_main_table(
@@ -179,22 +57,6 @@ def select_table_rows(jab, rows, selection_col=None, clear=True, timeout=None):
         jab.release_contexts(vm_id, owned_contexts)
 
 
-def clear_table_selection(jab, timeout=None):
-    jab.ensure_started()
-    table_context, vm_id, owned_contexts, _ = find_main_table(jab, timeout=timeout)
-    if not table_context:
-        log.warning("JAB 未找到业务表格")
-        return False
-
-    try:
-        if not hasattr(jab.dll, "clearAccessibleSelectionFromContext"):
-            return False
-        jab.dll.clearAccessibleSelectionFromContext(vm_id, table_context)
-        return True
-    finally:
-        jab.release_contexts(vm_id, owned_contexts)
-
-
 def resolve_selection_col(jab, selection_col):
     if selection_col is not None:
         return selection_col
@@ -217,31 +79,6 @@ def get_selected_child_indexes(jab, vm_id, context, child_count):
         if jab.dll.isAccessibleChildSelectedFromContext(vm_id, context, index):
             selected.append(index)
     return selected
-
-
-def read_amount_column(jab, amount_col=None, limit=None, timeout=None):
-    jab.ensure_started()
-    table_context, vm_id, owned_contexts, table_info = find_main_table(
-        jab, timeout=timeout
-    )
-    if not table_context:
-        log.warning("JAB 未找到业务表格")
-        return []
-
-    try:
-        amount_col = resolve_amount_col(jab, amount_col)
-        row_count = (
-            table_info.rowCount if limit is None else min(table_info.rowCount, limit)
-        )
-        values = []
-        for row in range(row_count):
-            check_abort()
-            values.append(
-                jab.get_table_cell_text(vm_id, table_context, row, amount_col)
-            )
-        return values
-    finally:
-        jab.release_contexts(vm_id, owned_contexts)
 
 
 def read_table_snapshot(
@@ -761,37 +598,6 @@ def find_record_in_visible_tables(
     if fallback:
         log.debug(f"JAB 找到可见记录: {fallback[0]}")
         return fallback[0]
-    return None
-
-
-def select_record_in_visible_tables(
-    jab,
-    amount,
-    partner_name,
-    window_title=None,
-    selection_col=0,
-    timeout=None,
-    max_rows=200,
-    max_cols=50,
-):
-    jab.ensure_started()
-    deadline = time.time() + (timeout or jab.search_timeout)
-
-    while time.time() < deadline:
-        check_abort()
-        result = select_record_in_visible_tables_once(
-            jab,
-            amount,
-            partner_name,
-            window_title=window_title,
-            selection_col=selection_col,
-            max_rows=max_rows,
-            max_cols=max_cols,
-        )
-        if result:
-            return result
-        time.sleep(0.2)
-
     return None
 
 
