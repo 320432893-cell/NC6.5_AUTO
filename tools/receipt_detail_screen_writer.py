@@ -13,6 +13,7 @@ from tools.receipt_keyboard_utils import (
     read_window_info,
     restore_clipboard_text,
     send_hotkey_ctrl_a,
+    send_hotkey_ctrl_v,
     send_text,
     send_unicode_char,
     send_virtual_key,
@@ -29,8 +30,6 @@ VK_KEYS = {
     "Enter": 0x0D,
     "Delete": 0x2E,
 }
-VK_CONTROL = 0x11
-VK_V = 0x56
 
 
 def activate_window(hwnd):
@@ -390,10 +389,3 @@ def safe_clipboard_read():
         return get_clipboard_text()
     except Exception:
         return None
-
-
-def send_hotkey_ctrl_v():
-    send_virtual_key(VK_CONTROL, key_up=False)
-    send_virtual_key(VK_V, key_up=False)
-    send_virtual_key(VK_V, key_up=True)
-    send_virtual_key(VK_CONTROL, key_up=True)
