@@ -304,7 +304,7 @@ Sheet1 银行 -> receipt_entry.accounts -> organization_code -> finance_organiza
 
 正式主线不写 Sheet1 的 `是否NC已做过`。
 
-Sheet2 当前字段：
+Sheet2 当前字段（顺序以代码 `core/receipt_sheet.py` 的 `RESULT_SHEET_HEADERS` 为准）：
 
 - 原Sheet1行号
 - 执行主体名称
@@ -312,15 +312,21 @@ Sheet2 当前字段：
 - 🟪银行来款名
 - 客户编码
 - NC客户名称
-- 🟪到账金额
 - 🟪原始金额
 - 手续费
+- 🟪到账金额
 - 币种
 - 银行
 - 收款银行账户
 - 本地预检状态
-- NC单据号
+- 后验核对状态
 - 异常原因
+
+金额列口径（与代码 `core/receipt_amounts.py` 一致）：
+
+- `🟪原始金额` 列写 NC 原币金额合计 = Sheet1 原始金额 + 手续费（`receipt_nc_amount`，即 NC 主行+手续费行的原币合计）。
+- `🟪到账金额` 列写 Sheet1 原始金额（到账净额，`receipt_net_amount`）。
+- `后验核对状态` 由保存后查询回填；旧的 `NC单据号` 列已淘汰（见 `DEPRECATED_RESULT_SHEET_HEADERS`）。
 
 写入规则：
 
