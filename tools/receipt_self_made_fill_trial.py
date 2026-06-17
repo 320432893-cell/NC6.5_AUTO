@@ -568,60 +568,6 @@ def snapshot_header_field_candidate(jab, found, source):
         jab.release_contexts(vm_id, owned_contexts)
 
 
-def collect_customer_nearby_candidates(jab, label_path, scope_hwnd, source):
-    if not label_path:
-        return []
-    parent_path = ".".join(str(label_path).split(".")[:-1])
-    if not parent_path:
-        return []
-    context, vm_id, owned_contexts, window_info = jab.find_context_by_path_once(
-        parent_path,
-        class_name="SunAwtCanvas",
-        scope_hwnd=scope_hwnd,
-        require_showing=False,
-        require_valid_bounds=False,
-    )
-    if not context:
-        return [
-            {
-                "ok": False,
-                "source": source,
-                "reason": "label parent path not found",
-                "parent_path": parent_path,
-                "label_path": label_path,
-            }
-        ]
-    try:
-        rows = []
-        collect_context_text_rows(
-            jab,
-            vm_id,
-            context,
-            parent_path,
-            depth=0,
-            max_depth=4,
-            rows=rows,
-        )
-        candidates = []
-        for row in rows:
-            values = valid_customer_values_from_snapshot(row)
-            if values or row.get("path") == label_path:
-                candidates.append(
-                    {
-                        "ok": True,
-                        "source": source,
-                        "parent_path": parent_path,
-                        "label_path": label_path,
-                        "window": window_info,
-                        **row,
-                        "valid_values": values,
-                    }
-                )
-        return candidates
-    finally:
-        jab.release_contexts(vm_id, owned_contexts)
-
-
 def collect_context_text_rows(jab, vm_id, context, path, depth, max_depth, rows):
     info = jab.get_context_info(vm_id, context)
     if not info:
@@ -2411,13 +2357,6 @@ def infer_receipt_header_scope_by_semantic(jab, scope_hwnd=None):
     }
 
 
-def foreground_root_hwnd():
-    if os.name != "nt" or not hasattr(ctypes, "windll"):
-        return 0
-    hwnd = ctypes.windll.user32.GetForegroundWindow()
-    return window_root_hwnd(hwnd)
-
-
 def window_root_hwnd(hwnd):
     if os.name != "nt" or not hasattr(ctypes, "windll") or not hwnd:
         return 0
@@ -2493,25 +2432,6 @@ def find_context_with_window(
             jab.release_contexts(vm_id_ref.value, [root_context.value])
         time.sleep(0.2)
     return None, None, [], [], {}
-
-
-def post_key_to_hwnd(hwnd, key):
-    if os.name != "nt" or not hwnd:
-        return False
-    key_map = {
-        "enter": 0x0D,
-        "tab": 0x09,
-    }
-    vk = key_map.get(str(key).lower())
-    if not vk:
-        return False
-    user32 = ctypes.windll.user32
-    hwnd = wintypes.HWND(int(hwnd))
-    WM_KEYDOWN = 0x0100
-    WM_KEYUP = 0x0101
-    down_ok = bool(user32.PostMessageW(hwnd, WM_KEYDOWN, vk, 0))
-    up_ok = bool(user32.PostMessageW(hwnd, WM_KEYUP, vk, 0))
-    return down_ok and up_ok
 
 
 def do_context_commit_action(jab, vm_id, context):

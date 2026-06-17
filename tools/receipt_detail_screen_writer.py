@@ -51,20 +51,6 @@ def activate_window(hwnd):
     }
 
 
-def get_cell_context(jab, vm_id, table_context, row, col):
-    cell_info = AccessibleTableCellInfo()
-    ok = jab.dll.getAccessibleTableCellInfo(
-        vm_id,
-        table_context,
-        row,
-        col,
-        ctypes.byref(cell_info),
-    )
-    if not ok or not cell_info.accessibleContext:
-        return None
-    return cell_info.accessibleContext
-
-
 def get_cell_info(jab, vm_id, table_context, row, col):
     cell_info = AccessibleTableCellInfo()
     ok = jab.dll.getAccessibleTableCellInfo(

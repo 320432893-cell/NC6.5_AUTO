@@ -37,15 +37,6 @@ def skip_fee_extra_row_delete_enabled():
     }
 
 
-def skip_fee_account_clear_enabled():
-    return os.environ.get("RECEIPT_SKIP_FEE_ACCOUNT_CLEAR", "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "y",
-    }
-
-
 def read_fee_prepare_row_count(jab, located, scope_hwnd=None):
     fast = read_table_row_count_by_path(jab, located)
     if fast.get("ok"):

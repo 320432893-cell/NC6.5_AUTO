@@ -66,47 +66,6 @@ def find_query_condition_scope(jab, jab_cfg):
     }
 
 
-def find_query_condition_scope_path_only(jab, jab_cfg):
-    cached = getattr(jab, "_receipt_query_condition_scope_cache", None)
-    if cached:
-        checked = validate_query_condition_scope(
-            jab,
-            jab_cfg,
-            cached.get("prefix"),
-            required_fields=("finance_org",),
-            source="cached_path",
-        )
-        if checked.get("ok"):
-            checked["cached"] = True
-            return checked
-    configured = infer_scope_from_configured_paths(jab_cfg)
-    if configured:
-        checked = validate_query_condition_scope(
-            jab,
-            jab_cfg,
-            configured,
-            required_fields=("finance_org",),
-            source="configured_path",
-        )
-        if checked.get("ok"):
-            setattr(jab, "_receipt_query_condition_scope_cache", checked)
-            return checked
-    scanned = scan_query_condition_scope(
-        jab,
-        jab_cfg,
-        required_fields=("finance_org",),
-    )
-    if scanned.get("ok"):
-        setattr(jab, "_receipt_query_condition_scope_cache", scanned)
-        return scanned
-    return {
-        "ok": False,
-        "reason": "查询条件 path 快速探测未命中",
-        "configured_attempt": configured,
-        "scan_attempt": scanned,
-    }
-
-
 def infer_scope_from_configured_paths(jab_cfg):
     fields = jab_cfg.get("fields") or {}
     path = ((fields.get("finance_org") or {}).get("text_path")) or ""

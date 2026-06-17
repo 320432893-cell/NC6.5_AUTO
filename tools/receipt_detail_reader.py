@@ -59,23 +59,6 @@ def read_body_table_by_path(jab, located, step, max_rows=5, semantic_fallback=Fa
     return {"step": step, "ok": False, "reason": result.get("reason")}
 
 
-def read_first_row_cells(jab, located=None):
-    snapshot = read_body_table_by_path(jab, located, "field_readback")
-    if not snapshot.get("ok"):
-        snapshot = read_body_table(
-            jab,
-            "field_readback",
-            scope_hwnd=(((located or {}).get("best") or {}).get("window") or {}).get(
-                "hwnd"
-            ),
-        )
-    if not snapshot.get("ok"):
-        return snapshot, {}
-    rows = snapshot.get("rows") or []
-    cells = (rows[0].get("cells") if rows else {}) or {}
-    return snapshot, cells
-
-
 def read_row_cells(jab, row_index, located=None, semantic_fallback=False):
     snapshot = read_body_table_by_path(
         jab,
