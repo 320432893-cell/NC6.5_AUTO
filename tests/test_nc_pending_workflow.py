@@ -1,4 +1,5 @@
 from decimal import Decimal
+from typing import Optional
 
 import pytest
 
@@ -46,7 +47,7 @@ class FakeDataHandler:
         self.items = items
         self.split_saved = []
         self.result_updates = []
-        self.preflight_error = None
+        self.preflight_error: Optional[ExcelPreflightError] = None
 
     def load_jab_batch_data(self, **kwargs):
         return self.items

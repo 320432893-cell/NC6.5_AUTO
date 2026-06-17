@@ -43,12 +43,16 @@ from tools.receipt_post_save_query import run_post_save_batch_query  # noqa: E40
 from tools.receipt_self_made_fill_trial import (  # noqa: E402
     fill_header,
     find_receipt_header_field_by_dynamic_path,
+    is_valid_customer_name_candidate,
     read_body_table,
+    receipt_header_dynamic_prefix,
     resolve_receipt_header_anchor_in_canvas,
     run_receipt_new_probe,
     run_receipt_new_probe_with_jab,
     wait_header_account_description,
 )
+
+BODY_TABLE_SUFFIX = "0.0.0.1.1.0.0.0.0.1.0.2.1.0.0.0.0.0"
 
 
 def parse_args(argv=None):
@@ -250,6 +254,10 @@ def main(argv=None):
                 report["rows"],
             )
             report["post_query"] = post_query
+            post_query_issues = post_query_failure_reasons(post_query)
+            if post_query_issues:
+                report["post_query_failed_rows"] = post_query_issues
+                exit_code = 1
         if args.write_selected_plan_sheet:
             workbook.write_batch_result_sheet(batch_results)
 
@@ -356,7 +364,6 @@ def run_one_row(
     jab = JABOperator(config)
     jab_lock = threading.RLock()
     pipeline_verifier = None
-    body_path_preload = None
     modal_events = []
     try:
         timings.measure("jab.ensure-started", jab.ensure_started)
@@ -405,9 +412,12 @@ def run_one_row(
         row_report["entry_scope_hwnd"] = entry_scope_hwnd
         row_report["entry_dynamic_index"] = entry_dynamic_index
         row_report["entry_anchor_path"] = entry_anchor_path
-        row_report["preheat"] = {
-            "body_path_initial": None,
-            "start_policy": "表头用当前 canvas + 财务组织(O) 锚点确认；明细表 path 在财务组织写入成功后后台预热",
+        row_report["locator_policy"] = {
+            "header": (
+                "财务组织用控件名粘贴+Enter并确认中文；其它表头字段优先用动态前缀"
+                "+稳定后缀 path，path 失败才单字段语义兜底"
+            ),
+            "body": "明细表用校正后的动态前缀直接拼稳定 path，校验失败才现场扫描",
         }
         if not entry_scope_hwnd or entry_dynamic_index is None:
             reason = "当前 canvas 未解析到财务组织(O) 前缀，停止；不走语义兜底"
@@ -418,22 +428,8 @@ def run_one_row(
         header_steps_so_far_labels = []
 
         def after_header_field(label, _value, step):
-            nonlocal body_path_preload
             if label and label not in header_steps_so_far_labels:
                 header_steps_so_far_labels.append(label)
-            if label == "财务组织" and body_path_preload is None:
-                body_path_preload = timings.measure(
-                    "preheat.body-path-start-after-finance",
-                    start_body_table_preload,
-                    config,
-                    jab,
-                    jab_lock,
-                    entry_scope_hwnd,
-                    flow_started_at,
-                )
-                row_report.setdefault("preheat", {})["body_path_initial"] = (
-                    preload_result(body_path_preload)
-                )
             if pause_after_header_field != label:
                 return None
             print(
@@ -493,36 +489,38 @@ def run_one_row(
         if header_pause_reports:
             row_report["header_pause_diagnostics"] = header_pause_reports
         row_report["header_steps"] = header_steps
-        row_report["nc_customer_name"] = extract_header_accepted_text(
-            header_steps,
-            "客户",
-        )
         if any(not step.get("ok") for step in header_steps):
             header_error = summarize_header_failure(header_steps)
             _event("header-fill-failed", excel_row=row.row, error=header_error)
             return fail(row_report, "header-fill", timings, header_error)
-        if not row_report["nc_customer_name"]:
-            row_report["header_customer_readback_warning"] = {
-                "ok": False,
-                "reason": "客户名称未从 JAB 后端读回；继续执行，交由后续明细/保存/后验查询校验",
-            }
-            _event(
-                "header-customer-readback-warning",
-                excel_row=row.row,
-                warning="客户名称未从 JAB 后端读回，继续执行",
-            )
-        _stage("明细主行", excel_row=row.row)
-        preloaded_body = (
-            body_path_preload.result(timeout=0.0) if body_path_preload else None
+        customer_name = timings.measure(
+            "header.customer-name-readback",
+            run_with_jab_lock,
+            jab_lock,
+            read_customer_name_after_header,
+            jab,
+            header_steps,
+            entry_dynamic_index,
+            entry_scope_hwnd,
         )
+        row_report["customer_name_readback"] = customer_name
+        row_report["nc_customer_name"] = str(customer_name.get("value") or "").strip()
+        if not row_report["nc_customer_name"]:
+            reason = customer_name.get("reason") or "客户名称未确认"
+            _event(
+                "header-customer-readback-failed",
+                excel_row=row.row,
+                error=reason,
+            )
+            return fail(row_report, "header-customer-name", timings, reason)
+        _stage("明细主行", excel_row=row.row)
         located = timings.measure(
             "body.locate",
             run_with_jab_lock,
             jab_lock,
-            resolve_body_table_from_preload,
+            resolve_body_table_by_dynamic_prefix,
             jab,
-            body_path_preload,
-            preloaded_body,
+            entry_dynamic_index,
             entry_scope_hwnd,
         )
         row_report["body_locate"] = {
@@ -831,14 +829,8 @@ def run_one_row(
             f"{type(exc).__name__}: {exc}",
         )
     finally:
-        if body_path_preload is not None:
-            row_report.setdefault("preheat", {})["body_path_final"] = preload_result(
-                body_path_preload
-            )
         if pipeline_verifier is not None:
             pipeline_verifier.close(timeout=0.2)
-        if body_path_preload is not None:
-            body_path_preload.close(timeout=0.2)
         row_report["modal_recovery"] = {"events": modal_events}
         jab.close()
 
@@ -860,78 +852,6 @@ def run_with_jab_lock(jab_lock, func, *args, **kwargs):
         return func(*args, **kwargs)
     with jab_lock:
         return func(*args, **kwargs)
-
-
-class BodyTablePreload:
-    def __init__(
-        self, config, jab, jab_lock=None, scope_hwnd=None, flow_started_at=None
-    ):
-        self.config = config
-        self.jab = jab
-        self.jab_lock = jab_lock
-        self.scope_hwnd = scope_hwnd
-        self.flow_started_at = flow_started_at
-        self.started_at = time.perf_counter()
-        self.finished_at = None
-        self._result = {"ok": False, "status": "running", "scope_hwnd": scope_hwnd}
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-
-    def _run(self):
-        try:
-            located = run_with_jab_lock(
-                self.jab_lock,
-                locate_receipt_body_table_cached,
-                self.jab,
-                max_rows=5,
-                scope_hwnd=self.scope_hwnd,
-            )
-            self._result = {
-                **located,
-                "ok": bool(located.get("best")),
-                "status": "ready",
-                "scope_hwnd": self.scope_hwnd,
-            }
-        except Exception as exc:
-            self._result = {
-                "ok": False,
-                "status": "error",
-                "scope_hwnd": self.scope_hwnd,
-                "reason": f"{type(exc).__name__}: {exc}",
-            }
-        finally:
-            self.finished_at = time.perf_counter()
-            self._result["seconds"] = round(self.finished_at - self.started_at, 3)
-            if self.flow_started_at is not None:
-                self._result["started_offset_seconds"] = round(
-                    self.started_at - self.flow_started_at,
-                    3,
-                )
-
-    def result(self, timeout=0.0):
-        self._thread.join(timeout=max(float(timeout or 0), 0.0))
-        return dict(self._result)
-
-    def close(self, timeout=0.2):
-        self._thread.join(timeout=max(float(timeout or 0), 0.0))
-
-
-def start_body_table_preload(
-    config, jab, jab_lock=None, scope_hwnd=None, flow_started_at=None
-):
-    return BodyTablePreload(
-        config,
-        jab,
-        jab_lock=jab_lock,
-        scope_hwnd=scope_hwnd,
-        flow_started_at=flow_started_at,
-    )
-
-
-def preload_result(preload):
-    if preload is None or not hasattr(preload, "result"):
-        return None
-    return preload.result(timeout=0.0)
 
 
 def verifier_snapshot(verifier):
@@ -1120,19 +1040,35 @@ def repair_detail_pipeline_failures(
     return repair
 
 
-def resolve_body_table_from_preload(jab, preload=None, snapshot=None, scope_hwnd=None):
-    if snapshot and snapshot.get("best"):
-        return {**snapshot, "source": "early-body-preload"}
-    if preload is not None:
-        waited = preload.result(timeout=0.2)
-        if waited.get("best"):
-            return {**waited, "source": "early-body-preload-wait"}
+def build_body_table_cached_path(dynamic_index, scope_hwnd=None):
+    if dynamic_index is None:
+        return None
+    path = f"{receipt_header_dynamic_prefix(dynamic_index)}.{BODY_TABLE_SUFFIX}"
+    return {
+        "best": {
+            "path": path,
+            "window": {
+                "hwnd": scope_hwnd,
+                "class_name": "SunAwtCanvas",
+            },
+        }
+    }
+
+
+def resolve_body_table_by_dynamic_prefix(jab, dynamic_index, scope_hwnd=None):
+    cached = build_body_table_cached_path(dynamic_index, scope_hwnd=scope_hwnd)
     located = locate_receipt_body_table_cached(
         jab,
+        cached=cached,
         max_rows=5,
         scope_hwnd=scope_hwnd,
     )
-    return {**located, "source": "main-thread-locate"}
+    source = (
+        "dynamic-prefix-body-path"
+        if located.get("cache_hit")
+        else "dynamic-prefix-body-path-fallback-scan"
+    )
+    return {**located, "source": source, "cached_path": (cached or {}).get("best")}
 
 
 def build_header_scope_for_followup(scope_hwnd, dynamic_index):
@@ -1295,17 +1231,107 @@ def business_from_plan_row(row):
     }
 
 
+def read_customer_name_after_header(jab, header_steps, dynamic_index, scope_hwnd):
+    step = next(
+        (item for item in header_steps or [] if item.get("label") == "客户"),
+        None,
+    )
+    attempts = []
+    if step and step.get("path"):
+        found = find_receipt_header_field_by_dynamic_path(
+            jab,
+            "客户",
+            step.get("dynamic_index") or dynamic_index,
+            scope_hwnd=scope_hwnd,
+            require_showing=False,
+            require_valid_bounds=False,
+            path_template=(step.get("path_attempt") or {}).get("path_template"),
+        )
+        attempts.append(
+            read_customer_name_from_found_field(jab, found, source="path-readback")
+        )
+    if step:
+        attempts.append(
+            {
+                "ok": True,
+                "source": "header-step-snapshot",
+                "value": extract_header_accepted_text([step], "客户"),
+                "snapshot": step.get("post_write_snapshot")
+                or step.get("backend_state")
+                or {},
+            }
+        )
+    for attempt in attempts:
+        value = str(attempt.get("value") or "").strip()
+        if is_valid_customer_name_candidate(value):
+            return {
+                "ok": True,
+                "value": value,
+                "source": attempt.get("source"),
+                "attempts": attempts,
+            }
+    return {
+        "ok": False,
+        "value": "",
+        "attempts": attempts,
+        "reason": "客户名称未确认：客户字段 description 未读到有效 NC 客户名称",
+    }
+
+
+def read_customer_name_from_found_field(jab, found, source):
+    if not found.get("ok"):
+        return {
+            "ok": False,
+            "source": source,
+            "reason": found.get("reason"),
+            "path": found.get("path"),
+        }
+    context = found["context"]
+    vm_id = found["vm_id"]
+    owned_contexts = found["owned_contexts"]
+    try:
+        info = jab.get_context_info(vm_id, context)
+        text = jab.get_text_context_value(vm_id, context)
+        description = info.description.strip() if info else ""
+        name = info.name.strip() if info else ""
+        value = first_valid_text(description, text, name)
+        return {
+            "ok": bool(value),
+            "source": source,
+            "value": value,
+            "path": found.get("path"),
+            "label_path": found.get("label_path"),
+            "text": text,
+            "name": name,
+            "description": description,
+        }
+    finally:
+        jab.release_contexts(vm_id, owned_contexts)
+
+
+def first_valid_text(*values):
+    for value in values:
+        text = str(value or "").strip()
+        if is_valid_customer_name_candidate(text):
+            return text
+    return ""
+
+
 def extract_header_accepted_text(header_steps, label):
     for step in header_steps or []:
         if step.get("label") != label:
             continue
         text = str(step.get("accepted_text") or "").strip()
-        if text:
+        if is_valid_customer_name_candidate(text):
             return text
         backend = step.get("post_write_snapshot") or step.get("backend_state") or {}
         for key in ("description", "text", "name"):
             value = str(backend.get(key) or "").strip()
-            if value and value != str(step.get("value") or "").strip():
+            if (
+                value
+                and value != str(step.get("value") or "").strip()
+                and is_valid_customer_name_candidate(value)
+            ):
                 return value
     return ""
 
@@ -1327,6 +1353,21 @@ def build_batch_results(selected_rows, row_reports):
             )
         )
     return results
+
+
+def post_query_failure_reasons(post_query):
+    if not post_query or not post_query.get("ok"):
+        return {"*": (post_query or {}).get("reason") or "后验查询失败"}
+    issues = {}
+    for group in post_query.get("groups") or []:
+        match = group.get("match") or {}
+        for row, reason in (match.get("issues") or {}).items():
+            issues[str(row)] = reason or "后验未匹配"
+        if not group.get("ok"):
+            reason = group.get("reason") or "后验查询失败"
+            for row in group.get("target_rows") or []:
+                issues.setdefault(str(row), reason)
+    return issues
 
 
 def format_row_failure_reason(report):
@@ -1620,6 +1661,12 @@ def build_console_report_lines(report, report_path=None, summary_path=None):
     elif report.get("ok"):
         ok_rows = [row.get("excel_row") for row in rows if row.get("ok")]
         lines.append(f"通过行：{ok_rows}")
+    elif report.get("post_query_failed_rows"):
+        ok_rows = [row.get("excel_row") for row in rows if row.get("ok")]
+        lines.append(f"录入保存通过行：{ok_rows}")
+        lines.append("失败阶段：post-query")
+        for row, reason in (report.get("post_query_failed_rows") or {}).items():
+            lines.append(f"后验未匹配行 {row}：{reason}")
     elif report.get("reason"):
         lines.append(f"失败原因：{report.get('reason')}")
     if report_path:

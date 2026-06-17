@@ -10,18 +10,23 @@ import pytest
 
 from core.receipt_models import ReceiptPlanIssue, ReceiptPlanRow
 from tools.receipt_full_flow_entry import (
+    build_console_report_lines,
     business_from_plan_row,
     confirm_save,
     extract_entry_anchor_path,
     extract_entry_dynamic_index,
     extract_entry_scope_hwnd,
+    extract_header_accepted_text,
     open_self_made_entry,
     parse_args,
+    post_query_failure_reasons,
+    read_customer_name_after_header,
     run_one_row,
     save_receipt_by_ctrl_s,
     select_plan_rows,
     wait_receipt_header_anchor_in_current_canvas,
 )
+from tools.receipt_post_save_query import target_to_match_row
 
 
 def plan_row(row, fee=Decimal("0.00")):
@@ -66,10 +71,82 @@ def open_report_with_header_anchor(hwnd=2002, dynamic_index=5):
     }
 
 
+class FakeInfo:
+    role = "text"
+    role_en_US = "text"
+    states = "enabled,visible,showing,editable"
+    states_en_US = "enabled,visible,showing,editable"
+
+    def __init__(self, name="", description=""):
+        self.name = name
+        self.description = description
+
+
 class Args:
     excel_row: int | None = None
     excel_rows: str | None = None
     limit: int = 1
+
+
+def test_extract_header_accepted_text_rejects_java_object_string():
+    assert (
+        extract_header_accepted_text(
+            [
+                {
+                    "label": "客户",
+                    "value": "YW00178",
+                    "post_write_snapshot": {
+                        "description": "[Ljava.lang.String;@75acf5a0",
+                    },
+                }
+            ],
+            "客户",
+        )
+        == ""
+    )
+
+
+def test_read_customer_name_after_header_uses_customer_description(monkeypatch):
+    class FakeJAB:
+        def get_context_info(self, _vm_id, _context):
+            return FakeInfo(description="INDUSTRIAS METALURGICAS PESCARMONA")
+
+        def get_text_context_value(self, _vm_id, _context):
+            return ""
+
+        def release_contexts(self, _vm_id, _contexts):
+            pass
+
+    monkeypatch.setattr(
+        "tools.receipt_full_flow_entry.find_receipt_header_field_by_dynamic_path",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "context": object(),
+            "vm_id": 1,
+            "owned_contexts": [],
+            "path": "customer.path",
+            "label_path": "customer.label",
+        },
+    )
+
+    result = read_customer_name_after_header(
+        FakeJAB(),
+        [
+            {
+                "ok": True,
+                "label": "客户",
+                "value": "YW00178",
+                "dynamic_index": 4,
+                "path": "customer.path",
+            }
+        ],
+        4,
+        197550,
+    )
+
+    assert result["ok"] is True
+    assert result["value"] == "INDUSTRIAS METALURGICAS PESCARMONA"
+    assert result["source"] == "path-readback"
 
 
 def test_select_plan_rows_skips_issue_rows_and_defaults_limit_one():
@@ -124,6 +201,59 @@ def test_business_from_plan_row_maps_receipt_plan_to_entry_values():
     assert business["fee"] == "20.00"
     assert business["has_fee"] is True
     assert business["settlement"] == "网银"
+
+
+def test_post_save_match_uses_nc_gross_amount_for_fee_rows():
+    row = plan_row(8, fee=Decimal("13.00"))
+
+    target = target_to_match_row(
+        type(
+            "Target",
+            (),
+            {
+                "row": row,
+                "row_report": {"nc_customer_name": "ACME NC"},
+            },
+        )()
+    )
+
+    assert target.raw_amount == Decimal("1103.00")
+
+
+def test_post_query_failure_reasons_collects_group_issues():
+    assert post_query_failure_reasons(
+        {
+            "ok": True,
+            "groups": [
+                {
+                    "ok": True,
+                    "match": {
+                        "matched": {"839": "D1"},
+                        "issues": {"811": "后验未匹配-金额不一致"},
+                    },
+                }
+            ],
+        }
+    ) == {"811": "后验未匹配-金额不一致"}
+
+
+def test_console_summary_reports_post_query_failure():
+    lines = build_console_report_lines(
+        {
+            "ok": False,
+            "total_seconds": 12.3,
+            "rows": [
+                {"excel_row": 811, "ok": True},
+                {"excel_row": 839, "ok": True},
+            ],
+            "post_query_failed_rows": {"811": "后验未匹配-金额不一致"},
+        }
+    )
+
+    assert "结果：失败" in lines
+    assert "录入保存通过行：[811, 839]" in lines
+    assert "失败阶段：post-query" in lines
+    assert "后验未匹配行 811：后验未匹配-金额不一致" in lines
 
 
 def test_confirm_save_requires_uppercase_save_without_bypass(monkeypatch):
@@ -417,7 +547,6 @@ def test_run_one_row_uses_detail_pipeline_verifier(monkeypatch):
         "snapshot": [],
         "rows": [],
         "wait": [],
-        "preheat": [],
         "fill_header_kwargs": [],
         "body_locate_kwargs": [],
         "account_scope": [],
@@ -492,12 +621,6 @@ def test_run_one_row_uses_detail_pipeline_verifier(monkeypatch):
         },
     )
     monkeypatch.setattr("tools.receipt_full_flow_entry.JABOperator", FakeJAB)
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.start_body_table_preload",
-        lambda _config, scope_hwnd=None, flow_started_at=None: (
-            calls["preheat"].append(("body", scope_hwnd)) or None
-        ),
-    )
     monkeypatch.setattr(
         "tools.receipt_full_flow_entry.fill_header",
         lambda _jab, _business, **kwargs: (
@@ -576,7 +699,6 @@ def test_run_one_row_uses_detail_pipeline_verifier(monkeypatch):
     assert calls["snapshot"] == [("after-main-line", 3, 1)]
     assert calls["rows"] == [1]
     assert calls["wait"] == [(["field-0", "rows-0"], 2.0)]
-    assert calls["preheat"] == []
     assert calls["fill_header_kwargs"][0]["scope_hwnd"] == 2002
     assert calls["fill_header_kwargs"][0]["dynamic_index"] == 5
     assert (
@@ -584,6 +706,14 @@ def test_run_one_row_uses_detail_pipeline_verifier(monkeypatch):
         == "0.0.1.0.0.0.0.5.0.0.0.1.1.0.0.0.1.1.1.0"
     )
     assert calls["body_locate_kwargs"][0]["scope_hwnd"] == 2002
+    assert (
+        calls["body_locate_kwargs"][0]["cached"]["best"]["path"]
+        == "0.0.1.0.0.0.0.5.0.0.0.1.1.0.0.0.0.1.0.2.1.0.0.0.0.0"
+    )
+    assert calls["body_locate_kwargs"][0]["cached"]["best"]["window"] == {
+        "hwnd": 2002,
+        "class_name": "SunAwtCanvas",
+    }
     assert calls["account_scope"][0]["scope_hwnd"] == 2002
     assert calls["account_scope"][0]["dynamic_index"] == 5
     assert report["before_table"]["skipped"] is True
@@ -662,10 +792,6 @@ def test_run_one_row_retries_current_canvas_header_anchor(monkeypatch):
         ),
     )
     monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.start_body_table_preload",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
         "tools.receipt_full_flow_entry.fill_header",
         lambda _jab, _business, **kwargs: (
             calls["fill_header_kwargs"].append(kwargs)
@@ -712,6 +838,10 @@ def test_run_one_row_retries_current_canvas_header_anchor(monkeypatch):
     assert calls["fill_header_kwargs"][0]["scope_hwnd"] == 919586
     assert calls["fill_header_kwargs"][0]["dynamic_index"] == 5
     assert calls["body_locate_kwargs"][0]["scope_hwnd"] == 919586
+    assert (
+        calls["body_locate_kwargs"][0]["cached"]["best"]["path"]
+        == "0.0.1.0.0.0.0.5.0.0.0.1.1.0.0.0.0.1.0.2.1.0.0.0.0.0"
+    )
 
 
 def test_run_one_row_stops_when_current_canvas_header_anchor_missing(monkeypatch):
@@ -904,10 +1034,6 @@ def test_run_one_row_repairs_pending_detail_field_with_cached_path(monkeypatch):
         },
     )
     monkeypatch.setattr("tools.receipt_full_flow_entry.JABOperator", FakeJAB)
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.start_body_table_preload",
-        lambda *_args, **_kwargs: None,
-    )
     monkeypatch.setattr(
         "tools.receipt_full_flow_entry.fill_header",
         lambda *_args, **_kwargs: [
@@ -1103,6 +1229,29 @@ def test_extract_entry_dynamic_index_from_anchor_hit():
     assert extract_entry_dynamic_index(report) == 7
 
 
+def test_extract_entry_dynamic_index_prefers_customer_corrected_anchor_index():
+    report = {
+        "entry_state": {
+            "hits": [
+                {
+                    "control": {
+                        "path": "0.0.1.0.0.0.0.3.0.0.0.1",
+                        "dynamic_index": 5,
+                        "dynamic_prefix": "0.0.1.0.0.0.0.5",
+                    }
+                }
+            ]
+        },
+        "anchor": {
+            "mode": "current-canvas-anchor-corrected-by-customer",
+            "initial_dynamic_index": 3,
+            "dynamic_index": 5,
+        },
+    }
+
+    assert extract_entry_dynamic_index(report) == 5
+
+
 def test_extract_entry_scope_hwnd_from_windows_after_choose():
     report = {
         "parsed": {
@@ -1193,10 +1342,6 @@ def test_run_one_row_recovers_modal_only_after_save_failure(monkeypatch):
         ],
     )
     monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.start_body_table_preload",
-        lambda *_args, **_kwargs: None,
-    )
-    monkeypatch.setattr(
         "tools.receipt_full_flow_entry.locate_receipt_body_table_cached",
         lambda *_args, **_kwargs: {
             "best": {"path": "0.1", "row_count": 1, "col_count": 25, "window": {}},
@@ -1243,7 +1388,7 @@ def test_run_one_row_recovers_modal_only_after_save_failure(monkeypatch):
     assert report["save"]["retried_after_modal_recovery"] is True
 
 
-def test_run_one_row_continues_when_customer_readback_is_empty(monkeypatch):
+def test_run_one_row_stops_when_customer_name_readback_is_empty(monkeypatch):
     class LocalFakeJAB:
         def __init__(self, config):
             self.config = config
@@ -1280,10 +1425,6 @@ def test_run_one_row_continues_when_customer_readback_is_empty(monkeypatch):
         lambda _config, _jab=None: open_report_with_header_anchor(),
     )
     monkeypatch.setattr("tools.receipt_full_flow_entry.JABOperator", LocalFakeJAB)
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.start_body_table_preload",
-        lambda *_args, **_kwargs: None,
-    )
     monkeypatch.setattr(
         "tools.receipt_full_flow_entry.fill_header",
         lambda _jab, _business, **_kwargs: [
@@ -1325,9 +1466,10 @@ def test_run_one_row_continues_when_customer_readback_is_empty(monkeypatch):
 
     report = run_one_row({}, plan_row(10), save_enabled=False)
 
-    assert report["ok"] is True
+    assert report["ok"] is False
+    assert report["failed_step"] == "header-customer-name"
     assert report["nc_customer_name"] == ""
-    assert "header_customer_readback_warning" in report
+    assert "客户名称未确认" in report["reason"]
 
 
 def test_run_one_row_continues_when_header_account_readback_is_empty(monkeypatch):
@@ -1369,10 +1511,6 @@ def test_run_one_row_continues_when_header_account_readback_is_empty(monkeypatch
         lambda _config, _jab=None: open_report_with_header_anchor(),
     )
     monkeypatch.setattr("tools.receipt_full_flow_entry.JABOperator", LocalFakeJAB)
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.start_body_table_preload",
-        lambda *_args, **_kwargs: None,
-    )
     monkeypatch.setattr(
         "tools.receipt_full_flow_entry.fill_header",
         lambda _jab, _business, **_kwargs: [
@@ -1456,10 +1594,6 @@ def test_pause_after_customer_diagnoses_cleared_header_and_stops(monkeypatch):
         lambda _config, _jab=None: open_report_with_header_anchor(),
     )
     monkeypatch.setattr("tools.receipt_full_flow_entry.JABOperator", LocalFakeJAB)
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.start_body_table_preload",
-        lambda *_args, **_kwargs: None,
-    )
     monkeypatch.setattr("builtins.input", lambda _prompt: "")
     monkeypatch.setattr(
         "tools.receipt_full_flow_entry.find_receipt_header_field_by_dynamic_path",

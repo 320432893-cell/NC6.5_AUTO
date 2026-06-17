@@ -1,5 +1,7 @@
 from decimal import Decimal
+from typing import cast
 
+from core.nc_page_probe import NCPageProbe
 from core.nc_state import (
     NCStateDetector,
     choose_main_signature_table,
@@ -81,7 +83,7 @@ def test_detect_page_state_fast_fails_when_parent_and_tables_missing():
         lambda *args, **kwargs: None,
         lambda *args, **kwargs: None,
     )
-    detector.probe = EmptyProbe()
+    detector.probe = cast(NCPageProbe, EmptyProbe())
 
     state = detector.detect_page_state([])
 

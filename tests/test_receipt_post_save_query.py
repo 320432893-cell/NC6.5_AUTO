@@ -6,12 +6,11 @@
 from datetime import date
 from decimal import Decimal
 
-from core.receipt_models import ReceiptNCIndexedRow, ReceiptPlanRow
+from core.receipt_models import ReceiptMatchIssue, ReceiptNCIndexedRow, ReceiptPlanRow
 from tools.receipt_post_save_query import (
     BatchQueryTarget,
     group_targets_by_org,
-    match_targets,
-    name_similarity,
+    match_snapshot_to_result,
 )
 
 
@@ -47,42 +46,50 @@ def nc_row(document_no, name, amount="100.00", receipt_date=date(2026, 6, 15)):
     )
 
 
-def test_name_similarity_requires_normalized_high_score():
-    assert (
-        name_similarity("上海移为通信技术股份有限公司", "上海移为通信技术股份有限公司")
-        == 100
-    )
-    assert name_similarity("上海移为通信技术股份有限公司", "完全不同客户") < 90
-
-
-def test_match_targets_uses_nc_customer_name_and_exact_amount():
+def test_match_snapshot_result_uses_incremental_match_success():
     target = BatchQueryTarget(
         row=plan_row(811),
         row_report={"nc_customer_name": "上海移为通信技术股份有限公司"},
     )
+    matched_row = nc_row("SK-OK", "上海移为通信技术股份有限公司")
 
-    result = match_targets(
+    result = match_snapshot_to_result(
         [target],
-        [
-            nc_row("SK-OTHER", "完全不同客户"),
-            nc_row("SK-OK", "上海移为通信技术股份有限公司"),
-        ],
+        {
+            "matched": {811: matched_row},
+            "match_issues": [],
+        },
     )
 
-    assert result["matched"] == {811: "SK-OK"}
-    assert result["issues"] == {}
+    assert result == {
+        "matched": {811: "SK-OK"},
+        "issues": {},
+    }
 
 
-def test_match_targets_reports_amount_hit_but_name_mismatch():
+def test_match_snapshot_result_is_the_single_post_query_source():
     target = BatchQueryTarget(
-        row=plan_row(839),
-        row_report={"nc_customer_name": "上海移为通信技术股份有限公司"},
+        row=plan_row(828),
+        row_report={"nc_customer_name": "CalAmp Wireless Networks Corporation"},
+    )
+    result = match_snapshot_to_result(
+        [target],
+        {
+            "matched": {},
+            "match_issues": [
+                ReceiptMatchIssue(
+                    excel_row=828,
+                    reason="名称匹配但金额不一致",
+                    nc_rows=[0, 2],
+                )
+            ],
+        },
     )
 
-    result = match_targets([target], [nc_row("SK-NO", "完全不同客户")])
-
-    assert result["matched"] == {}
-    assert "名称相似度" in result["issues"][839]
+    assert result == {
+        "matched": {},
+        "issues": {828: "名称匹配但金额不一致"},
+    }
 
 
 def test_group_targets_by_org_groups_and_sorts_by_date_then_row():

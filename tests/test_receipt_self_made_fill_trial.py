@@ -389,7 +389,7 @@ def test_header_fill_writes_customer_before_date(monkeypatch):
     assert calls == ["财务组织", "客户", "单据日期", "币种", "结算方式"]
 
 
-def test_header_fill_does_not_start_semantic_preload(monkeypatch):
+def test_header_fill_uses_path_flow_without_background_semantic(monkeypatch):
     calls = []
 
     monkeypatch.setattr(
@@ -442,6 +442,176 @@ def test_header_fill_does_not_start_semantic_preload(monkeypatch):
     )
 
     assert calls == ["财务组织", "客户", "单据日期", "币种", "结算方式"]
+
+
+def test_probe_header_semantic_field_speed_releases_context(monkeypatch):
+    calls = []
+
+    class FakeJAB:
+        hide_blank_awt_windows_enabled = True
+
+        def __init__(self, config):
+            self.config = config
+
+        def ensure_started(self):
+            calls.append(("ensure",))
+
+        def release_contexts(self, vm_id, contexts):
+            calls.append(("release", vm_id, tuple(contexts)))
+
+        def close(self):
+            calls.append(("close",))
+
+    monkeypatch.setattr(trial, "JABOperator", FakeJAB)
+    monkeypatch.setattr(
+        trial,
+        "find_receipt_header_field_by_semantic_label",
+        lambda _jab, label, timeout=1.5, **_kwargs: {
+            "ok": True,
+            "label": label,
+            "context": object(),
+            "vm_id": 7,
+            "owned_contexts": ["ctx"],
+            "path": "semantic.customer.path",
+            "label_path": "semantic.customer.label",
+            "window": {"hwnd": 123},
+        },
+    )
+
+    result = trial.probe_header_semantic_field_speed(
+        {},
+        "客户",
+        timeout=0.35,
+        repeat=1,
+    )
+
+    assert result["ok"] is True
+    assert result["readonly"] is True
+    assert result["attempts"][0]["path"] == "semantic.customer.path"
+    assert calls == [("ensure",), ("release", 7, ("ctx",)), ("close",)]
+
+
+def test_normalize_header_probe_label_accepts_ascii_keys():
+    assert trial.normalize_header_probe_label("customer") == "客户"
+    assert trial.normalize_header_probe_label("date") == "单据日期"
+    assert trial.normalize_header_probe_label("currency") == "币种"
+    assert trial.normalize_header_probe_label("settlement") == "结算方式"
+    assert trial.normalize_header_probe_label("finance") == "财务组织"
+
+
+def test_customer_name_candidate_rejects_java_object_string():
+    assert not trial.is_valid_customer_name_candidate("[Ljava.lang.String;@75acf5a0")
+    assert not trial.is_valid_customer_name_candidate("YW00178")
+    assert trial.is_valid_customer_name_candidate("SERDIA ELETRONICA INDL LTDA")
+    assert trial.is_valid_customer_name_candidate("上海移为通信技术股份有限公司")
+
+
+def test_first_valid_customer_name_prefers_description():
+    result = trial.first_valid_customer_name(
+        [
+            {
+                "source": "path",
+                "path": "customer.path",
+                "description": "[Ljava.lang.String;@75acf5a0",
+                "valid_values": [],
+            },
+            {
+                "source": "path-nearby",
+                "path": "customer.name.path",
+                "description": "SERDIA ELETRONICA INDL LTDA",
+                "valid_values": ["SERDIA ELETRONICA INDL LTDA"],
+            },
+        ]
+    )
+
+    assert result == {
+        "value": "SERDIA ELETRONICA INDL LTDA",
+        "source": "path-nearby",
+        "path": "customer.name.path",
+        "parent_path": None,
+        "field": "description",
+    }
+
+
+def test_resolve_current_header_scope_probe_passes_jab_to_window_collector(
+    monkeypatch,
+):
+    class FakeJAB:
+        pass
+
+    jab = FakeJAB()
+    calls = []
+
+    monkeypatch.setattr(
+        trial,
+        "collect_receipt_new_windows",
+        lambda received_jab: calls.append(received_jab) or [],
+    )
+    monkeypatch.setattr(
+        trial,
+        "detect_self_made_entry_state",
+        lambda _windows: {"ok": False, "hits": []},
+    )
+    monkeypatch.setattr(
+        trial,
+        "infer_receipt_header_scope_by_semantic",
+        lambda _jab, scope_hwnd=None: {
+            "ok": False,
+            "reason": "not found",
+            "scope_hwnd": scope_hwnd,
+        },
+    )
+
+    result = trial.resolve_current_header_scope_for_probe(jab)
+
+    assert calls == [jab]
+    assert result["ok"] is False
+    assert result["semantic_attempt"]["reason"] == "not found"
+
+
+def test_customer_name_readback_report_only_exposes_field_candidates(monkeypatch):
+    class FakeJAB:
+        hide_blank_awt_windows_enabled = True
+
+        def __init__(self, _config):
+            pass
+
+        def ensure_started(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(trial, "JABOperator", FakeJAB)
+    monkeypatch.setattr(
+        trial,
+        "resolve_current_header_scope_for_probe",
+        lambda _jab, timeout=None: {
+            "ok": True,
+            "scope_hwnd": 123,
+            "dynamic_index": 5,
+        },
+    )
+    monkeypatch.setattr(
+        trial,
+        "collect_customer_field_candidates_for_scope",
+        lambda *_args, **_kwargs: [
+            {
+                "ok": True,
+                "source": "path",
+                "path": "customer.path",
+                "description": "SERDIA ELETRONICA INDL LTDA",
+                "valid_values": ["SERDIA ELETRONICA INDL LTDA"],
+            }
+        ],
+    )
+
+    report = trial.probe_customer_name_readback({}, timeout=0.35)
+
+    assert report["ok"] is True
+    assert report["best"]["value"] == "SERDIA ELETRONICA INDL LTDA"
+    assert "candidates" not in report
+    assert report["field_candidates"][0]["source"] == "path"
 
 
 def test_header_fill_uses_provided_canvas_scope_when_anchor_matches(monkeypatch):
@@ -636,6 +806,7 @@ def test_header_scope_anchor_requires_exact_finance_org_shortcut():
 
 
 def test_finance_org_anchor_label_path_matches_observed_current_canvas_path():
+    trial.clear_receipt_header_path_template_cache()
     assert (
         trial.build_receipt_header_dynamic_label_path(2, "财务组织")
         == "0.0.1.0.0.0.0.2.0.0.0.1.1.0.0.0.1.1.1.0"
@@ -692,6 +863,49 @@ def test_resolve_header_anchor_rejects_plain_finance_org_text(monkeypatch):
     assert result["anchor_text"]["name"] == "财务组织"
 
 
+def test_resolve_header_anchor_corrects_dynamic_index_by_customer(monkeypatch):
+    class Info:
+        name = "财务组织(O)"
+        description = "财务组织(O)"
+
+    class FakeJAB:
+        def get_context_info(self, _vm_id, _context):
+            return Info()
+
+        def release_contexts(self, _vm_id, _contexts):
+            pass
+
+    monkeypatch.setattr(
+        trial,
+        "find_header_label_context_with_window",
+        lambda *_args, **_kwargs: (
+            object(),
+            1,
+            [object()],
+            [0, 1, 0, 0, 0, 0, 3, 0, 0],
+            {"hwnd": 197550, "class_name": "SunAwtCanvas"},
+        ),
+    )
+    monkeypatch.setattr(
+        trial,
+        "correct_header_anchor_dynamic_index_by_customer",
+        lambda _jab, _scope_hwnd, dynamic_index: {
+            "ok": True,
+            "source": "customer-semantic-correction",
+            "dynamic_index": 5,
+            "path": ("0.0.1.0.0.0.0.5.0.0.0.1.1.0.0.0.0.1.0.2.0.0.0.0.0.0.0.17.0"),
+            "current_attempt": {"dynamic_index": dynamic_index},
+        },
+    )
+
+    result = trial.resolve_receipt_header_anchor_in_canvas(FakeJAB(), 197550)
+
+    assert result["ok"] is True
+    assert result["dynamic_index"] == 5
+    assert result["initial_dynamic_index"] == 3
+    assert result["mode"] == "current-canvas-anchor-corrected-by-customer"
+
+
 def test_semantic_header_field_uses_label_window_for_text_path(monkeypatch):
     calls = []
     provided_scope_hwnd = 1001
@@ -738,9 +952,28 @@ def test_semantic_header_field_uses_label_window_for_text_path(monkeypatch):
 
 
 def test_finance_org_text_path_matches_observed_current_canvas_path():
+    trial.clear_receipt_header_path_template_cache()
     assert (
         trial.build_receipt_header_dynamic_path(2, "财务组织")
         == "0.0.1.0.0.0.0.2.0.0.0.1.1.0.0.0.1.1.1.2.1.0"
+    )
+
+
+def test_header_template_matches_observed_customer_path():
+    trial.clear_receipt_header_path_template_cache()
+    template = trial.infer_header_path_template_from_field(
+        "0.0.1.0.0.0.0.3.0.0.0.1.1.0.0.0.0.1.0.2.0.0.0.0.0.0.0.17.0",
+        3,
+        "客户",
+    )
+
+    assert template is not None
+    assert template["text_suffix_template"] == (
+        "0.0.0.1.1.0.0.0.0.1.0.2.0.0.0.0.0.0.0.{index}.0"
+    )
+    assert (
+        trial.build_receipt_header_path_from_template(3, "单据日期", template)
+        == "0.0.1.0.0.0.0.3.0.0.0.1.1.0.0.0.0.1.0.2.0.0.0.0.0.0.0.5.0"
     )
 
 
@@ -767,7 +1000,63 @@ def test_find_finance_org_field_uses_observed_text_path_with_text_role():
     assert calls[0][1]["scope_hwnd"] == 919586
 
 
-def test_header_dynamic_field_prefers_scoped_label_over_fixed_path(monkeypatch):
+def test_header_fill_learns_header_template_from_customer(monkeypatch):
+    calls = []
+
+    def fake_set_header_field(
+        _jab,
+        label,
+        _value,
+        dynamic_index,
+        _scope_hwnd,
+        **kwargs,
+    ):
+        calls.append((label, kwargs.get("path_template")))
+        if label == "客户":
+            return {
+                "ok": True,
+                "path": ("0.0.1.0.0.0.0.3.0.0.0.1.1.0.0.0.0.1.0.2.0.0.0.0.0.0.0.17.0"),
+            }
+        return {
+            "ok": True,
+            "path": trial.build_receipt_header_dynamic_path(dynamic_index, label),
+        }
+
+    monkeypatch.setattr(
+        trial, "set_receipt_header_dynamic_field", fake_set_header_field
+    )
+    monkeypatch.setattr(
+        trial,
+        "validate_receipt_header_scope_anchor",
+        lambda _jab, scope_hwnd, dynamic_index, **_kwargs: {
+            "ok": True,
+            "scope_hwnd": scope_hwnd,
+            "mode": "provided-canvas-anchor",
+            "dynamic_index": dynamic_index,
+            "dynamic_prefix": f"0.0.1.0.0.0.0.{dynamic_index}",
+        },
+    )
+
+    steps = trial.fill_header(
+        object(),
+        {
+            "finance_org_code": "A001",
+            "document_date": "2026-04-02",
+            "customer_code": "YW03200",
+            "currency": "美元",
+            "bank_account": "FTE123",
+        },
+        scope_hwnd=123,
+        dynamic_index=3,
+    )
+
+    assert calls[1] == ("客户", None)
+    assert calls[2][0] == "单据日期"
+    assert calls[2][1]["source"] == "learned-from-客户"
+    assert steps[1]["header_path_template_learned"]["source"] == "learned-from-客户"
+
+
+def test_header_dynamic_field_prefers_dynamic_path_over_scoped_label(monkeypatch):
     class Info:
         name = "客户"
         description = ""
@@ -790,23 +1079,23 @@ def test_header_dynamic_field_prefers_scoped_label_over_fixed_path(monkeypatch):
 
     monkeypatch.setattr(
         trial,
-        "find_receipt_header_field_by_scoped_label",
+        "find_receipt_header_field_by_dynamic_path",
         lambda *_args, **_kwargs: {
             "ok": True,
             "context": object(),
             "vm_id": 1,
             "owned_contexts": [],
             "window": {"hwnd": 919586},
-            "path": "scoped.customer.path",
-            "label_path": "scoped.customer.label",
-            "source": "scoped-label-following-text",
+            "path": "dynamic.customer.path",
+            "label_path": "dynamic.customer.label",
+            "source": "path",
         },
     )
     monkeypatch.setattr(
         trial,
-        "find_receipt_header_field_by_dynamic_path",
+        "find_receipt_header_field_by_scoped_label",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("scoped label 命中后不能再硬拼固定 path")
+            AssertionError("dynamic path 命中后不能再逐字段语义搜索")
         ),
     )
     monkeypatch.setattr(
@@ -828,8 +1117,140 @@ def test_header_dynamic_field_prefers_scoped_label_over_fixed_path(monkeypatch):
     )
 
     assert result["ok"] is True
-    assert result["source"] == "scoped-label-following-text"
-    assert result["path"] == "scoped.customer.path"
+    assert result["source"] == "path"
+    assert result["path"] == "dynamic.customer.path"
+
+
+def test_header_dynamic_field_uses_live_semantic_after_path_miss(
+    monkeypatch,
+):
+    class Info:
+        name = "客户"
+        description = ""
+        role = "text"
+        role_en_US = "text"
+        states = "enabled,visible,showing,editable"
+        states_en_US = "enabled,visible,showing,editable"
+
+    class FakeJAB:
+        dll = object()
+
+        def get_context_info(self, _vm_id, _context):
+            return Info()
+
+        def get_text_context_value(self, _vm_id, _context):
+            return ""
+
+        def release_contexts(self, _vm_id, _owned_contexts):
+            pass
+
+    monkeypatch.setattr(
+        trial,
+        "find_receipt_header_field_by_dynamic_path",
+        lambda *_args, **_kwargs: {
+            "ok": False,
+            "reason": "dynamic path missing",
+        },
+    )
+    semantic_calls = []
+
+    def fake_live_semantic(*_args, **kwargs):
+        semantic_calls.append(kwargs)
+        return {
+            "ok": True,
+            "context": object(),
+            "vm_id": 1,
+            "owned_contexts": [],
+            "window": {"hwnd": 919586},
+            "path": "live.customer.path",
+            "label_path": "live.customer.label",
+            "source": "semantic-live-after-path-miss",
+        }
+
+    monkeypatch.setattr(
+        trial,
+        "find_receipt_header_field_by_live_semantic",
+        fake_live_semantic,
+    )
+    monkeypatch.setattr(
+        trial,
+        "guarded_paste_header_value",
+        lambda *_args: {
+            "ok": True,
+            "method": "guarded-clipboard-paste",
+            "enter_ok": True,
+        },
+    )
+
+    result = trial.set_receipt_header_dynamic_field(
+        FakeJAB(),
+        "客户",
+        "YW00178",
+        2,
+        919586,
+    )
+
+    assert result["ok"] is True
+    assert result["source"] == "semantic-live-after-path-miss"
+    assert result["dynamic_path_attempt"]["reason"] == "dynamic path missing"
+    assert semantic_calls == [
+        {
+            "scope_hwnd": 919586,
+            "timeout": trial.HEADER_LIVE_SEMANTIC_FALLBACK_TIMEOUT,
+            "include_scoped": False,
+        }
+    ]
+
+
+def test_header_dynamic_field_short_semantic_failure_does_not_deep_scan(
+    monkeypatch,
+):
+    class FakeJAB:
+        dll = object()
+
+        def release_contexts(self, _vm_id, _owned_contexts):
+            pass
+
+    monkeypatch.setattr(
+        trial,
+        "find_receipt_header_field_by_dynamic_path",
+        lambda *_args, **_kwargs: {
+            "ok": False,
+            "reason": "dynamic path missing",
+        },
+    )
+    monkeypatch.setattr(
+        trial,
+        "find_receipt_header_field_by_semantic_label",
+        lambda *_args, **kwargs: {
+            "ok": False,
+            "reason": "semantic label not found",
+            "timeout": kwargs.get("timeout"),
+        },
+    )
+    monkeypatch.setattr(
+        trial,
+        "find_receipt_header_field_by_scoped_label",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("正式短语义兜底失败后不应继续 scoped 深扫")
+        ),
+    )
+
+    result = trial.set_receipt_header_dynamic_field(
+        FakeJAB(),
+        "客户",
+        "YW00178",
+        2,
+        919586,
+    )
+
+    assert result["ok"] is False
+    assert result["stage"] == "resolve"
+    assert result["path_attempt"]["source"] == "semantic-live-after-path-miss"
+    assert (
+        result["path_attempt"]["live_semantic_timeout"]
+        == trial.HEADER_LIVE_SEMANTIC_FALLBACK_TIMEOUT
+    )
 
 
 def test_backend_field_state_accepts_description_without_foreground():
@@ -924,7 +1345,7 @@ def test_header_dynamic_field_records_snapshot_without_blocking_after_guarded_pa
 
     monkeypatch.setattr(
         trial,
-        "find_receipt_header_field_by_scoped_label",
+        "find_receipt_header_field_by_dynamic_path",
         lambda *_args, **_kwargs: {
             "ok": True,
             "context": object(),
@@ -932,6 +1353,7 @@ def test_header_dynamic_field_records_snapshot_without_blocking_after_guarded_pa
             "owned_contexts": [],
             "window": {"hwnd": 123},
             "path": "0.1",
+            "source": "path",
         },
     )
     monkeypatch.setattr(
@@ -956,48 +1378,26 @@ def test_header_dynamic_field_records_snapshot_without_blocking_after_guarded_pa
     assert result["post_write_snapshot"]["written"] is False
 
 
-def test_header_dynamic_field_falls_back_to_guarded_paste_after_set_text_fails(
+def test_finance_org_does_not_fallback_to_dynamic_path_when_control_write_fails(
     monkeypatch,
 ):
-    class Info:
-        name = "财务组织(O)"
-        description = ""
-        role = "text"
-        role_en_US = "text"
-        states = "enabled,visible,showing,editable"
-        states_en_US = "enabled,visible,showing,editable"
-
     class FakeJAB:
-        dll = object()
+        pass
 
-        def get_context_info(self, _vm_id, _context):
-            return Info()
-
-        def get_text_context_value(self, _vm_id, _context):
-            return ""
-
-        def release_contexts(self, _vm_id, _owned_contexts):
-            pass
-
-    paste_calls = []
     monkeypatch.setattr(
         trial,
-        "find_receipt_header_field_by_scoped_label",
+        "set_finance_org_by_legacy_control_name",
         lambda *_args, **_kwargs: {
-            "ok": True,
-            "context": object(),
-            "vm_id": 1,
-            "owned_contexts": [],
-            "window": {"hwnd": 919586},
-            "path": "0.1",
+            "ok": False,
+            "method": "legacy-control-name-guarded-paste-enter",
+            "reason": "foreground mismatch",
         },
     )
     monkeypatch.setattr(
         trial,
-        "guarded_paste_header_value",
-        lambda _jab, _vm_id, _context, window_info, value: (
-            paste_calls.append((window_info, value))
-            or {"ok": True, "method": "guarded-clipboard-paste", "enter_ok": True}
+        "find_receipt_header_field_by_dynamic_path",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("财务组织控件名写入失败后不应回退动态 path")
         ),
     )
 
@@ -1009,10 +1409,295 @@ def test_header_dynamic_field_falls_back_to_guarded_paste_after_set_text_fails(
         919586,
     )
 
+    assert result["ok"] is False
+    assert result["method"] == "legacy-control-name-guarded-paste-enter"
+    assert result["reason"] == "foreground mismatch"
+
+
+def test_finance_org_prefers_control_name_guarded_paste_enter(monkeypatch):
+    legacy_result = {
+        "ok": True,
+        "method": "legacy-control-name-guarded-paste-enter",
+        "source": "legacy-control-name",
+        "path": "0.legacy",
+        "set_ok": True,
+        "enter_ok": True,
+        "guarded_paste": {
+            "ok": True,
+            "method": "guarded-clipboard-paste",
+            "enter_ok": True,
+        },
+        "post_write_snapshot": {
+            "accepted": True,
+            "written": True,
+            "text": "A001",
+            "description": "",
+        },
+    }
+    monkeypatch.setattr(
+        trial,
+        "set_finance_org_by_legacy_control_name",
+        lambda *_args, **_kwargs: legacy_result,
+    )
+    monkeypatch.setattr(
+        trial,
+        "find_receipt_header_field_by_dynamic_path",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("财务组织控件名写入成功后不应跑 dynamic path")
+        ),
+    )
+
+    result = trial.set_receipt_header_dynamic_field(
+        object(),
+        "财务组织",
+        "A001",
+        2,
+        919586,
+    )
+
     assert result["ok"] is True
+    assert result["method"] == "legacy-control-name-guarded-paste-enter"
+    assert result["enter_ok"] is True
+    assert result["dynamic_index"] == 2
+    assert result["dynamic_prefix"].endswith(".2")
+
+
+def test_finance_org_control_name_write_uses_guarded_paste_enter_first(monkeypatch):
+    class Info:
+        def __init__(self, description=""):
+            self.description = description
+            self.name = "财务组织(O)"
+            self.role = "text"
+            self.role_en_US = "text"
+            self.states = "enabled,visible,showing,editable"
+            self.states_en_US = "enabled,visible,showing,editable"
+
+    class FakeJAB:
+        def __init__(self):
+            self.read_count = 0
+
+        def get_context_info(self, _vm_id, _context):
+            self.read_count += 1
+            if self.read_count >= 3:
+                return Info("上海移为通信技术股份有限公司")
+            return Info()
+
+        def get_text_context_value(self, _vm_id, _context):
+            return "A001"
+
+        def set_text_context(self, *_args):
+            raise AssertionError(
+                "guarded paste success should not call setTextContents"
+            )
+
+        def release_contexts(self, _vm_id, _owned_contexts):
+            pass
+
+    monkeypatch.setattr(trial.time, "sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        trial,
+        "find_context_with_window",
+        lambda *_args, **_kwargs: (
+            object(),
+            1,
+            [],
+            [2, 1, 0],
+            {"hwnd": 919586},
+        ),
+    )
+    monkeypatch.setattr(
+        trial,
+        "guarded_paste_header_value",
+        lambda _jab, _vm_id, _context, window_info, value: {
+            "ok": True,
+            "method": "guarded-clipboard-paste",
+            "enter_ok": True,
+            "window": window_info,
+            "value": value,
+        },
+    )
+
+    result = trial.set_finance_org_by_legacy_control_name(
+        FakeJAB(),
+        "A001",
+        scope_hwnd=919586,
+    )
+
+    assert result["ok"] is True
+    assert result["method"] == "legacy-control-name-guarded-paste-enter"
+    assert result["guarded_paste"]["enter_ok"] is True
     assert result["set_text_ok"] is False
-    assert result["guarded_paste"]["method"] == "guarded-clipboard-paste"
-    assert paste_calls == [({"hwnd": 919586}, "A001")]
+    assert result["acceptance_probe"]["accepted"] is True
+    assert result["accepted_text"] == "上海移为通信技术股份有限公司"
+
+
+def test_finance_org_control_name_write_blocks_until_chinese_acceptance(monkeypatch):
+    class Info:
+        name = "财务组织(O)"
+        description = ""
+        role = "text"
+        role_en_US = "text"
+        states = "enabled,visible,showing,editable"
+        states_en_US = "enabled,visible,showing,editable"
+
+    class FakeJAB:
+        def get_context_info(self, _vm_id, _context):
+            return Info()
+
+        def get_text_context_value(self, _vm_id, _context):
+            return "A001"
+
+        def set_text_context(self, *_args):
+            raise AssertionError(
+                "guarded paste success should not call setTextContents"
+            )
+
+        def release_contexts(self, _vm_id, _owned_contexts):
+            pass
+
+    monkeypatch.setattr(trial.time, "sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        trial,
+        "find_context_with_window",
+        lambda *_args, **_kwargs: (
+            object(),
+            1,
+            [],
+            [2, 1, 0],
+            {"hwnd": 919586},
+        ),
+    )
+    monkeypatch.setattr(
+        trial,
+        "guarded_paste_header_value",
+        lambda _jab, _vm_id, _context, window_info, value: {
+            "ok": True,
+            "method": "guarded-clipboard-paste",
+            "enter_ok": True,
+            "window": window_info,
+            "value": value,
+        },
+    )
+
+    result = trial.set_finance_org_by_legacy_control_name(
+        FakeJAB(),
+        "A001",
+        scope_hwnd=919586,
+        accepted_text="上海移为通信技术股份有限公司",
+    )
+
+    assert result["ok"] is False
+    assert result["method"] == "legacy-control-name-guarded-paste-enter"
+    assert result["guarded_paste"]["enter_ok"] is True
+    assert result["set_text_ok"] is False
+    assert result["acceptance_probe"]["accepted"] is False
+    assert result["acceptance_probe"]["reason"] == "财务组织未确认解析为中文"
+
+
+def test_finance_org_acceptance_can_use_scoped_chinese_probe(monkeypatch):
+    class Info:
+        name = "财务组织(O)"
+        description = ""
+        role = "text"
+        role_en_US = "text"
+        states = "enabled,visible,showing,editable"
+        states_en_US = "enabled,visible,showing,editable"
+
+    class FakeJAB:
+        def get_context_info(self, _vm_id, _context):
+            return Info()
+
+        def get_text_context_value(self, _vm_id, _context):
+            return "A001"
+
+    monkeypatch.setattr(trial.time, "sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        trial,
+        "probe_finance_org_accepted_text_in_scope",
+        lambda _jab, expected_text, scope_hwnd=None: {
+            "ok": True,
+            "accepted": True,
+            "expected_text": expected_text,
+            "path": "0.scope.hit",
+            "scope_hwnd": scope_hwnd,
+            "snapshot": {
+                "accepted": True,
+                "written": False,
+                "text": "",
+                "name": expected_text,
+                "description": "",
+            },
+        },
+    )
+
+    result = trial.confirm_finance_org_accepted(
+        FakeJAB(),
+        1,
+        object(),
+        expected_text="上海移为通信技术股份有限公司",
+        value="A001",
+        scope_hwnd=919586,
+    )
+
+    assert result["accepted"] is True
+    assert result["source"] == "scope-text-probe"
+    assert result["scope_probe"]["path"] == "0.scope.hit"
+
+
+def test_guarded_paste_header_value_uses_jab_press_key_enter(monkeypatch):
+    calls = []
+    result_ref = {}
+
+    monkeypatch.setattr(
+        trial,
+        "foreground_matches_window",
+        lambda _window: {"ok": True, "target_window": {"hwnd": 919586}},
+    )
+    monkeypatch.setattr(trial, "get_clipboard_text", lambda: "old")
+    monkeypatch.setattr(
+        trial,
+        "set_clipboard_text",
+        lambda text: calls.append(("set_clipboard_text", text)),
+    )
+    monkeypatch.setattr(
+        trial,
+        "restore_clipboard_text",
+        lambda text: calls.append(("restore_clipboard_text", text)) or True,
+    )
+    monkeypatch.setattr(
+        trial,
+        "send_hotkey_ctrl_a",
+        lambda: calls.append(("hotkey", "ctrl+a")),
+    )
+    monkeypatch.setattr(
+        trial,
+        "send_hotkey_ctrl_v",
+        lambda: calls.append(("hotkey", "ctrl+v")),
+    )
+
+    class DLL:
+        def requestFocus(self, _vm_id, _context):
+            return True
+
+    class FakeJAB:
+        dll = DLL()
+
+        def press_key(self, key, wait=None):
+            calls.append(("jab.press_key", key, wait))
+
+    result = trial.guarded_paste_header_value(
+        FakeJAB(),
+        1,
+        object(),
+        {"hwnd": 919586},
+        "A001",
+    )
+    result_ref.update(result)
+
+    assert result_ref["ok"] is True
+    assert result_ref["enter_method"] == "jab.press_key"
+    assert ("jab.press_key", "enter", 0) in calls
+    assert ("restore_clipboard_text", "old") in calls
 
 
 def test_header_dynamic_field_blocks_when_path_fails(monkeypatch):
@@ -1048,6 +1733,16 @@ def test_header_dynamic_field_blocks_when_path_fails(monkeypatch):
             "reason": "dynamic path missing",
         },
     )
+    monkeypatch.setattr(
+        trial,
+        "find_receipt_header_field_by_semantic_label",
+        lambda *_args, **kwargs: {
+            "ok": False,
+            "reason": "semantic label not found",
+            "timeout": kwargs.get("timeout"),
+            "source": "semantic-live-after-path-miss",
+        },
+    )
 
     result = trial.set_receipt_header_dynamic_field(
         FakeJAB(),
@@ -1059,4 +1754,11 @@ def test_header_dynamic_field_blocks_when_path_fails(monkeypatch):
 
     assert result["ok"] is False
     assert result["stage"] == "resolve"
-    assert result["path_attempt"]["reason"] == "dynamic path missing"
+    assert result["path_attempt"]["reason"] == "semantic label not found"
+    assert (
+        result["path_attempt"]["live_semantic_timeout"]
+        == trial.HEADER_LIVE_SEMANTIC_FALLBACK_TIMEOUT
+    )
+    assert result["path_attempt"]["dynamic_path_attempt"]["reason"] == (
+        "dynamic path missing"
+    )

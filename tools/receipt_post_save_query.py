@@ -6,13 +6,12 @@
 from collections import defaultdict
 from dataclasses import dataclass
 from decimal import Decimal
-from difflib import SequenceMatcher
 import time
 
 from core.jab_operator import JABOperator
+from core.receipt_amounts import receipt_nc_amount
 from core.receipt_models import ReceiptBatchResultRow, ReceiptPlanRow
 from core.receipt_nc_extract import ReceiptNCResultExtractor
-from core.receipt_parsing import normalize_lookup_key
 from tools.receipt_query_fill import (
     ensure_query_window,
 )
@@ -237,7 +236,10 @@ def query_one_org(
             tables,
             query_cfg,
         )
-        match = match_targets(targets, (match_snapshot or {}).get("nc_rows") or [])
+        match = match_snapshot_to_result(
+            targets,
+            match_snapshot,
+        )
         group_report.update(
             {
                 "ok": True,
@@ -259,11 +261,31 @@ def query_one_org(
     return group_report
 
 
+def match_snapshot_to_result(targets, match_snapshot):
+    snapshot = match_snapshot or {}
+    matched = snapshot.get("matched") or {}
+    match_issues = snapshot.get("match_issues") or []
+    result_issues = {
+        int(issue.excel_row): str(issue.reason or "后验未匹配")
+        for issue in match_issues
+    }
+    for target in targets:
+        if target.row.row not in matched:
+            result_issues.setdefault(target.row.row, "后验未匹配")
+    return {
+        "matched": {
+            int(row): getattr(nc_row, "document_no", "")
+            for row, nc_row in matched.items()
+        },
+        "issues": result_issues,
+    }
+
+
 def target_to_match_row(target):
     return BatchMatchRow(
         row=target.row.row,
         receipt_date=target.row.receipt_date,
-        raw_amount=target.row.raw_amount,
+        raw_amount=receipt_nc_amount(target.row),
         payer_name=str(target.row_report.get("nc_customer_name") or "").strip(),
     )
 
@@ -274,73 +296,6 @@ class BatchMatchRow:
     receipt_date: object
     raw_amount: Decimal
     payer_name: str
-
-
-def match_targets(targets, nc_rows):
-    matched = {}
-    issues = {}
-    for target in targets:
-        expected_name = str(target.row_report.get("nc_customer_name") or "").strip()
-        amount_candidates = [
-            nc_row
-            for nc_row in nc_rows
-            if nc_row.original_amount == target.row.raw_amount
-        ]
-        exact_date = [
-            nc_row
-            for nc_row in amount_candidates
-            if nc_row.document_date == target.row.receipt_date
-        ] or amount_candidates
-        scored = [
-            (name_similarity(expected_name, nc_row.name), nc_row)
-            for nc_row in exact_date
-            if expected_name
-        ]
-        candidates = [(score, nc_row) for score, nc_row in scored if score >= 90]
-        if len(candidates) == 1:
-            matched[target.row.row] = candidates[0][1]
-        elif len(candidates) > 1:
-            issues[target.row.row] = "后验重复匹配-金额和名称命中多条"
-        elif exact_date:
-            best = max(scored, default=(0, None), key=lambda item: item[0])
-            if best[1] is not None:
-                issues[target.row.row] = (
-                    f"后验未匹配-金额相同但名称相似度{best[0]:.0f}低于90:"
-                    f"{expected_name} vs {best[1].name}"
-                )
-            else:
-                issues[target.row.row] = (
-                    f"后验未匹配-名称{expected_name}无对应，但有相同金额"
-                )
-        else:
-            name_candidates = [
-                nc_row
-                for nc_row in nc_rows
-                if name_similarity(expected_name, nc_row.name) >= 90
-            ]
-            if name_candidates:
-                amounts = ",".join(
-                    str(row.original_amount) for row in name_candidates[:3]
-                )
-                issues[target.row.row] = (
-                    f"后验未匹配-名称匹配但金额不一致:NC金额={amounts}"
-                )
-            else:
-                issues[target.row.row] = f"后验未匹配-金额{target.row.raw_amount}无对应"
-    return {
-        "matched": {row: nc_row.document_no for row, nc_row in matched.items()},
-        "issues": issues,
-    }
-
-
-def name_similarity(left, right):
-    left_key = normalize_lookup_key(left)
-    right_key = normalize_lookup_key(right)
-    if not left_key or not right_key:
-        return 0.0
-    if left_key == right_key:
-        return 100.0
-    return SequenceMatcher(None, left_key, right_key).ratio() * 100
 
 
 def apply_group_match_results(results_by_row, targets, group_report):

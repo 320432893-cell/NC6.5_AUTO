@@ -324,19 +324,20 @@ def test_build_local_plan_writes_machine_sheet2(tmp_path):
         "🟪银行来款名",
         "客户编码",
         "NC客户名称",
-        "🟪到账金额",
         "🟪原始金额",
         "手续费",
+        "🟪到账金额",
         "币种",
         "银行",
         "收款银行账户",
         "本地预检状态",
-        "NC单据号",
+        "后验核对状态",
         "异常原因",
     ]
     assert ws.cell(2, 1).value == rows[0].row
     assert ws.cell(2, 2).value == "上海移为通信技术股份有限公司"
     assert ws.cell(2, 13).value == "通过"
+    assert ws.cell(2, 14).value in (None, "")
     assert ws.cell(2, 15).value in (None, "")
     saved.close()
 
@@ -391,7 +392,7 @@ def test_write_batch_result_sheet_uses_business_columns_and_sorting(tmp_path):
         ]
     )
     ws.append([date(2026, 6, 2), "LATE", 100, "Paypal", "USD", "YW001", 0])
-    ws.append([date(2026, 6, 1), "EARLY", 200, "Paypal", "USD", "YW002", 3])
+    ws.append([date(2026, 6, 1), "EARLY", 200, "香港花旗", "USD", "YW002", 3])
     wb.save(path)
     wb.close()
 
@@ -418,13 +419,20 @@ def test_write_batch_result_sheet_uses_business_columns_and_sorting(tmp_path):
 
     saved = load_workbook(path)
     ws = saved["收款单自动化结果"]
-    assert ws.cell(2, 1).value == 3
-    assert ws.cell(2, 4).value == "EARLY"
-    assert ws.cell(2, 6).value == "NC EARLY"
-    assert ws.cell(2, 7).value == "203.00"
-    assert ws.cell(2, 8).value == "200.00"
-    assert ws.cell(2, 14).value == "SK1"
+    columns = {ws.cell(1, col).value: col for col in range(1, ws.max_column + 1)}
+    assert ws.cell(2, 1).value == "主体：上海移为通信技术股份有限公司"
+    assert ws.cell(2, 1).fill.fgColor.rgb == "00D9EAF7"
     assert ws.cell(3, 1).value == 2
+    assert ws.cell(3, 4).value == "LATE"
+    assert ws.cell(3, columns["后验核对状态"]).value == "后验通过"
+    assert ws.cell(4, 1).value == "主体：上海移为通信技术（香港）有限公司"
+    assert ws.cell(5, 1).value == 3
+    assert ws.cell(5, 4).value == "EARLY"
+    assert ws.cell(5, 6).value == "NC EARLY"
+    assert ws.cell(5, 7).value == "203.00"
+    assert ws.cell(5, 8).value == "3.00"
+    assert ws.cell(5, 9).value == "200.00"
+    assert ws.cell(5, columns["后验核对状态"]).value == "后验通过"
     saved.close()
 
 

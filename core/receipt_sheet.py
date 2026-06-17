@@ -3,6 +3,20 @@
 # 允许依赖层：收款单数据模型对象和 openpyxl worksheet 风格接口
 # 谁不应该 import：底层 JAB/NC workflow 模块不应 import
 
+from core.receipt_amounts import receipt_nc_amount, receipt_net_amount
+
+try:
+    from openpyxl.styles import Font, PatternFill
+except ImportError:  # pragma: no cover - openpyxl is present in runtime/tests
+    Font = None
+    PatternFill = None
+
+
+GROUP_FILL = "D9EAF7"
+SUCCESS_FILL = "E2F0D9"
+ERROR_FILL = "FCE4D6"
+
+
 RESULT_SHEET_HEADERS = [
     "原Sheet1行号",
     "执行主体名称",
@@ -10,14 +24,14 @@ RESULT_SHEET_HEADERS = [
     "🟪银行来款名",
     "客户编码",
     "NC客户名称",
-    "🟪到账金额",
     "🟪原始金额",
     "手续费",
+    "🟪到账金额",
     "币种",
     "银行",
     "收款银行账户",
     "本地预检状态",
-    "NC单据号",
+    "后验核对状态",
     "异常原因",
 ]
 
@@ -39,7 +53,20 @@ DEPRECATED_RESULT_SHEET_HEADERS = {
     "总金额",
     "实收金额",
     "银行来款名",
+    "NC单据号",
 }
+
+
+def verification_status(result=None, issue=None, status=""):
+    if issue is not None:
+        return ""
+    if result is None:
+        return "待后验" if status == "通过" else ""
+    if result.exception_reason:
+        return "后验未匹配"
+    if result.nc_document_no:
+        return "后验通过"
+    return "后验待确认" if result.local_status == "通过" else ""
 
 
 def plan_sheet_row(row, issue, status):
@@ -53,9 +80,9 @@ def plan_sheet_row(row, issue, status):
             row.payer_name,
             row.customer_code,
             "",
-            str(row.raw_amount + row.fee),
-            str(row.raw_amount),
+            str(receipt_nc_amount(row)),
             str(row.fee),
+            str(receipt_net_amount(row)),
             row.currency,
             row.bank,
             row.account_no,
@@ -78,14 +105,14 @@ def batch_result_sheet_row(result):
         row.payer_name,
         row.customer_code,
         result.nc_customer_name,
-        str(row.raw_amount + row.fee),
-        str(row.raw_amount),
+        str(receipt_nc_amount(row)),
         str(row.fee),
+        str(receipt_net_amount(row)),
         row.currency,
         row.bank,
         row.account_no,
         result.local_status,
-        result.nc_document_no,
+        verification_status(result=result),
         result.exception_reason,
     ]
 
@@ -149,6 +176,38 @@ def append_plan_sheet_row(ws, columns, row_number, values):
     return row_number + 1
 
 
+def append_group_separator_row(ws, columns, row_number, organization_name):
+    label = f"主体：{organization_name}"
+    max_column = max(columns.values(), default=len(RESULT_SHEET_HEADERS))
+    for column in range(1, max_column + 1):
+        cell = ws.cell(row=row_number, column=column)
+        if column == 1:
+            cell.value = label
+        apply_group_style(cell)
+    return row_number + 1
+
+
+def apply_group_style(cell):
+    if PatternFill is not None:
+        cell.fill = PatternFill("solid", fgColor=GROUP_FILL)
+    if Font is not None:
+        cell.font = Font(bold=True)
+
+
+def apply_result_row_style(ws, columns, row_number, values):
+    status = dict(zip(RESULT_SHEET_HEADERS, values, strict=True)).get("后验核对状态")
+    fill_color = None
+    if status == "后验通过":
+        fill_color = SUCCESS_FILL
+    elif status in {"后验未匹配", "后验待确认"}:
+        fill_color = ERROR_FILL
+    if not fill_color or PatternFill is None:
+        return
+    fill = PatternFill("solid", fgColor=fill_color)
+    for column in range(1, max(columns.values(), default=0) + 1):
+        ws.cell(row=row_number, column=column).fill = fill
+
+
 def rewrite_batch_result_sheet(wb, sheet_name, header_row, results):
     if sheet_name not in wb.sheetnames:
         ws = wb.create_sheet(sheet_name)
@@ -158,13 +217,26 @@ def rewrite_batch_result_sheet(wb, sheet_name, header_row, results):
     if ws.max_row > header_row:
         ws.delete_rows(header_row + 1, ws.max_row - header_row)
     append_start_row = header_row + 1
+    last_org = None
     for result in sorted(results, key=batch_result_sort_key):
+        org_name = result.plan_row.organization_name
+        if org_name != last_org:
+            append_start_row = append_group_separator_row(
+                ws,
+                columns,
+                append_start_row,
+                org_name,
+            )
+            last_org = org_name
+        values = batch_result_sheet_row(result)
+        data_row = append_start_row
         append_start_row = append_plan_sheet_row(
             ws,
             columns,
             append_start_row,
-            batch_result_sheet_row(result),
+            values,
         )
+        apply_result_row_style(ws, columns, data_row, values)
 
 
 def rewrite_plan_sheet(wb, sheet_name, header_row, rows, issues):
