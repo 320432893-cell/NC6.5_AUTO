@@ -2,7 +2,7 @@ from decimal import Decimal
 
 import pytest
 
-from core.errors import TableMatchError
+from core.errors import ExcelPreflightError, TableMatchError
 from core.models import ExcelVoucherItem, MatchIssue, PendingMatch
 from core.nc_pending_workflow import NCPendingWorkflow
 
@@ -46,9 +46,15 @@ class FakeDataHandler:
         self.items = items
         self.split_saved = []
         self.result_updates = []
+        self.preflight_error = None
 
     def load_jab_batch_data(self, **kwargs):
         return self.items
+
+    def preflight_jab_items(self, items, **kwargs):
+        if self.preflight_error:
+            raise self.preflight_error
+        return {"rows": len(items), "errors": [], "warnings": [], "parse_errors": 0}
 
     def save_jab_split_columns(self, items):
         self.split_saved.append(list(items))
@@ -73,8 +79,10 @@ class FakeProcessor:
         self.perf = FakePerf()
         self.run_state = FakeRunState()
         self.duplicate_match_policy = duplicate_policy
+        self.page_state_calls = []
 
     def require_page_state(self, expected, items=None, command=""):
+        self.page_state_calls.append((expected, command))
         return None
 
     def record_event(self, name, **kwargs):
@@ -93,6 +101,32 @@ def make_item(row, amount="1.00", partner="深圳公司"):
         source="split_ab",
         parse_error="",
     )
+
+
+def test_plan_stops_before_page_guard_when_excel_preflight_fails():
+    item = make_item(2)
+    processor = FakeProcessor([item], matches=[], issues=[])
+    processor.data_handler.preflight_error = ExcelPreflightError("has_header=true")
+    workflow = NCPendingWorkflow(processor)
+
+    with pytest.raises(ExcelPreflightError, match="has_header=true"):
+        workflow.dry_run(start_row=2, end_row=2)
+
+    assert processor.page_state_calls == []
+
+
+def test_generate_stops_before_page_guard_when_excel_preflight_fails(monkeypatch):
+    monkeypatch.setattr("core.nc_pending_workflow.check_abort", lambda: None)
+    item = make_item(2)
+    processor = FakeProcessor([item], matches=[], issues=[])
+    processor.data_handler.preflight_error = ExcelPreflightError("has_header=true")
+    workflow = NCPendingWorkflow(processor)
+
+    with pytest.raises(ExcelPreflightError, match="has_header=true"):
+        workflow.generate_and_save(start_row=2, end_row=2)
+
+    assert processor.page_state_calls == []
+    assert processor.data_handler.split_saved == []
 
 
 def test_generate_stops_before_nc_clicks_on_duplicate_match(monkeypatch):

@@ -106,6 +106,12 @@ class NCStateDetector:
         )
         main = choose_main_signature_table(tables)
 
+        if not has_parent and not main:
+            return NCPageState(
+                "error",
+                f"父页面/主表均未检测到，停止深度重试 parent={has_parent} tables={len(tables)}",
+            )
+
         if not has_parent or not main:
             if looks_loading(controls, tables):
                 return NCPageState(

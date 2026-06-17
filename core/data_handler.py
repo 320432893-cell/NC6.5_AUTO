@@ -1,8 +1,9 @@
-import openpyxl
 import re
 from decimal import Decimal, InvalidOperation
 
-from core.errors import ExcelLockedError
+import openpyxl
+
+from core.errors import ExcelLockedError, ExcelPreflightError
 from core.logger import log
 from core.models import ExcelVoucherItem
 
@@ -98,6 +99,126 @@ class DataHandler:
         wb.close()
         log.info(f"加载 JAB 批量数据: {len(data)} 条")
         return data
+
+    def preflight_jab_items(
+        self,
+        items: list[ExcelVoucherItem],
+        *,
+        start_row=None,
+        end_row=None,
+        limit=None,
+        skip_any_status=False,
+        require_items=True,
+        context="plan",
+    ) -> dict:
+        """Validate local Excel input before the workflow touches NC/JAB."""
+        errors = []
+        warnings = []
+        scoped_items = list(items)
+        parse_errors = [item for item in scoped_items if item.parse_error]
+        skipped_status_rows = [
+            item.row
+            for item in scoped_items
+            if skip_any_status and self._has_cell_value(item.voucher)
+        ]
+
+        if require_items and not scoped_items:
+            errors.append(
+                "Excel 预检失败：本次范围没有可处理凭证行；"
+                "请检查行号范围、C列状态/凭证号、has_header 和数据是否为空。"
+            )
+
+        if (
+            require_items
+            and start_row is not None
+            and end_row is not None
+            and limit is None
+        ):
+            expected = max(0, end_row - start_row + 1)
+            if expected and len(scoped_items) != expected:
+                errors.append(
+                    "Excel 预检失败：本次范围读取行数与指定范围不一致："
+                    f"range={start_row}-{end_row} expected={expected} "
+                    f"loaded={len(scoped_items)}。"
+                    "空行、C列已有状态或表头配置错误都会导致行被跳过。"
+                )
+
+        header_warning = self.detect_header_mismatch()
+        if header_warning:
+            errors.append(header_warning)
+
+        if parse_errors:
+            sample = "; ".join(
+                f"行{item.row}: {item.parse_error}" for item in parse_errors[:5]
+            )
+            suffix = (
+                "" if len(parse_errors) <= 5 else f"; 另有{len(parse_errors) - 5}行"
+            )
+            errors.append(f"Excel 预检失败：存在格式错误 {sample}{suffix}")
+
+        if skipped_status_rows:
+            warnings.append(
+                "以下行 C列已有状态/凭证号，会被跳过："
+                f"{skipped_status_rows[:20]}"
+                + ("" if len(skipped_status_rows) <= 20 else " ...")
+            )
+
+        report = {
+            "context": context,
+            "rows": len(scoped_items),
+            "parse_errors": len(parse_errors),
+            "warnings": warnings,
+            "errors": errors,
+        }
+        if errors:
+            raise ExcelPreflightError("; ".join(errors + warnings))
+        return report
+
+    def detect_header_mismatch(self):
+        wb = openpyxl.load_workbook(self.excel_path, read_only=True, data_only=True)
+        try:
+            ws = wb[self.sheet_my]
+            first = self._read_probe_row(ws, 1)
+            second = self._read_probe_row(ws, 2)
+            first_parseable = self._probe_row_parseable(first)
+            second_parseable = self._probe_row_parseable(second)
+            if self.has_header and first_parseable:
+                return (
+                    "Excel 预检失败：当前 has_header=true，但第1行看起来是凭证数据；"
+                    "如果该文件无表头，请将 config.json 的 has_header 改为 false，"
+                    "并按真实 Excel 行号选择范围。"
+                )
+            if not self.has_header and not first_parseable and second_parseable:
+                return (
+                    "Excel 预检失败：当前 has_header=false，但第1行不像凭证数据且第2行可解析；"
+                    "如果该文件有表头，请将 config.json 的 has_header 改为 true。"
+                )
+        finally:
+            wb.close()
+        return ""
+
+    def _read_probe_row(self, ws, row):
+        if row <= 0 or row > ws.max_row:
+            return None, None, None
+        return (
+            ws.cell(row=row, column=self.jab_key_col).value,
+            ws.cell(row=row, column=self.jab_amount_out_col).value,
+            ws.cell(row=row, column=self.jab_partner_out_col).value,
+        )
+
+    def _probe_row_parseable(self, values):
+        raw_key, raw_amount, raw_partner = values
+        if (
+            self._is_blank(raw_key)
+            and self._is_blank(raw_amount)
+            and self._is_blank(raw_partner)
+        ):
+            return False
+        try:
+            self.parse_jab_row(raw_key, raw_amount, raw_partner)
+        except ValueError:
+            return False
+        return True
 
     def parse_jab_row(
         self,

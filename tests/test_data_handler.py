@@ -1,9 +1,11 @@
 from decimal import Decimal
 
+import openpyxl
 import pytest
 
 from core.data_handler import DataHandler
-from core.errors import ExcelLockedError
+from core.errors import ExcelLockedError, ExcelPreflightError
+from core.models import ExcelVoucherItem
 
 
 @pytest.fixture
@@ -67,3 +69,95 @@ def test_save_workbook_wraps_permission_error(handler):
         handler._save_workbook(wb, "写入测试")
 
     assert wb.closed
+
+
+def write_workbook(path, rows):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Sheet1"
+    for row in rows:
+        ws.append(row)
+    wb.save(path)
+    wb.close()
+
+
+def test_preflight_rejects_header_true_when_first_row_looks_like_data(tmp_path):
+    excel = tmp_path / "voucher.xlsx"
+    write_workbook(
+        excel,
+        [
+            [Decimal("100.00"), "客户A", ""],
+            [Decimal("200.00"), "客户B", ""],
+        ],
+    )
+    local_handler = DataHandler(
+        {
+            "excel_path": str(excel),
+            "sheet_my": "Sheet1",
+            "has_header": True,
+            "jab_batch": {},
+        }
+    )
+
+    items = local_handler.load_jab_batch_data(skip_any_status=True)
+
+    with pytest.raises(ExcelPreflightError, match="has_header=true"):
+        local_handler.preflight_jab_items(
+            items,
+            start_row=2,
+            end_row=4,
+            skip_any_status=True,
+            context="plan",
+        )
+
+
+def test_preflight_accepts_header_false_for_first_row_data(tmp_path):
+    excel = tmp_path / "voucher.xlsx"
+    write_workbook(
+        excel,
+        [
+            [Decimal("100.00"), "客户A", ""],
+            [Decimal("200.00"), "客户B", ""],
+            [Decimal("300.00"), "客户C", ""],
+        ],
+    )
+    local_handler = DataHandler(
+        {
+            "excel_path": str(excel),
+            "sheet_my": "Sheet1",
+            "has_header": False,
+            "jab_batch": {},
+        }
+    )
+
+    items = local_handler.load_jab_batch_data(skip_any_status=True)
+    report = local_handler.preflight_jab_items(
+        items,
+        start_row=1,
+        end_row=3,
+        skip_any_status=True,
+        context="plan",
+    )
+
+    assert report["rows"] == 3
+    assert report["errors"] == []
+
+
+def test_preflight_rejects_parse_errors_before_jab(handler, monkeypatch):
+    monkeypatch.setattr(handler, "detect_header_mismatch", lambda: "")
+    items = [
+        ExcelVoucherItem(
+            row=2,
+            raw_key="bad",
+            raw_amount="bad",
+            raw_partner="",
+            amount=None,
+            partner="",
+            voucher="",
+            source="",
+            parse_error="A/B拆分列不完整",
+        )
+    ]
+
+    with pytest.raises(ExcelPreflightError, match="存在格式错误"):
+        handler.preflight_jab_items(items, start_row=2, end_row=2)

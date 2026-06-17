@@ -43,6 +43,16 @@ class NCBackfillWorkflow:
                 start_row=start_row,
                 end_row=end_row,
             )
+            preflight = self.data_handler.preflight_jab_items(
+                items,
+                start_row=start_row,
+                end_row=end_row,
+                limit=limit,
+                skip_any_status=False,
+                require_items=False,
+                context="backfill",
+            )
+            self.run_state.event("excel_preflight_passed", **preflight)
             items: list[ExcelVoucherItem] = [
                 item
                 for item in items

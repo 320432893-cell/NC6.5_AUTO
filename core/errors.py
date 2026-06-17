@@ -24,3 +24,7 @@ class JABActionError(NCWorkflowError):
 
 class ExcelLockedError(NCWorkflowError):
     """Raised when Excel output cannot be written because the workbook is locked."""
+
+
+class ExcelPreflightError(NCWorkflowError):
+    """Raised when local Excel validation fails before any NC/JAB access."""

@@ -78,6 +78,15 @@ class NCPendingWorkflow:
         )
         parsed_items = [item for item in items if not item.parse_error]
         parse_errors = [item for item in items if item.parse_error]
+        preflight = self.data_handler.preflight_jab_items(
+            items,
+            start_row=start_row,
+            end_row=end_row,
+            limit=limit,
+            skip_any_status=True,
+            context="plan",
+        )
+        self.run_state.event("excel_preflight_passed", **preflight)
 
         self.require_page_state("pending", parsed_items, command="plan")
         self.run_state.set_stage("plan_match_pending_table")
@@ -130,6 +139,15 @@ class NCPendingWorkflow:
             )
             pending = [item for item in items if not item.parse_error]
             parse_errors = [item for item in items if item.parse_error]
+            preflight = self.data_handler.preflight_jab_items(
+                items,
+                start_row=start_row,
+                end_row=end_row,
+                limit=limit,
+                skip_any_status=True,
+                context="generate",
+            )
+            self.run_state.event("excel_preflight_passed", **preflight)
             with self.perf.span("excel_save_split_columns", rows=len(pending)):
                 self.data_handler.save_jab_split_columns(pending)
             self.perf.event(
