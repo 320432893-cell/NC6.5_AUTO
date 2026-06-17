@@ -36,8 +36,6 @@ from core.receipt_nc_extract import (
     resolve_receipt_result_columns as resolve_receipt_result_columns,
 )
 from core.receipt_parsing import (
-    make_receipt_duplicate_key as build_receipt_duplicate_key,
-    normalize_lookup_key,
     parse_amount,
     parse_date,
 )
@@ -291,27 +289,3 @@ class ReceiptEntryWorkbook:
             ) from exc
         finally:
             wb.close()
-
-
-def make_receipt_duplicate_key(
-    organization_code,
-    receipt_date,
-    bank,
-    currency,
-    customer_code,
-    payer_name,
-    amount,
-):
-    # 兼容包装：旧调用方仍传 receipt_entry 的规范化函数；迁到
-    # core.receipt_parsing.make_receipt_duplicate_key 后删除。
-    return build_receipt_duplicate_key(
-        organization_code,
-        receipt_date,
-        bank,
-        currency,
-        customer_code,
-        payer_name,
-        amount,
-        normalize_lookup_key,
-        normalize_counterparty,
-    )
