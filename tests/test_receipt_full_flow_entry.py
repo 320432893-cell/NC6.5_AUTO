@@ -273,6 +273,45 @@ def test_confirm_save_bypass_is_explicit():
     assert confirm_save(SaveArgs()) is None
 
 
+def test_main_external_stop_finishes_aborted_with_exit_code_3(monkeypatch, tmp_path):
+    # 外部停止经 JAB 原语 check_abort 抛 SystemExit；按 ENGINE_CONTRACT 应收尾为
+    # aborted、退出码 3，而不是让 run_state 卡在 running 或被当成崩溃。
+    import json
+    import types
+
+    from core.paths import logs_dir
+    import tools.receipt_full_flow_entry as entry
+
+    monkeypatch.setenv("NC_RUNTIME_DIR", str(tmp_path))
+
+    class FakeWorkbook:
+        def __init__(self, config, excel_path=None):
+            pass
+
+        def build_local_plan(self, write_sheet=False):
+            return [], [], {}
+
+    def _raise_stop(*args, **kwargs):
+        raise SystemExit("外部停止")
+
+    monkeypatch.setattr(entry, "load_config", lambda path: {"_config_path": path})
+    monkeypatch.setattr(entry, "ReceiptEntryWorkbook", FakeWorkbook)
+    monkeypatch.setattr(
+        entry,
+        "select_plan_rows",
+        lambda plan_rows, issues, args: [types.SimpleNamespace(row=2)],
+    )
+    monkeypatch.setattr(entry, "run_one_row", _raise_stop)
+    monkeypatch.setattr(entry, "write_last_report", lambda report: None)
+    monkeypatch.setattr(entry, "print_report", lambda report, args: None)
+
+    exit_code = entry.main([])
+
+    assert exit_code == 3
+    state = json.loads((logs_dir() / "run_state.json").read_text(encoding="utf-8"))
+    assert state["status"] == "aborted"
+
+
 def test_parse_args_defaults_to_no_start_delay():
     assert parse_args([]).start_delay == 0.0
 

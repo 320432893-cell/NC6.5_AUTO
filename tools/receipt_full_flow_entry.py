@@ -20,7 +20,7 @@ from core.jab_operator import JABOperator  # noqa: E402
 from core.receipt_entry import ReceiptEntryWorkbook  # noqa: E402
 from core.receipt_models import ReceiptBatchResultRow  # noqa: E402
 from core.run_state import RunStateRecorder  # noqa: E402
-from core.utils import load_config  # noqa: E402
+from core.utils import check_abort, load_config  # noqa: E402
 from tools.receipt_body_table_locator import locate_receipt_body_table_cached  # noqa: E402
 from tools.receipt_detail_async_verifier import DetailPipelineVerifier  # noqa: E402
 from tools.receipt_detail_row_cleanup import delete_extra_row_if_present  # noqa: E402
@@ -204,6 +204,7 @@ def main(argv=None):
     _failed = 0
     try:
         for _step_idx, row in enumerate(selected_rows):
+            check_abort()  # 行边界轮询外部停止标志：停在可续跑位置
             recorder.set_stage(
                 "处理行",
                 step_index=_step_idx + 1,
@@ -267,7 +268,23 @@ def main(argv=None):
         recorder.finish("success" if exit_code == 0 else "failed")
         print_report(report, args)
         return exit_code
-    except Exception as _exc:
+    except BaseException as _exc:
+        # 外部停止标志/紧急停止经 JAB 原语的 check_abort 抛出 SystemExit；
+        # 按 ENGINE_CONTRACT.md §1.4 收尾为 aborted、退出码 3、可续跑，
+        # GUI 由此把"用户停止"与"崩溃"区分开（对齐 jab_batch.py 的处理）。
+        if isinstance(_exc, (KeyboardInterrupt, SystemExit)):
+            recorder.finish("aborted", error=f"{type(_exc).__name__}: {_exc}")
+            report["ok"] = False
+            report["aborted"] = True
+            report["reason"] = f"已停止：{_exc}"
+            report["resumable"] = {
+                "can_resume": True,
+                "resume_hint": "重跑本入口并用 --excel-rows 指定未完成行",
+            }
+            report["total_seconds"] = round(time.perf_counter() - started, 3)
+            write_last_report(report)
+            print_report(report, args)
+            return 3
         recorder.finish("failed", error=str(_exc))
         raise
 
