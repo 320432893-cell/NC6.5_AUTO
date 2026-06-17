@@ -42,7 +42,6 @@
         "foreign_currency_rate": null,
         "foreign_currency_rate_tolerance": 0.02,
         "save_success_timeout": 8.0,
-        "verify_voucher_advance": true,
         "voucher_record_timeout": 8.0,
         "voucher_window_title": "制单",
         "voucher_window_class": "SunAwtDialog",

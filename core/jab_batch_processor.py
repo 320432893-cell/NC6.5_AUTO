@@ -69,7 +69,6 @@ class JABBatchProcessor:
         )
         self.generated_status = self.batch_cfg.get("generated_status", "已生成待回填")
         self.voucher_col = int(self.batch_cfg.get("generated_voucher_col", 22))
-        self.verify_voucher_advance = self.batch_cfg.get("verify_voucher_advance", True)
         self.voucher_record_timeout = float(
             self.batch_cfg.get("voucher_record_timeout", 8.0)
         )
