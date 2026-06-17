@@ -1,13 +1,12 @@
 # 职责：收款单完整流程的报告序列化、落盘与控制台摘要渲染
 # 不做什么：不驱动 NC/JAB，不做行编排，不读取 Excel，不触发保存
-# 允许依赖层：标准库 json/decimal/pathlib，仓库内 ROOT 路径
-# 谁不应该 import：core 层模块不应 import；本模块不应反向 import row_runner/entry
+# 允许依赖层：标准库 json/decimal、core.paths(运行时可写日志目录)
+# 谁不应该 import：core 业务模块不应 import；本模块不应反向 import row_runner/entry
 
 import json
 from decimal import Decimal
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+from core.paths import logs_dir
 
 
 def serializable(value):
@@ -21,14 +20,14 @@ def serializable(value):
 
 
 def write_last_report(report):
-    path = ROOT / "logs" / "last_receipt_full_flow_report.json"
+    path = logs_dir() / "last_receipt_full_flow_report.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(".json.tmp")
     with tmp_path.open("w", encoding="utf-8") as file:
         json.dump(report, file, ensure_ascii=False, indent=2, default=str)
         file.write("\n")
     tmp_path.replace(path)
-    summary_path = ROOT / "logs" / "last_receipt_failure_summary.txt"
+    summary_path = logs_dir() / "last_receipt_failure_summary.txt"
     summary_path.write_text(
         "\n".join(build_console_report_lines(report, path, summary_path)) + "\n",
         encoding="utf-8",
@@ -41,8 +40,8 @@ def print_report(report, args):
         text = json.dumps(report, ensure_ascii=False, indent=2, default=str)
         print(text)
         return
-    report_path = ROOT / "logs" / "last_receipt_full_flow_report.json"
-    summary_path = ROOT / "logs" / "last_receipt_failure_summary.txt"
+    report_path = logs_dir() / "last_receipt_full_flow_report.json"
+    summary_path = logs_dir() / "last_receipt_failure_summary.txt"
     for line in build_console_report_lines(report, report_path, summary_path):
         print(line)
 
