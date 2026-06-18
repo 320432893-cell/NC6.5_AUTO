@@ -2,13 +2,10 @@ from datetime import date
 from decimal import Decimal
 from typing import Any, cast
 
-from openpyxl import Workbook, load_workbook
+from openpyxl import Workbook
 import pytest
 
-from core.receipt_matching import (
-    format_receipt_duplicate_reason,
-    format_receipt_name_amount_mismatch_reason,
-)
+from core.receipt_matching import format_receipt_name_amount_mismatch_reason
 from core.receipt_models import (
     ReceiptExcelRow,
     ReceiptMatchIssue,
@@ -457,7 +454,6 @@ def receipt_config(path):
                 "customer_code_column": "客户编码",
                 "fee_column": "手续费",
                 "organization_column": "主体名称",
-                "nc_done_column": "是否NC已做过",
             },
             "validation_policy": {
                 "mode": "strict",
@@ -508,7 +504,6 @@ def receipt_config(path):
             "candidate_check": {
                 "recent_months": 2,
                 "from_date": None,
-                "only_blank_status": True,
             },
             "finance_organizations": [
                 {
@@ -1388,29 +1383,23 @@ def test_dry_run_match_report_writes_specific_statuses(tmp_path):
         tables,
         org_code="A001",
         business_date=date(2026, 6, 1),
-        write_back=True,
     )
 
-    assert report["write_back"]["updated"] == 4
-    assert report["write_back"]["matched_rows"] == [2]
-    assert report["write_back"]["not_found_rows"] == [3]
-    assert report["write_back"]["duplicate_rows"] == [4]
-    assert report["write_back"]["exception_rows"] == [4, 5]
-    assert report["write_back"]["skipped_duplicate_rows"] == [4]
-    saved = load_workbook(path)
-    ws = saved["💸Payments来款通知"]
-    assert ws.cell(2, 5).value == "已做过"
-    assert ws.cell(3, 5).value == "未做过"
-    assert ws.cell(4, 5).value == format_receipt_duplicate_reason(2)
-    assert ws.cell(5, 5).value == format_receipt_name_amount_mismatch_reason(
+    assert "write_back" not in report
+    assert report["match_summary"]["matched_rows"] == [2]
+    assert report["match_summary"]["not_found_rows"] == [3]
+    assert report["match_summary"]["duplicate_rows"] == [4]
+    assert report["match_summary"]["exception_rows"] == [4, 5]
+    assert report["match_summary"]["skipped_duplicate_rows"] == [4]
+    assert report["match_summary"]["planned"] == 4
+    assert report["variants"][0]["issue_samples"][2]["reason"] == format_receipt_name_amount_mismatch_reason(
         excel_amount=Decimal("400.00"),
         excel_name="Christoff Pretorius",
         nc_amounts=["450.00"],
     )
-    saved.close()
 
 
-def test_dry_run_match_report_can_include_already_filled_statuses(tmp_path):
+def test_dry_run_match_report_ignores_legacy_status_column(tmp_path):
     path = tmp_path / "payments.xlsx"
     wb = Workbook()
     ws = wb.active
@@ -1420,7 +1409,6 @@ def test_dry_run_match_report_can_include_already_filled_statuses(tmp_path):
     wb.save(path)
     wb.close()
     config = receipt_config(path)
-    config["receipt_entry"]["candidate_check"]["only_blank_status"] = False
     tables = [
         {
             "table_index": 2,
@@ -1450,15 +1438,11 @@ def test_dry_run_match_report_can_include_already_filled_statuses(tmp_path):
         tables,
         org_code="A001",
         business_date=date(2026, 6, 1),
-        write_back=True,
     )
 
     assert report["org_candidates"] == 1
-    assert report["write_back"]["updated"] == 1
-    saved = load_workbook(path)
-    ws = saved["💸Payments来款通知"]
-    assert ws.cell(2, 5).value == "已做过"
-    saved.close()
+    assert "write_back" not in report
+    assert report["match_summary"]["matched_rows"] == [2]
 
 
 def test_dry_run_match_report_reuses_incremental_configured_match():
@@ -1515,7 +1499,7 @@ def test_dry_run_match_report_reuses_incremental_configured_match():
     assert len(report["variants"]) == 1
     assert report["variants"][0]["source"] == "incremental"
     assert report["variants"][0]["matches"] == 1
-    assert report["write_back"]["matched_rows"] == [2]
+    assert report["match_summary"]["matched_rows"] == [2]
 
 
 def test_dry_run_match_report_can_run_all_variants_when_enabled():

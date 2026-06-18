@@ -14,14 +14,21 @@ class NCSwitchGeneratedWorkflow:
     def __getattr__(self, name):
         return getattr(self.processor, name)
 
-    def switch_to_generated_list(self):
+    def switch_to_generated_list(self, assume_parent_ready=False):
         with self.perf.span("switch_generated_total"):
             self.perf.event(
                 "switch_generated_date",
                 generated_date_value=self.generated_date_value,
             )
-            self.run_state.set_stage("switch_detect_state")
-            state = self.get_nc_workflow_state()
+            if assume_parent_ready:
+                state = "parent_ready"
+                self.record_event(
+                    "switch_parent_ready_assumed",
+                    reason="same_process_after_voucher_close",
+                )
+            else:
+                self.run_state.set_stage("switch_detect_state")
+                state = self.get_nc_workflow_state()
             if state == "voucher_empty":
                 close_cfg = self.batch_cfg.get("close_voucher_window", {})
                 with self.perf.span("switch_close_empty_voucher_window"):
@@ -30,9 +37,9 @@ class NCSwitchGeneratedWorkflow:
                         class_name=close_cfg.get(
                             "class_name", self.voucher_window_class
                         ),
-                        wait=float(close_cfg.get("wait", 0.5)),
+                        wait=0,
                     )
-                state = self.get_nc_workflow_state()
+                state = self.wait_for_parent_ready_after_voucher_close()
 
             if state != "parent_ready":
                 raise WorkflowStateError(
@@ -46,7 +53,9 @@ class NCSwitchGeneratedWorkflow:
                 query_method=query_method,
                 nc_state=state,
             )
-            query_hwnd = self.find_query_window(open_query, timeout=0.5)
+            query_hwnd = None
+            if query_method != "hotkey":
+                query_hwnd = self.find_query_window(open_query, timeout=0.5)
             if query_method == "jab_action":
                 self.run_state.set_stage("switch_open_query_jab_action")
                 self.record_event(
@@ -70,8 +79,7 @@ class NCSwitchGeneratedWorkflow:
                         )
                     if not query_hwnd and open_query.get("fallback_method") == "hotkey":
                         log.warning("JAB 查询入口未打开查询窗口，回退 F3 热键")
-                        self.open_query_with_hotkey(open_query)
-                        query_hwnd = self.find_query_window(
+                        query_hwnd = self.open_query_with_hotkey_until_window(
                             open_query,
                             timeout=float(open_query.get("timeout", 5)),
                         )
@@ -92,8 +100,7 @@ class NCSwitchGeneratedWorkflow:
                 )
                 with self.perf.span("switch_open_query"):
                     if not query_hwnd:
-                        self.open_query_with_hotkey(open_query)
-                        query_hwnd = self.find_query_window(
+                        query_hwnd = self.open_query_with_hotkey_until_window(
                             open_query,
                             timeout=float(open_query.get("timeout", 5)),
                         )
@@ -113,20 +120,17 @@ class NCSwitchGeneratedWorkflow:
                 raise WorkflowStateError(
                     "未配置 switch_generated_steps，暂不能自动切换到已生成列表"
                 )
+            generated_wait_timeout = None
             try:
                 self.run_state.set_stage("switch_run_query_steps")
-                self.require_page_state(
-                    "query_open",
-                    items=None,
-                    command="switch-generated",
-                )
                 self.record_event(
                     "event_query_confirm_start",
                     steps=len(steps),
                     generated_date_value=self.generated_date_value,
+                    query_hwnd=query_hwnd,
                 )
                 with self.perf.span("switch_run_steps", steps=len(steps)):
-                    self.run_switch_generated_steps(
+                    generated_wait_timeout = self.run_switch_generated_steps(
                         open_query,
                         steps,
                         query_method,
@@ -144,15 +148,14 @@ class NCSwitchGeneratedWorkflow:
                     and open_query.get("fallback_method") == "hotkey"
                 ):
                     log.warning("JAB 查询窗口步骤失败，回退 F3 重新打开查询窗口")
-                    self.open_query_with_hotkey(open_query)
-                    query_hwnd = self.find_query_window(
+                    query_hwnd = self.open_query_with_hotkey_until_window(
                         open_query,
                         timeout=float(open_query.get("timeout", 5)),
                     )
                     if not query_hwnd:
                         raise JABControlNotFound("F3 回退后未检测到查询窗口")
                     with self.perf.span("switch_run_steps_fallback", steps=len(steps)):
-                        self.run_switch_generated_steps(
+                        generated_wait_timeout = self.run_switch_generated_steps(
                             open_query,
                             steps,
                             "hotkey",
@@ -162,10 +165,11 @@ class NCSwitchGeneratedWorkflow:
                     raise
             with self.perf.span("switch_generated_snapshot"):
                 self.run_state.set_stage("switch_verify_generated_snapshot")
-                state = self.require_page_state(
+                state = self.wait_for_page_state(
                     "generated",
                     items=None,
                     command="switch-generated",
+                    timeout=generated_wait_timeout,
                 )
             self.record_transition(
                 "generated_list_loaded",
@@ -181,7 +185,7 @@ class NCSwitchGeneratedWorkflow:
             )
             self.run_state.update_counts(generated_snapshot_rows=rows)
             self.run_state.set_stage("switch_generated_done")
-            return True
+            return state
 
     def run_switch_generated_steps(
         self,
@@ -194,11 +198,18 @@ class NCSwitchGeneratedWorkflow:
         dialog_class = open_query.get("dialog_class", "SunAwtDialog")
 
         try:
+            generated_wait_timeout = None
             for index, step in enumerate(steps, start=1):
                 step_name = self.get_switch_step_name(step, index)
+                is_confirm = self.is_query_confirm_step(step)
+                step_for_action = self.step_without_wait(step) if is_confirm else step
+                if is_confirm:
+                    generated_wait_timeout = float(
+                        self.batch_cfg.get("state_wait_timeout", 2.0)
+                    )
                 if isinstance(step, dict) and step.get("runner") == "subprocess":
                     subprocess_step = {
-                        **step,
+                        **step_for_action,
                         "title": dialog_title,
                         "class_name": dialog_class,
                     }
@@ -211,7 +222,8 @@ class NCSwitchGeneratedWorkflow:
                         runner="subprocess",
                     ):
                         self.run_jab_action_subprocess(subprocess_step)
-                        time.sleep(float(step.get("wait", 0.2)))
+                        if not is_confirm and float(step.get("wait", 0.0)) > 0:
+                            time.sleep(float(step.get("wait", 0.2)))
                 else:
                     with self.perf.span(
                         f"switch_step_{step_name}",
@@ -223,11 +235,11 @@ class NCSwitchGeneratedWorkflow:
                         role=step.get("role") if isinstance(step, dict) else None,
                     ):
                         self.run_query_window_step(
-                            step,
+                            step_for_action,
                             dialog_title=dialog_title,
                             dialog_class=dialog_class,
                         )
-            return True
+            return generated_wait_timeout
         except RuntimeError as exc:
             if query_method == "jab_action":
                 raise
@@ -236,7 +248,20 @@ class NCSwitchGeneratedWorkflow:
                 f"window={dialog_title!r}/{dialog_class!r}, error={exc}"
             )
             self.jab.run_named_steps(steps)
-            return True
+            return None
+
+    def is_query_confirm_step(self, step) -> bool:
+        if not isinstance(step, dict):
+            return False
+        return (
+            step.get("name") == "确定"
+            or self.get_switch_step_name(step, 0) == "confirm_action"
+        )
+
+    def step_without_wait(self, step):
+        if not isinstance(step, dict):
+            return step
+        return {**step, "wait": 0.0}
 
     def get_switch_step_name(self, step, index):
         if not isinstance(step, dict):
@@ -326,6 +351,7 @@ class NCSwitchGeneratedWorkflow:
         )
 
     def open_query_with_jab_action(self, open_query):
+        self.maximize_main_window(open_query)
         if open_query.get("runner") == "subprocess":
             self.run_jab_action_subprocess(open_query)
             return
@@ -487,14 +513,76 @@ class NCSwitchGeneratedWorkflow:
         return True
 
     def open_query_with_hotkey(self, open_query):
-        self.jab.activate_window_by_title(
-            open_query.get("main_title", ""),
-            class_name=open_query.get("main_class"),
-            timeout=float(open_query.get("timeout", 5)),
-        )
+        self.maximize_main_window(open_query, timeout=float(open_query.get("timeout", 5)))
         self.jab.press_key(
             open_query.get("key", "f3"),
             wait=float(open_query.get("wait", 0.8)),
+        )
+
+    def open_query_with_hotkey_until_window(self, open_query, timeout=None):
+        requested_timeout = float(
+            timeout if timeout is not None else open_query.get("timeout", 2)
+        )
+        timeout = min(
+            requested_timeout,
+            float(open_query.get("hotkey_open_timeout", 2)),
+        )
+        poll_interval = float(open_query.get("window_poll_interval", 0.1))
+        retry_interval = float(open_query.get("open_key_retry_interval", 0.2))
+        key_wait = float(open_query.get("key_wait", 0.0))
+        key = open_query.get("key", "f3")
+
+        self.maximize_main_window(
+            open_query,
+            timeout=float(open_query.get("activate_timeout", min(timeout, 1.0))),
+        )
+
+        deadline = time.monotonic() + timeout
+        next_press_at = 0.0
+        attempts = 0
+        while time.monotonic() < deadline:
+            now = time.monotonic()
+            if now >= next_press_at:
+                attempts += 1
+                self.jab.press_key(key, wait=key_wait)
+                next_press_at = now + retry_interval
+                self.record_event(
+                    "event_query_hotkey_press",
+                    key=key,
+                    attempt=attempts,
+                    retry_interval=retry_interval,
+                    poll_interval=poll_interval,
+                )
+
+            remaining = max(0.0, deadline - time.monotonic())
+            query_hwnd = self.find_query_window(
+                open_query,
+                timeout=min(poll_interval, remaining),
+            )
+            if query_hwnd:
+                self.record_event(
+                    "event_query_window_detected",
+                    method="hotkey",
+                    attempts=attempts,
+                    hwnd=query_hwnd,
+                )
+                return query_hwnd
+
+        log.warning(
+            "按快捷键打开查询窗口超时: "
+            f"key={key} attempts={attempts} timeout={timeout} "
+            f"retry_interval={retry_interval} poll_interval={poll_interval}"
+        )
+        return None
+
+    def maximize_main_window(self, open_query, timeout=None):
+        title = open_query.get("main_title", "")
+        if not title:
+            return False
+        return self.jab.maximize_window_by_title(
+            title,
+            class_name=open_query.get("main_class"),
+            timeout=timeout,
         )
 
     def get_nc_workflow_state(self):
@@ -528,3 +616,15 @@ class NCSwitchGeneratedWorkflow:
 
         log.warning("NC 状态: 未检测到制单子窗口，也未确认父界面")
         return "unknown"
+
+    def wait_for_parent_ready_after_voucher_close(self):
+        timeout = float(self.batch_cfg.get("state_wait_timeout", 2.0))
+        interval = float(self.batch_cfg.get("state_wait_interval", 0.2))
+        deadline = time.time() + timeout
+        last_state = "unknown"
+        while time.time() < deadline:
+            last_state = self.get_nc_workflow_state()
+            if last_state == "parent_ready":
+                return last_state
+            time.sleep(interval)
+        return last_state

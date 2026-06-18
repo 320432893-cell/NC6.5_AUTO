@@ -129,7 +129,6 @@ class ReceiptEntryWorkbook:
             ws = wb[self.config.sheet_name]
             columns = self._read_header(ws)
             columns = self._ensure_column(ws, columns, self.config.organization_column)
-            columns = self._ensure_column(ws, columns, self.config.nc_done_column)
             rows, issues = self._load_rows(ws, columns)
             org_col = columns[self.config.organization_column]
             for row in rows:
@@ -142,48 +141,11 @@ class ReceiptEntryWorkbook:
                 f"Excel 文件无法写入，可能正被 WPS/Excel 打开: path={self.excel_path}"
             ) from exc
 
-    def write_nc_done_statuses(self, row_statuses):
-        updates = {
-            int(row): str(status)
-            for row, status in row_statuses.items()
-            if status is not None and str(status).strip()
-        }
-        if not updates:
-            return {"updated": 0, "rows": []}
-
-        wb = openpyxl.load_workbook(self.excel_path, read_only=False)
-        try:
-            ws = wb[self.config.sheet_name]
-            columns = self._read_header(ws)
-            columns = self._ensure_column(ws, columns, self.config.nc_done_column)
-            status_col = columns[self.config.nc_done_column]
-            invalid_rows = [
-                row
-                for row in updates
-                if row <= self.config.header_row or row > ws.max_row
-            ]
-            if invalid_rows:
-                wb.close()
-                raise WorkflowStateError(
-                    f"收款 Excel 状态写入行号无效: {sorted(invalid_rows)}"
-                )
-            for row, status in sorted(updates.items()):
-                ws.cell(row=row, column=status_col, value=status)
-            self._save_workbook(wb, "写入收款单NC状态")
-            return {"updated": len(updates), "rows": sorted(updates)}
-        except PermissionError as exc:
-            wb.close()
-            raise ExcelLockedError(
-                f"Excel 文件无法写入，可能正被 WPS/Excel 打开: path={self.excel_path}"
-            ) from exc
-
     def select_candidate_rows(self, rows, today=None):
         candidate_start = self.config.candidate_start_date(today=today)
         candidates = []
         for row in rows:
             if row.receipt_date < candidate_start:
-                continue
-            if self.config.candidate_only_blank_status and row.nc_done_status:
                 continue
             candidates.append(row)
         return candidates
@@ -220,11 +182,6 @@ class ReceiptEntryWorkbook:
             raw_amount = ws.cell(
                 row_index, columns[self.config.raw_amount_column]
             ).value
-            nc_done_status = read_optional_cell(
-                ws,
-                row_index,
-                columns.get(self.config.nc_done_column),
-            )
             organization = self.config.organization_for_bank(bank)
             if not organization:
                 issues.append(ReceiptMatchIssue(row_index, f"银行未配置: {bank!r}", []))
@@ -248,7 +205,7 @@ class ReceiptEntryWorkbook:
                     organization_code=organization.code,
                     organization_name=organization.name,
                     organization_short_name=organization.short_name,
-                    nc_done_status=nc_done_status,
+                    nc_done_status="",
                 )
             )
         return rows, issues

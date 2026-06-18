@@ -165,6 +165,8 @@ def close_window_by_title(
 def activate_window_by_title(title, class_name=None, timeout=None, search_timeout=5.0):
     if os.name != "nt":
         return False
+    if not title:
+        return False
 
     deadline = time.time() + (timeout or search_timeout)
     while time.time() < deadline:
@@ -177,6 +179,54 @@ def activate_window_by_title(title, class_name=None, timeout=None, search_timeou
             return True
         time.sleep(0.2)
     return False
+
+
+def maximize_window_by_title(title, class_name=None, timeout=None, search_timeout=5.0):
+    if os.name != "nt":
+        return False
+    if not title:
+        return False
+
+    deadline = time.time() + (timeout or search_timeout)
+    while time.time() < deadline:
+        hwnd = find_window_handle(title, class_name=class_name, visible_only=False)
+        if hwnd:
+            user32 = ctypes.windll.user32
+            sw_maximize = 3
+            user32.ShowWindow(hwnd, sw_maximize)
+            user32.SetForegroundWindow(hwnd)
+            move_cursor_to_window_center(hwnd)
+            time.sleep(0.2)
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def maximize_window_by_handle(hwnd):
+    if os.name != "nt" or not hwnd:
+        return False
+    user32 = ctypes.windll.user32
+    hwnd_obj = wintypes.HWND(int(hwnd))
+    if not user32.IsWindow(hwnd_obj):
+        return False
+    sw_maximize = 3
+    user32.ShowWindow(hwnd_obj, sw_maximize)
+    user32.SetForegroundWindow(hwnd_obj)
+    move_cursor_to_window_center(hwnd_obj)
+    time.sleep(0.2)
+    return True
+
+
+def move_cursor_to_window_center(hwnd):
+    user32 = ctypes.windll.user32
+    rect = wintypes.RECT()
+    if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        return False
+    width = rect.right - rect.left
+    height = rect.bottom - rect.top
+    if width <= 0 or height <= 0:
+        return False
+    return bool(user32.SetCursorPos(rect.left + width // 2, rect.top + height // 2))
 
 
 def get_foreground_window_info():

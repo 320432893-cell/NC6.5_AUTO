@@ -76,6 +76,40 @@ class NCStateDetector:
             f"actual={last_state.name} reason={last_state.reason}"
         )
 
+    def wait_for_page_state(self, expected, items=None, command="", timeout=None):
+        deadline = time.time() + float(timeout if timeout is not None else self.state_wait_timeout)
+        last_state = None
+        while True:
+            last_state = self.detect_page_state(items=items)
+            self.record_event(
+                "nc_page_state_wait",
+                command=command,
+                expected=expected,
+                actual=last_state.name,
+                reason=last_state.reason,
+                match_ratio=last_state.match_ratio,
+            )
+            if last_state.name == expected:
+                self.record_transition(
+                    "state_wait_passed",
+                    to_state=last_state.name,
+                    command=command,
+                    expected=expected,
+                    reason=last_state.reason,
+                )
+                log.info(
+                    f"NC 页面状态等待通过: expected={expected} reason={last_state.reason}"
+                )
+                return last_state
+            if time.time() >= deadline:
+                break
+            time.sleep(self.state_wait_interval)
+
+        raise WorkflowStateError(
+            f"NC 页面状态等待超时: command={command} expected={expected} "
+            f"actual={last_state.name} reason={last_state.reason}"
+        )
+
     def detect_page_state(self, items=None):
         voucher_state = self.detect_voucher_window_state()
         if voucher_state.name == "voucher_open":

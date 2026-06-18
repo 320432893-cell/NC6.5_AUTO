@@ -68,7 +68,7 @@ from tools.receipt_query_result_tables import (  # noqa: E402
 from tools.receipt_query_report import (  # noqa: E402
     build_dry_run_match_report as build_dry_run_match_report,
     build_dry_run_match_report_from_preview as build_dry_run_match_report_from_preview,
-    build_receipt_write_back_report as build_receipt_write_back_report,
+    build_receipt_match_summary as build_receipt_match_summary,
     diagnose_match_inputs as diagnose_match_inputs,
     summarize_nc_rows as summarize_nc_rows,
     unique_ordered as unique_ordered,
@@ -132,7 +132,11 @@ def ensure_query_window(jab, config, query_cfg, jab_cfg, skip_open=False):
     main_title = query_cfg.get("main_title", batch_open_query.get("main_title", ""))
     main_class = query_cfg.get("main_class", batch_open_query.get("main_class"))
     if main_title:
-        jab.activate_window_by_title(
+        maximize = bool(query_cfg.get("maximize_main_window", True))
+        activate = (
+            jab.maximize_window_by_title if maximize else jab.activate_window_by_title
+        )
+        activate(
             main_title,
             class_name=main_class,
             timeout=float(query_cfg.get("activate_timeout", 5)),
@@ -172,7 +176,6 @@ def fill_receipt_query(
     max_rows=500,
     max_cols=80,
     set_page_size_only=False,
-    write_back=False,
 ):
     query_cfg = config["receipt_entry"]["query"]
     jab_cfg = query_cfg["jab"]
@@ -290,7 +293,6 @@ def fill_receipt_query(
                         query_cfg,
                         include_amount_candidates=False,
                     ),
-                    write_back=write_back,
                 )
             else:
                 tables, page_report = timings.measure(

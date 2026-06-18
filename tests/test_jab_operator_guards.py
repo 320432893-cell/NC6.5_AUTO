@@ -11,6 +11,7 @@ from core.jab_helpers import (
     text_matches,
 )
 from core import jab_window
+from core import jab_popup
 from core.jab_context_tree import matches_control, release_contexts
 from core.jab_operator import JABOperator
 from core.jab_table_reader import read_table_cells_from_context
@@ -137,6 +138,75 @@ def test_operator_explicit_awt_cleanup_still_available(monkeypatch):
 
     assert operator.hide_blank_awt_windows() == [{"hwnd": 1}]
     assert calls == [True]
+
+
+def test_generate_front_prefers_tracked_popup_and_cleans_it(monkeypatch):
+    operator = JABOperator({"jab": {"menu_wait": 0.3, "search_timeout": 0.4}})
+    calls = []
+
+    monkeypatch.setattr(operator, "ensure_started", lambda: calls.append("started"))
+    monkeypatch.setattr(
+        operator,
+        "click_control",
+        lambda name, **kwargs: calls.append(("click_control", name, kwargs)) or True,
+    )
+    monkeypatch.setattr(jab_popup, "collect_visible_popup_windows", lambda jab: ["before"])
+    monkeypatch.setattr(
+        jab_popup,
+        "wait_for_new_popup_with_menu_item",
+        lambda jab, before, menu_name, timeout, interval: {
+            "ok": True,
+            "popup": {"hwnd": 99},
+            "windows": ["after"],
+        },
+    )
+    monkeypatch.setattr(
+        jab_popup,
+        "click_menu_item_in_popup",
+        lambda jab, windows, menu_name, popup_hwnd=None: calls.append(
+            ("popup_click", windows, menu_name, popup_hwnd)
+        )
+        or {"ok": True},
+    )
+    monkeypatch.setattr(
+        jab_popup,
+        "close_popup_hwnd",
+        lambda hwnd: calls.append(("popup_cleanup", hwnd)) or {"ok": True},
+    )
+
+    assert operator.do_generate_front()
+
+    assert calls == [
+        "started",
+        ("click_control", "生成", {"roles": ("push button",), "timeout": 0.4}),
+        ("popup_click", ["after"], "前台生成", 99),
+        ("popup_cleanup", 99),
+    ]
+
+
+def test_generate_front_falls_back_when_tracked_popup_missing(monkeypatch):
+    operator = JABOperator({"jab": {"menu_wait": 0.3, "search_timeout": 0.4}})
+    clicked = []
+
+    monkeypatch.setattr(operator, "ensure_started", lambda: None)
+
+    def fake_click(name, **kwargs):
+        clicked.append((name, kwargs))
+        return True
+
+    monkeypatch.setattr(operator, "click_control", fake_click)
+    monkeypatch.setattr(jab_popup, "collect_visible_popup_windows", lambda jab: [])
+    monkeypatch.setattr(
+        jab_popup,
+        "wait_for_new_popup_with_menu_item",
+        lambda jab, before, menu_name, timeout, interval: {"ok": False},
+    )
+
+    assert operator.do_generate_front()
+    assert clicked == [
+        ("生成", {"roles": ("push button",), "timeout": 0.4}),
+        ("前台生成", {"roles": ("menu item",), "timeout": 0.4}),
+    ]
 
 
 def test_table_reader_keeps_row_shape_and_selection(monkeypatch):

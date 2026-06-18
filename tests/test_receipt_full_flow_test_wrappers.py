@@ -28,13 +28,13 @@ def test_save_query_write_wrapper_appends_save_query_and_sheet2(monkeypatch):
         lambda: {"ok": True},
     )
 
-    assert save_query_write.main(["--excel-rows", "811,839,828", "--limit", "3"]) == 1
+    assert save_query_write.main(["--start-row", "811", "--limit", "3"]) == 1
     assert calls == [
         [
             "--config",
             str(save_query_write.ROOT / "config.json"),
-            "--excel-rows",
-            "811,839,828",
+            "--start-row",
+            "811",
             "--limit",
             "3",
             "--save",
@@ -86,11 +86,13 @@ def test_wrapper_keeps_explicit_config(monkeypatch):
         lambda: {"ok": True},
     )
 
-    assert save_query_write.main(["--config", "custom.json", "--limit", "1"]) == 0
+    assert save_query_write.main(["--config", "custom.json", "--start-row", "811", "--limit", "1"]) == 0
     assert calls == [
         [
             "--config",
             "custom.json",
+            "--start-row",
+            "811",
             "--limit",
             "1",
             "--save",
@@ -119,22 +121,22 @@ def test_wrapper_runs_from_project_root(monkeypatch, tmp_path):
         lambda: {"ok": True},
     )
 
-    assert save_query_write.main(["--limit", "1"]) == 0
+    assert save_query_write.main(["--start-row", "811", "--limit", "1"]) == 0
     assert calls
     assert str(save_query_write.ROOT) == str(tmp_path.cwd())
 
 
-def test_interactive_args_accept_multiple_rows(monkeypatch):
-    answers = iter(["811,839,828", "3", "5"])
+def test_interactive_args_accept_start_row_and_count(monkeypatch):
+    answers = iter(["811", "3", "5"])
     monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
 
     assert build_interactive_args("test") == [
+        "--start-row",
+        "811",
         "--limit",
         "3",
         "--start-delay",
         "5",
-        "--excel-rows",
-        "811,839,828",
     ]
 
 
@@ -163,12 +165,12 @@ def test_query_write_wrapper_prompts_with_three_row_default(monkeypatch):
         [
             "--config",
             str(save_query_write.ROOT / "config.json"),
+            "--start-row",
+            "811",
             "--limit",
             "3",
             "--start-delay",
             "2",
-            "--excel-rows",
-            "811,839,828",
             "--save",
             "--query-after-save",
             "--write-selected-plan-sheet",
@@ -201,12 +203,12 @@ def test_wrapper_prompts_no_save_mode(monkeypatch):
         [
             "--config",
             str(save_query_write.ROOT / "config.json"),
+            "--start-row",
+            "811",
             "--limit",
             "3",
             "--start-delay",
             "2",
-            "--excel-rows",
-            "811,839,828",
         ]
     ]
 
@@ -264,12 +266,12 @@ def test_wrapper_prompts_verify_audit_mode(monkeypatch):
     assert calls[0] == [
         "--config",
         str(save_query_write.ROOT / "config.json"),
+        "--start-row",
+        "811",
         "--limit",
         "3",
         "--start-delay",
         "2",
-        "--excel-rows",
-        "811,839,828",
     ]
 
 
@@ -298,12 +300,12 @@ def test_wrapper_prompts_modal_alt_c_mode(monkeypatch):
         [
             "--config",
             str(save_query_write.ROOT / "config.json"),
+            "--start-row",
+            "811",
             "--limit",
             "3",
             "--start-delay",
             "2",
-            "--excel-rows",
-            "811,839,828",
         ]
     ]
 
@@ -333,12 +335,12 @@ def test_wrapper_prompts_detail_repair_drill_mode(monkeypatch):
         [
             "--config",
             str(save_query_write.ROOT / "config.json"),
+            "--start-row",
+            "811",
             "--limit",
             "3",
             "--start-delay",
             "2",
-            "--excel-rows",
-            "811,839,828",
             "--diagnose-detail-repair",
         ]
     ]
@@ -352,7 +354,9 @@ def test_with_default_excel_path_finds_project_file(tmp_path, monkeypatch):
     excel.parent.mkdir()
     excel.write_bytes(b"placeholder")
 
-    assert with_default_excel_path(["--limit", "1"], excel.parent) == [
+    assert with_default_excel_path(["--start-row", "811", "--limit", "1"], excel.parent) == [
+        "--start-row",
+        "811",
         "--limit",
         "1",
         "--excel-path",
@@ -375,4 +379,4 @@ def test_wrapper_reports_jab_environment_failure(monkeypatch):
     )
     monkeypatch.setattr(save_query_write, "run_full_flow", lambda _argv: 99)
 
-    assert save_query_write.main(["--limit", "1"]) == 4
+    assert save_query_write.main(["--start-row", "811", "--limit", "1"]) == 4

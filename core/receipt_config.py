@@ -120,10 +120,6 @@ class ReceiptEntryConfig:
         return self.excel_cfg.get("organization_column", "主体名称")
 
     @property
-    def nc_done_column(self):
-        return self.excel_cfg.get("nc_done_column", "是否NC已做过")
-
-    @property
     def candidate_recent_months(self):
         return int(self.candidate_cfg.get("recent_months", 2))
 
@@ -133,10 +129,6 @@ class ReceiptEntryConfig:
         if value in (None, ""):
             return None
         return parse_date(value)
-
-    @property
-    def candidate_only_blank_status(self):
-        return bool(self.candidate_cfg.get("only_blank_status", True))
 
     @property
     def validation_policy(self):

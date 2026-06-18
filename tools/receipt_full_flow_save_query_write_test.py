@@ -59,7 +59,7 @@ def main(argv: list[str] | None = None) -> int:
         mode = ask_mode()
         user_args = build_interactive_args(
             MODE_LABELS[mode],
-            default_rows="811,839,828",
+            default_start_row="811",
             default_limit="3",
             default_start_delay="2",
         )

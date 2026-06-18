@@ -333,7 +333,7 @@ def test_header_fill_writes_customer_before_date(monkeypatch):
     calls = []
 
     def fake_set_header_field(jab, label, value, dynamic_index, scope_hwnd, **kwargs):
-        calls.append(label)
+        calls.append((label, value, kwargs.get("accepted_text")))
         return {
             "ok": True,
             "path": trial.build_receipt_header_dynamic_path(dynamic_index, label),
@@ -380,13 +380,15 @@ def test_header_fill_writes_customer_before_date(monkeypatch):
             "document_date": "2026-04-02",
             "customer_code": "YW03200",
             "currency": "美元",
+            "header_currency_code": "USD",
             "bank_account": "FTE123",
         },
         scope_hwnd=123,
         dynamic_index=2,
     )
 
-    assert calls == ["财务组织", "客户", "单据日期", "币种", "结算方式"]
+    assert [item[0] for item in calls] == ["财务组织", "客户", "单据日期", "币种", "结算方式"]
+    assert calls[3] == ("币种", "美元", "美元")
 
 
 def test_header_fill_uses_path_flow_without_background_semantic(monkeypatch):
@@ -737,6 +739,29 @@ def test_header_scope_uses_provided_canvas_anchor_before_semantic(monkeypatch):
     assert scope["dynamic_index"] == 2
     assert scope["mode"] == "provided-canvas-anchor"
     assert calls == [("anchor", 123, 2)]
+
+
+def test_header_scope_can_trust_open_step_scope_without_revalidating(monkeypatch):
+    monkeypatch.setattr(
+        trial,
+        "validate_receipt_header_scope_anchor",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("完整流程已在开单阶段解析 scope，不应重复验证")
+        ),
+    )
+
+    scope = trial.resolve_receipt_header_scope(
+        object(),
+        scope_hwnd=123,
+        dynamic_index=2,
+        anchor_path="0.anchor",
+        trust_provided_scope=True,
+    )
+
+    assert scope["ok"] is True
+    assert scope["dynamic_index"] == 2
+    assert scope["semantic_label_path"] == "0.anchor"
+    assert scope["mode"] == "provided-canvas-anchor-trusted"
 
 
 def test_header_scope_validates_with_provided_anchor_path(monkeypatch):
@@ -1293,6 +1318,66 @@ def test_backend_field_state_tracks_written_value_before_business_correction():
     assert result["accepted"] is False
 
 
+def test_header_dynamic_field_requires_accepted_text_before_success(monkeypatch):
+    class Info:
+        name = "币种"
+        description = "人民币"
+        role = "text"
+        role_en_US = "text"
+        states = "enabled,visible,showing,editable"
+        states_en_US = "enabled,visible,showing,editable"
+
+    class FakeJAB:
+        dll = object()
+
+        def get_context_info(self, _vm_id, _context):
+            return Info()
+
+        def get_text_context_value(self, _vm_id, _context):
+            return "人民币"
+
+        def release_contexts(self, _vm_id, _owned_contexts):
+            pass
+
+    monkeypatch.setattr(
+        trial,
+        "find_receipt_header_field_by_dynamic_path",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "context": object(),
+            "vm_id": 1,
+            "owned_contexts": [],
+            "window": {"hwnd": 919586},
+            "path": "currency.path",
+            "label_path": "currency.label",
+        },
+    )
+    monkeypatch.setattr(
+        trial,
+        "guarded_paste_header_value",
+        lambda *_args: {
+            "ok": True,
+            "method": "guarded-clipboard-paste",
+            "enter_ok": True,
+        },
+    )
+    monkeypatch.setattr(trial.time, "sleep", lambda *_args, **_kwargs: None)
+
+    result = trial.set_receipt_header_dynamic_field(
+        FakeJAB(),
+        "币种",
+        "美元",
+        2,
+        919586,
+        accepted_text="美元",
+    )
+
+    assert result["ok"] is False
+    assert result["set_ok"] is True
+    assert result["acceptance_probe"]["accepted"] is False
+    assert result["post_write_snapshot"]["description"] == "人民币"
+
+
 def test_visible_control_does_not_require_positive_coordinates():
     control = {
         "states": "enabled,visible,showing",
@@ -1642,6 +1727,52 @@ def test_finance_org_acceptance_can_use_scoped_chinese_probe(monkeypatch):
     assert result["accepted"] is True
     assert result["source"] == "scope-text-probe"
     assert result["scope_probe"]["path"] == "0.scope.hit"
+
+
+def test_finance_org_acceptance_uses_scope_probe_only_after_current_context_poll(
+    monkeypatch,
+):
+    class Info:
+        name = "财务组织(O)"
+        description = "A001"
+        role = "text"
+        role_en_US = "text"
+        states = "enabled,visible,showing,editable"
+        states_en_US = "enabled,visible,showing,editable"
+
+    class FakeJAB:
+        def get_context_info(self, _vm_id, _context):
+            return Info()
+
+        def get_text_context_value(self, _vm_id, _context):
+            return "A001"
+
+    calls = {"scope_probe": 0}
+    monkeypatch.setattr(trial.time, "sleep", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        trial,
+        "probe_finance_org_accepted_text_in_scope",
+        lambda *_args, **_kwargs: calls.__setitem__(
+            "scope_probe",
+            calls["scope_probe"] + 1,
+        )
+        or {"ok": False, "accepted": False},
+    )
+
+    result = trial.confirm_finance_org_accepted(
+        FakeJAB(),
+        1,
+        object(),
+        expected_text="上海移为通信技术股份有限公司",
+        value="A001",
+        scope_hwnd=919586,
+        timeout=0.01,
+        interval=0.001,
+    )
+
+    assert result["accepted"] is False
+    assert len(result["attempts"]) > 1
+    assert calls["scope_probe"] == 1
 
 
 def test_guarded_paste_header_value_uses_jab_press_key_enter(monkeypatch):

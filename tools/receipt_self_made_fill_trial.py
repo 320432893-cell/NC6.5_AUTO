@@ -888,11 +888,18 @@ def fill_header(
     dynamic_index=None,
     anchor_path=None,
     recover_after_failure=None,
+    trust_provided_scope=False,
 ):
     started_at = time.perf_counter()
     steps = []
     scope_started_at = time.perf_counter()
-    scope = resolve_receipt_header_scope(jab, scope_hwnd, dynamic_index, anchor_path)
+    scope = resolve_receipt_header_scope(
+        jab,
+        scope_hwnd,
+        dynamic_index,
+        anchor_path,
+        trust_provided_scope=trust_provided_scope,
+    )
     scope_seconds = round(time.perf_counter() - scope_started_at, 3)
     if not scope.get("ok"):
         return [
@@ -930,7 +937,8 @@ def fill_header(
         },
         {
             "label": "币种",
-            "value": business.get("header_currency_code") or business.get("currency"),
+            "value": business.get("currency"),
+            "accepted_text": business.get("currency"),
             "dynamic_path": True,
         },
         {
@@ -1024,12 +1032,32 @@ def fill_header(
 
 
 def resolve_receipt_header_scope(
-    jab, scope_hwnd=None, dynamic_index=None, anchor_path=None
+    jab,
+    scope_hwnd=None,
+    dynamic_index=None,
+    anchor_path=None,
+    trust_provided_scope=False,
 ):
     cached = getattr(jab, "_receipt_header_scope_cache", None)
     if cached and (scope_hwnd is None or cached.get("scope_hwnd") == scope_hwnd):
         return {**cached, "cached": True}
     if scope_hwnd and dynamic_index is not None:
+        if trust_provided_scope:
+            scoped = {
+                "ok": True,
+                "scope_hwnd": scope_hwnd,
+                "mode": "provided-canvas-anchor-trusted",
+                "dynamic_index": dynamic_index,
+                "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
+                "matched_labels": [HEADER_SCOPE_ANCHOR_LABEL],
+                "semantic_label_path": anchor_path,
+                "label_path": anchor_path,
+            }
+            try:
+                setattr(jab, "_receipt_header_scope_cache", scoped)
+            except AttributeError:
+                pass
+            return scoped
         scoped = validate_receipt_header_scope_anchor(
             jab,
             scope_hwnd,
@@ -1429,8 +1457,19 @@ def set_receipt_header_dynamic_field(
             value=value,
             accepted_text=accepted_text,
         )
+        acceptance_probe = None
+        accepted = bool(backend_state.get("accepted"))
+        if set_ok and accepted_text and not accepted:
+            acceptance_probe = confirm_header_field_accepted(
+                jab,
+                vm_id,
+                context,
+                expected_text=accepted_text,
+                value=value,
+            )
+            accepted = bool(acceptance_probe.get("accepted"))
         return {
-            "ok": bool(set_ok),
+            "ok": bool(set_ok and (not accepted_text or accepted)),
             "path": found.get("path"),
             "label_path": found.get("label_path"),
             "dynamic_index": found.get("dynamic_index"),
@@ -1450,8 +1489,9 @@ def set_receipt_header_dynamic_field(
             "commit_action": commit_action,
             "enter_ok": bool(enter_ok),
             "post_write_snapshot": backend_state,
+            "acceptance_probe": acceptance_probe,
             "accepted_text": accepted_text_from_backend(
-                backend_state,
+                (acceptance_probe or {}).get("matched_snapshot") or backend_state,
                 value,
                 accepted_text,
             ),
@@ -1501,6 +1541,50 @@ def set_receipt_header_dynamic_field(
             }
     finally:
         jab.release_contexts(vm_id, owned_contexts)
+
+
+def confirm_header_field_accepted(
+    jab,
+    vm_id,
+    context,
+    expected_text,
+    value=None,
+    timeout=1.2,
+    interval=0.1,
+):
+    deadline = time.time() + max(float(timeout or 0), 0.0)
+    attempts = []
+    first = True
+    while first or time.time() < deadline:
+        first = False
+        info = jab.get_context_info(vm_id, context)
+        text = jab.get_text_context_value(vm_id, context)
+        snapshot = describe_backend_field_state(
+            info,
+            text,
+            value=value,
+            accepted_text=expected_text,
+        )
+        attempts.append(snapshot)
+        if snapshot.get("accepted"):
+            return {
+                "ok": True,
+                "accepted": True,
+                "expected_text": expected_text,
+                "source": "current-context",
+                "attempts": attempts,
+                "matched_snapshot": snapshot,
+            }
+        if time.time() >= deadline:
+            break
+        time.sleep(min(max(float(interval or 0), 0.02), deadline - time.time()))
+    return {
+        "ok": False,
+        "accepted": False,
+        "expected_text": expected_text,
+        "attempts": attempts,
+        "reason": "表头字段未确认解析为目标值",
+    }
 
 
 def find_receipt_header_field_by_live_semantic(
@@ -1647,6 +1731,7 @@ def confirm_finance_org_accepted(
     deadline = time.time() + max(float(timeout or 0), 0.0)
     attempts = []
     first = True
+    scope_probe = None
     while first or time.time() < deadline:
         first = False
         info = jab.get_context_info(vm_id, context)
@@ -1667,34 +1752,30 @@ def confirm_finance_org_accepted(
                 "attempts": attempts,
                 "matched_snapshot": snapshot,
             }
-        scoped_match = probe_finance_org_accepted_text_in_scope(
-            jab,
-            expected_text,
-            scope_hwnd=scope_hwnd,
-        )
-        if scoped_match.get("accepted"):
-            return {
-                "ok": True,
-                "accepted": True,
-                "expected_text": expected_text,
-                "source": "scope-text-probe",
-                "attempts": attempts,
-                "matched_snapshot": scoped_match.get("snapshot"),
-                "scope_probe": scoped_match,
-            }
         if time.time() >= deadline:
             break
         time.sleep(max(float(interval or 0), 0.0))
+    scope_probe = probe_finance_org_accepted_text_in_scope(
+        jab,
+        expected_text,
+        scope_hwnd=scope_hwnd,
+    )
+    if scope_probe.get("accepted"):
+        return {
+            "ok": True,
+            "accepted": True,
+            "expected_text": expected_text,
+            "source": "scope-text-probe",
+            "attempts": attempts,
+            "matched_snapshot": scope_probe.get("snapshot"),
+            "scope_probe": scope_probe,
+        }
     return {
         "ok": False,
         "accepted": False,
         "expected_text": expected_text,
         "attempts": attempts,
-        "scope_probe": probe_finance_org_accepted_text_in_scope(
-            jab,
-            expected_text,
-            scope_hwnd=scope_hwnd,
-        ),
+        "scope_probe": scope_probe,
         "reason": "财务组织未确认解析为中文",
     }
 

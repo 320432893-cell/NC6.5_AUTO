@@ -27,6 +27,7 @@ from tools.receipt_full_flow_entry import (
     wait_receipt_header_anchor_in_current_canvas,
 )
 from tools.receipt_post_save_query import target_to_match_row
+from tools.receipt_post_save_query import format_query_exception
 
 
 def plan_row(row, fee=Decimal("0.00")):
@@ -83,9 +84,8 @@ class FakeInfo:
 
 
 class Args:
-    excel_row: int | None = None
-    excel_rows: str | None = None
-    limit: int = 1
+    start_row: int | None = None
+    limit: int | None = None
 
 
 def test_extract_header_accepted_text_rejects_java_object_string():
@@ -149,7 +149,99 @@ def test_read_customer_name_after_header_uses_customer_description(monkeypatch):
     assert result["source"] == "path-readback"
 
 
-def test_select_plan_rows_skips_issue_rows_and_defaults_limit_one():
+def test_read_customer_name_after_header_polls_until_customer_description(monkeypatch):
+    class FakeJAB:
+        def __init__(self):
+            self.descriptions = ["", "ACME NC"]
+
+        def get_context_info(self, _vm_id, _context):
+            return FakeInfo(description=self.descriptions.pop(0))
+
+        def get_text_context_value(self, _vm_id, _context):
+            return ""
+
+        def release_contexts(self, _vm_id, _contexts):
+            pass
+
+    monkeypatch.setattr(
+        "tools.receipt_full_flow_entry.find_receipt_header_field_by_dynamic_path",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "context": object(),
+            "vm_id": 1,
+            "owned_contexts": [],
+            "path": "customer.path",
+            "label_path": "customer.label",
+        },
+    )
+
+    result = read_customer_name_after_header(
+        FakeJAB(),
+        [
+            {
+                "ok": True,
+                "label": "客户",
+                "value": "YW00178",
+                "dynamic_index": 4,
+                "path": "customer.path",
+            }
+        ],
+        4,
+        197550,
+        timeout=0.2,
+        poll_interval=0.01,
+    )
+
+    assert result["ok"] is True
+    assert result["value"] == "ACME NC"
+    assert len(result["attempts"]) == 2
+
+
+def test_read_customer_name_after_header_failure_reports_readback(monkeypatch):
+    class FakeJAB:
+        def get_context_info(self, _vm_id, _context):
+            return FakeInfo(name="客户", description="YW00178")
+
+        def get_text_context_value(self, _vm_id, _context):
+            return "YW00178"
+
+        def release_contexts(self, _vm_id, _contexts):
+            pass
+
+    monkeypatch.setattr(
+        "tools.receipt_full_flow_entry.find_receipt_header_field_by_dynamic_path",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "context": object(),
+            "vm_id": 1,
+            "owned_contexts": [],
+            "path": "customer.path",
+            "label_path": "customer.label",
+        },
+    )
+
+    result = read_customer_name_after_header(
+        FakeJAB(),
+        [
+            {
+                "ok": True,
+                "label": "客户",
+                "value": "YW00178",
+                "dynamic_index": 4,
+                "path": "customer.path",
+            }
+        ],
+        4,
+        197550,
+        timeout=0,
+    )
+
+    assert result["ok"] is False
+    assert "客户名称未确认" in result["reason"]
+    assert "YW00178" in result["reason"]
+
+
+def test_select_plan_rows_skips_issue_rows_and_defaults_to_all_runnable_rows():
     rows = [plan_row(2), plan_row(3), plan_row(4)]
     issues = [
         ReceiptPlanIssue(
@@ -164,29 +256,59 @@ def test_select_plan_rows_skips_issue_rows_and_defaults_limit_one():
         )
     ]
 
-    selected = select_plan_rows(rows, issues, Args())
-
-    assert [row.row for row in selected] == [3]
-
-
-def test_select_plan_rows_can_target_specific_excel_row():
     args = Args()
-    args.excel_row = 4
+    args.start_row = 3
+    args.limit = 10
+    selected = select_plan_rows(rows, issues, args)
+
+    assert [row.row for row in selected] == [3, 4]
+
+
+def test_select_plan_rows_requires_start_row():
+    args = Args()
     args.limit = 10
 
-    selected = select_plan_rows([plan_row(3), plan_row(4)], [], args)
+    with pytest.raises(SystemExit, match="start-row"):
+        select_plan_rows([plan_row(3), plan_row(4)], [], args)
 
-    assert [row.row for row in selected] == [4]
 
-
-def test_select_plan_rows_can_target_multiple_excel_rows_in_order():
+def test_select_plan_rows_limit_zero_means_until_end():
     args = Args()
-    args.excel_rows = "4,2,4,3"
+    args.start_row = 4
+    args.limit = 0
+
+    selected = select_plan_rows([plan_row(3), plan_row(4), plan_row(5)], [], args)
+
+    assert [row.row for row in selected] == [4, 5]
+
+
+def test_select_plan_rows_missing_limit_means_until_end():
+    args = Args()
+    args.start_row = 4
+
+    selected = select_plan_rows([plan_row(3), plan_row(4), plan_row(5)], [], args)
+
+    assert [row.row for row in selected] == [4, 5]
+
+
+def test_select_plan_rows_uses_start_row_to_run_until_end():
+    args = Args()
+    args.start_row = 4
     args.limit = 10
 
-    selected = select_plan_rows([plan_row(2), plan_row(3), plan_row(4)], [], args)
+    selected = select_plan_rows([plan_row(2), plan_row(4), plan_row(5)], [], args)
 
-    assert [row.row for row in selected] == [4, 2, 3]
+    assert [row.row for row in selected] == [4, 5]
+
+
+def test_select_plan_rows_can_limit_count_after_start_row():
+    args = Args()
+    args.start_row = 4
+    args.limit = 2
+
+    selected = select_plan_rows([plan_row(2), plan_row(4), plan_row(5), plan_row(6)], [], args)
+
+    assert [row.row for row in selected] == [4, 5]
 
 
 def test_business_from_plan_row_maps_receipt_plan_to_entry_values():
@@ -235,6 +357,36 @@ def test_post_query_failure_reasons_collects_group_issues():
             ],
         }
     ) == {"811": "后验未匹配-金额不一致"}
+
+
+def test_post_query_failure_reasons_extracts_group_reason_when_top_level_failed():
+    assert post_query_failure_reasons(
+        {
+            "ok": False,
+            "groups": [
+                {
+                    "ok": False,
+                    "target_rows": [851, 852],
+                    "reason": "查询失败-鼠标位于屏幕角落",
+                    "match": {"matched": {}, "issues": {"851": "查询失败-鼠标位于屏幕角落"}},
+                }
+            ],
+        }
+    ) == {
+        "851": "查询失败-鼠标位于屏幕角落",
+        "852": "查询失败-鼠标位于屏幕角落",
+    }
+
+
+def test_format_query_exception_translates_pyautogui_failsafe():
+    class FailSafeException(Exception):
+        pass
+
+    exc = FailSafeException("PyAutoGUI fail-safe triggered from mouse moving to a corner of the screen")
+
+    assert format_query_exception(exc) == (
+        "鼠标位于屏幕角落，PyAutoGUI 安全保护中断了查询快捷键，请把鼠标移出屏幕角落后重试"
+    )
 
 
 def test_console_summary_reports_post_query_failure():
@@ -376,8 +528,8 @@ def test_open_self_made_entry_reuses_existing_jab(monkeypatch):
     assert calls == [jab]
 
 
-def test_save_receipt_uses_keyboard_hotkey_not_jab_button_or_sendinput(monkeypatch):
-    calls = {"hotkey": [], "states": 0}
+def test_save_receipt_uses_sendinput_ctrl_s_not_jab_button(monkeypatch):
+    calls = {"hotkey": 0, "states": 0, "maximize": []}
 
     class FakeJAB:
         def click_save(self, timeout=None):
@@ -387,7 +539,11 @@ def test_save_receipt_uses_keyboard_hotkey_not_jab_button_or_sendinput(monkeypat
             raise AssertionError("收款单保存不等保存成功提示作为触发闭包")
 
         def press_hotkey(self, *keys, wait=None):
-            calls["hotkey"].append((keys, wait))
+            raise AssertionError("收款单保存应使用 SendInput Ctrl+S")
+
+        def maximize_window_by_handle(self, hwnd):
+            calls["maximize"].append(hwnd)
+            return True
 
     monkeypatch.setattr(
         "tools.receipt_full_flow_entry.probe_receipt_entry_page",
@@ -422,13 +578,22 @@ def test_save_receipt_uses_keyboard_hotkey_not_jab_button_or_sendinput(monkeypat
         "tools.receipt_full_flow_entry.detect_self_made_entry_state",
         fake_detect,
     )
+    monkeypatch.setattr(
+        "tools.receipt_full_flow_entry.root_hwnd",
+        lambda hwnd: hwnd,
+    )
+    monkeypatch.setattr(
+        "tools.receipt_full_flow_entry.send_hotkey_ctrl_s",
+        lambda: calls.__setitem__("hotkey", calls["hotkey"] + 1),
+    )
 
     result = save_receipt_by_ctrl_s(FakeJAB(), timeout=0.5)
 
     assert result["ok"] is True
     assert result["triggered"] is True
-    assert calls["hotkey"] == [(("ctrl", "s"), 0)]
-    assert result["hotkey"]["mode"] == "jab.press_hotkey"
+    assert calls["maximize"] == [12345]
+    assert calls["hotkey"] == 1
+    assert result["hotkey"]["mode"] == "send_input"
     assert result["oracle"]["name"] == "receipt_parent_new_ready_after_save"
     assert result["oracle"]["parent_new_state"]["ok"] is True
     assert calls["states"] == 1
@@ -439,6 +604,9 @@ def test_save_receipt_stops_before_oracle_when_foreground_guard_fails(monkeypatc
         def press_hotkey(self, *keys, wait=None):
             raise AssertionError("前台保护失败时不应触发 Ctrl+S")
 
+        def maximize_window_by_handle(self, hwnd):
+            return True
+
     monkeypatch.setattr(
         "tools.receipt_full_flow_entry.probe_receipt_entry_page",
         lambda _jab: {"ok": True, "scope": {"scope_hwnd": 12345}},
@@ -446,6 +614,16 @@ def test_save_receipt_stops_before_oracle_when_foreground_guard_fails(monkeypatc
     monkeypatch.setattr(
         "tools.receipt_full_flow_entry.foreground_matches_window",
         lambda _window: {"ok": False, "reason": "当前前台窗口不是目标 NC 窗口"},
+    )
+    monkeypatch.setattr(
+        "tools.receipt_full_flow_entry.root_hwnd",
+        lambda hwnd: hwnd,
+    )
+    monkeypatch.setattr(
+        "tools.receipt_full_flow_entry.send_hotkey_ctrl_s",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("前台保护失败时不应触发 Ctrl+S")
+        ),
     )
     monkeypatch.setattr(
         "tools.receipt_full_flow_entry.collect_receipt_new_windows",
@@ -462,11 +640,15 @@ def test_save_receipt_stops_before_oracle_when_foreground_guard_fails(monkeypatc
 
 
 def test_save_receipt_uses_entry_state_hwnd_without_header_scope_probe(monkeypatch):
-    calls = {"guard": [], "hotkey": []}
+    calls = {"guard": [], "hotkey": 0, "maximize": []}
 
     class FakeJAB:
         def press_hotkey(self, *keys, wait=None):
-            calls["hotkey"].append((keys, wait))
+            raise AssertionError("收款单保存应使用 SendInput Ctrl+S")
+
+        def maximize_window_by_handle(self, hwnd):
+            calls["maximize"].append(hwnd)
+            return True
 
     monkeypatch.setattr(
         "tools.receipt_full_flow_entry.collect_receipt_new_windows",
@@ -496,12 +678,68 @@ def test_save_receipt_uses_entry_state_hwnd_without_header_scope_probe(monkeypat
         "tools.receipt_full_flow_entry.detect_receipt_parent_new_ready",
         lambda _windows: {"ok": True, "usable_new_button_count": 1},
     )
+    monkeypatch.setattr(
+        "tools.receipt_full_flow_entry.root_hwnd",
+        lambda hwnd: hwnd,
+    )
+    monkeypatch.setattr(
+        "tools.receipt_full_flow_entry.send_hotkey_ctrl_s",
+        lambda: calls.__setitem__("hotkey", calls["hotkey"] + 1),
+    )
 
     result = save_receipt_by_ctrl_s(FakeJAB(), timeout=0.5)
 
     assert result["ok"] is True
     assert calls["guard"] == [{"hwnd": 24680}]
-    assert calls["hotkey"] == [(("ctrl", "s"), 0)]
+    assert calls["maximize"] == [24680]
+    assert calls["hotkey"] == 1
+
+
+def test_save_receipt_promotes_scope_hwnd_to_root_before_hotkey(monkeypatch):
+    calls = {"guard": [], "maximize": [], "hotkey": 0}
+
+    class FakeJAB:
+        def maximize_window_by_handle(self, hwnd):
+            calls["maximize"].append(hwnd)
+            return True
+
+    monkeypatch.setattr(
+        "tools.receipt_full_flow_entry.probe_receipt_entry_page",
+        lambda _jab: {"ok": True, "scope": {"scope_hwnd": 24680}},
+    )
+    monkeypatch.setattr(
+        "tools.receipt_full_flow_entry.root_hwnd",
+        lambda hwnd: 13579 if hwnd == 24680 else hwnd,
+    )
+    monkeypatch.setattr(
+        "tools.receipt_full_flow_entry.foreground_matches_window",
+        lambda window: calls["guard"].append(window) or {"ok": True},
+    )
+    monkeypatch.setattr(
+        "tools.receipt_full_flow_entry.send_hotkey_ctrl_s",
+        lambda: calls.__setitem__("hotkey", calls["hotkey"] + 1),
+    )
+    monkeypatch.setattr(
+        "tools.receipt_full_flow_entry.collect_receipt_new_windows",
+        lambda _jab: [{"hwnd": 13579}],
+    )
+    monkeypatch.setattr(
+        "tools.receipt_full_flow_entry.detect_self_made_entry_state",
+        lambda _windows: {"ok": False, "reason": "已回到新增态"},
+    )
+    monkeypatch.setattr(
+        "tools.receipt_full_flow_entry.detect_receipt_parent_new_ready",
+        lambda _windows: {"ok": True, "usable_new_button_count": 1},
+    )
+
+    result = save_receipt_by_ctrl_s(FakeJAB(), timeout=0.5)
+
+    assert result["ok"] is True
+    assert calls["maximize"] == [13579]
+    assert calls["guard"] == [{"hwnd": 13579}]
+    assert calls["hotkey"] == 1
+    assert result["precondition"]["scope_hwnd"] == 24680
+    assert result["precondition"]["target_hwnd"] == 13579
 
 
 def test_save_receipt_does_not_treat_missing_entry_buttons_as_success_without_new_button(
@@ -509,7 +747,10 @@ def test_save_receipt_does_not_treat_missing_entry_buttons_as_success_without_ne
 ):
     class FakeJAB:
         def press_hotkey(self, *keys, wait=None):
-            return None
+            raise AssertionError("收款单保存应使用 SendInput Ctrl+S")
+
+        def maximize_window_by_handle(self, hwnd):
+            return True
 
     monkeypatch.setattr(
         "tools.receipt_full_flow_entry.probe_receipt_entry_page",
@@ -530,6 +771,14 @@ def test_save_receipt_does_not_treat_missing_entry_buttons_as_success_without_ne
     monkeypatch.setattr(
         "tools.receipt_full_flow_entry.detect_receipt_parent_new_ready",
         lambda _windows: {"ok": False, "usable_new_button_count": 0},
+    )
+    monkeypatch.setattr(
+        "tools.receipt_full_flow_entry.root_hwnd",
+        lambda hwnd: hwnd,
+    )
+    monkeypatch.setattr(
+        "tools.receipt_full_flow_entry.send_hotkey_ctrl_s",
+        lambda: None,
     )
 
     result = save_receipt_by_ctrl_s(FakeJAB(), timeout=0.01)

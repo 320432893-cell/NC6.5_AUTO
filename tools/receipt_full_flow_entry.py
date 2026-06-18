@@ -1,4 +1,4 @@
-# 职责：编排收款单完整流程测试入口，消费 ReceiptPlanRow 跑开单/表头/明细/手续费/可选保存
+# 职责：编排收款单完整流程入口，消费 ReceiptPlanRow 跑开单/表头/明细/手续费/保存闸/后验查询
 # 不做什么：不做录入前 NC 查重，不复用历史 T0 保存脚本，不把保存设为默认行为
 # 允许依赖层：core 收款计划/配置/JAB、tools 下已正式化的收款开单/明细/查询组件
 # 谁不应该 import：core 层模块不应 import 本入口；凭证批量模块不应 import
@@ -29,7 +29,10 @@ from tools.receipt_detail_writer import (  # noqa: E402
     write_detail_line_by_screen,
     write_field_once,
 )
-from tools.receipt_keyboard_utils import foreground_matches_window  # noqa: E402
+from tools.receipt_keyboard_utils import (  # noqa: E402
+    foreground_matches_window,
+    send_hotkey_ctrl_s,
+)
 from tools.receipt_modal_guard import recover_cancelable_modal_now  # noqa: E402
 from tools.receipt_new_probe import (  # noqa: E402
     annotate_foreground_root_for_targets,
@@ -38,6 +41,7 @@ from tools.receipt_new_probe import (  # noqa: E402
     filter_usable_new_buttons,
     find_named_controls_in_windows,
     foreground_info,
+    root_hwnd,
 )
 from tools.receipt_post_save_query import run_post_save_batch_query  # noqa: E402
 from tools.receipt_self_made_fill_trial import (  # noqa: E402
@@ -58,21 +62,24 @@ BODY_TABLE_SUFFIX = "0.0.0.1.1.0.0.0.0.1.0.2.1.0.0.0.0.0"
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description=(
-            "收款单完整流程测试入口：消费 ReceiptPlanRow，默认开单/写表头/写明细/手续费后"
-            "停在保存前；显式 --save 才会保存。"
+            "收款单完整流程入口：消费 ReceiptPlanRow，从指定 Sheet1 行开始往下处理；"
+            "--limit 不传或 0 表示做到表尾。--save 是真实保存安全闸。"
         )
     )
     parser.add_argument("--config", default="config.json")
     parser.add_argument("--excel-path", default=None)
     parser.add_argument(
-        "--excel-row", type=int, default=None, help="只测试指定 Sheet1 行"
+        "--start-row",
+        type=int,
+        default=None,
+        help="从指定 Sheet1 行开始往下处理，包含该行",
     )
     parser.add_argument(
-        "--excel-rows",
+        "--limit",
+        type=int,
         default=None,
-        help="只测试指定 Sheet1 行号，逗号分隔；例如 1801,1802,1803",
+        help="从起始行往下做几条；不传或 0 表示做到表尾",
     )
-    parser.add_argument("--limit", type=int, default=1, help="最多测试几行，默认 1")
     parser.add_argument(
         "--write-plan-sheet",
         action="store_true",
@@ -92,7 +99,7 @@ def parse_args(argv=None):
     parser.add_argument(
         "--save",
         action="store_true",
-        help="高风险：键盘触发 Ctrl+S 保存收款单。默认不保存。",
+        help="高风险：键盘触发 Ctrl+S 保存收款单；正式桌面入口默认开启。",
     )
     parser.add_argument(
         "--yes-i-understand",
@@ -142,6 +149,10 @@ def main(argv=None):
         confirm_save(args)
     if args.query_after_save and not args.save:
         raise SystemExit("--query-after-save 当前只允许配合 --save 使用")
+    if args.start_row is None or args.start_row <= 0:
+        raise SystemExit("--start-row 必填且必须大于 0")
+    if args.limit is not None and args.limit < 0:
+        raise SystemExit("--limit 必须大于等于 0")
     # CLI 参数校验在创建记录器之前完成,避免早退把 run_state 留在 running 态
     if args.write_plan_sheet and args.write_selected_plan_sheet:
         raise SystemExit("--write-plan-sheet 和 --write-selected-plan-sheet 只能选一个")
@@ -246,18 +257,42 @@ def main(argv=None):
                 exit_code = 1
                 break
         batch_results = build_batch_results(selected_rows, report["rows"])
+        report["post_query_requested"] = bool(args.query_after_save)
+        report["post_query_executed"] = False
         if args.query_after_save and report["rows"] and exit_code == 0:
-            recorder.set_stage("后验查询")
+            recorder.set_stage("后验查询", step_index=len(report["rows"]), total_steps=len(selected_rows))
+            recorder.event(
+                "post-query-start",
+                saved_rows=[row.get("excel_row") for row in report["rows"] if row.get("ok")],
+            )
             batch_results, post_query = run_post_save_batch_query(
                 config,
                 selected_rows,
                 report["rows"],
             )
             report["post_query"] = post_query
+            report["post_query_executed"] = True
+            recorder.event(
+                "post-query-done",
+                ok=bool(post_query.get("ok")),
+                reason=post_query.get("reason") or "",
+            )
             post_query_issues = post_query_failure_reasons(post_query)
             if post_query_issues:
                 report["post_query_failed_rows"] = post_query_issues
                 exit_code = 1
+        elif args.query_after_save:
+            report["post_query_skipped"] = {
+                "reason": post_query_skip_reason(report["rows"], exit_code),
+                "rows": len(report["rows"]),
+                "exit_code": exit_code,
+            }
+            recorder.event(
+                "post-query-skipped",
+                reason=report["post_query_skipped"]["reason"],
+                rows=len(report["rows"]),
+                exit_code=exit_code,
+            )
         if args.write_selected_plan_sheet:
             workbook.write_batch_result_sheet(batch_results)
 
@@ -285,42 +320,14 @@ def confirm_save(args):
 def select_plan_rows(plan_rows, issues, args):
     issue_rows = {issue.excel_row for issue in issues if issue.excel_row is not None}
     runnable = [row for row in plan_rows if row.row not in issue_rows]
-    target_rows = parse_excel_rows_arg(getattr(args, "excel_rows", None))
-    if args.excel_row is not None and target_rows:
-        raise SystemExit("--excel-row 和 --excel-rows 只能选一个")
-    if target_rows:
-        target_set = set(target_rows)
-        runnable = [row for row in runnable if row.row in target_set]
-        by_number = {row.row: row for row in runnable}
-        runnable = [
-            by_number[row_number]
-            for row_number in target_rows
-            if row_number in by_number
-        ]
-    elif args.excel_row is not None:
-        runnable = [row for row in runnable if row.row == args.excel_row]
+    start_row = getattr(args, "start_row", None)
+    if start_row is None or start_row <= 0:
+        raise SystemExit("--start-row 必填且必须大于 0")
+    runnable = [row for row in runnable if row.row >= start_row]
     limit = max(int(args.limit or 0), 0)
     if limit:
         runnable = runnable[:limit]
     return runnable
-
-
-def parse_excel_rows_arg(value):
-    if value in (None, ""):
-        return []
-    rows = []
-    for part in str(value).split(","):
-        text = part.strip()
-        if not text:
-            continue
-        try:
-            row_number = int(text)
-        except ValueError as exc:
-            raise SystemExit(f"--excel-rows 行号无效: {text!r}") from exc
-        if row_number <= 0:
-            raise SystemExit(f"--excel-rows 行号必须大于 0: {row_number}")
-        rows.append(row_number)
-    return list(dict.fromkeys(rows))
 
 
 def filter_issues_for_rows(issues, selected_rows):
@@ -469,6 +476,7 @@ def run_one_row(
                 scope_hwnd=entry_scope_hwnd,
                 dynamic_index=entry_dynamic_index,
                 anchor_path=entry_anchor_path,
+                trust_provided_scope=True,
                 recover_after_failure=recover_modal_after_failure,
                 after_field=after_header_field,
             )
@@ -484,6 +492,7 @@ def run_one_row(
                 scope_hwnd=entry_scope_hwnd,
                 dynamic_index=entry_dynamic_index,
                 anchor_path=entry_anchor_path,
+                trust_provided_scope=True,
                 recover_after_failure=recover_modal_after_failure,
             )
         if header_pause_reports:
@@ -1231,25 +1240,49 @@ def business_from_plan_row(row):
     }
 
 
-def read_customer_name_after_header(jab, header_steps, dynamic_index, scope_hwnd):
+def read_customer_name_after_header(
+    jab,
+    header_steps,
+    dynamic_index,
+    scope_hwnd,
+    timeout=1.2,
+    poll_interval=0.1,
+):
     step = next(
         (item for item in header_steps or [] if item.get("label") == "客户"),
         None,
     )
     attempts = []
     if step and step.get("path"):
-        found = find_receipt_header_field_by_dynamic_path(
-            jab,
-            "客户",
-            step.get("dynamic_index") or dynamic_index,
-            scope_hwnd=scope_hwnd,
-            require_showing=False,
-            require_valid_bounds=False,
-            path_template=(step.get("path_attempt") or {}).get("path_template"),
-        )
-        attempts.append(
-            read_customer_name_from_found_field(jab, found, source="path-readback")
-        )
+        deadline = time.perf_counter() + max(float(timeout or 0), 0.0)
+        while True:
+            found = find_receipt_header_field_by_dynamic_path(
+                jab,
+                "客户",
+                step.get("dynamic_index") or dynamic_index,
+                scope_hwnd=scope_hwnd,
+                require_showing=False,
+                require_valid_bounds=False,
+                path_template=(step.get("path_attempt") or {}).get("path_template"),
+            )
+            attempt = read_customer_name_from_found_field(
+                jab,
+                found,
+                source="path-readback",
+            )
+            attempts.append(attempt)
+            value = str(attempt.get("value") or "").strip()
+            if is_valid_customer_name_candidate(value):
+                return {
+                    "ok": True,
+                    "value": value,
+                    "source": attempt.get("source"),
+                    "attempts": attempts,
+                }
+            remaining = deadline - time.perf_counter()
+            if remaining <= 0:
+                break
+            time.sleep(min(max(float(poll_interval or 0), 0.02), remaining))
     if step:
         attempts.append(
             {
@@ -1274,7 +1307,7 @@ def read_customer_name_after_header(jab, header_steps, dynamic_index, scope_hwnd
         "ok": False,
         "value": "",
         "attempts": attempts,
-        "reason": "客户名称未确认：客户字段 description 未读到有效 NC 客户名称",
+        "reason": format_customer_readback_failure(attempts),
     }
 
 
@@ -1307,6 +1340,38 @@ def read_customer_name_from_found_field(jab, found, source):
         }
     finally:
         jab.release_contexts(vm_id, owned_contexts)
+
+
+def format_customer_readback_failure(attempts):
+    details = []
+    for attempt in attempts or []:
+        source = str(attempt.get("source") or "unknown")
+        if attempt.get("snapshot"):
+            snapshot = attempt.get("snapshot") or {}
+            text = str(snapshot.get("text") or "").strip()
+            name = str(snapshot.get("name") or "").strip()
+            description = str(snapshot.get("description") or "").strip()
+        else:
+            text = str(attempt.get("text") or "").strip()
+            name = str(attempt.get("name") or "").strip()
+            description = str(attempt.get("description") or "").strip()
+        reason = str(attempt.get("reason") or "").strip()
+        fields = []
+        if text:
+            fields.append(f"text={text!r}")
+        if name:
+            fields.append(f"name={name!r}")
+        if description:
+            fields.append(f"description={description!r}")
+        if reason and not fields:
+            fields.append(f"reason={reason}")
+        if fields:
+            details.append(f"{source}: " + ", ".join(fields))
+    if not details:
+        return "客户名称未确认：客户字段未回显有效 NC 客户名称"
+    return "客户名称未确认：客户字段未回显有效 NC 客户名称；读回：" + "；".join(
+        details[-3:]
+    )
 
 
 def first_valid_text(*values):
@@ -1356,8 +1421,8 @@ def build_batch_results(selected_rows, row_reports):
 
 
 def post_query_failure_reasons(post_query):
-    if not post_query or not post_query.get("ok"):
-        return {"*": (post_query or {}).get("reason") or "后验查询失败"}
+    if not post_query:
+        return {"*": "后验查询失败"}
     issues = {}
     for group in post_query.get("groups") or []:
         match = group.get("match") or {}
@@ -1367,7 +1432,17 @@ def post_query_failure_reasons(post_query):
             reason = group.get("reason") or "后验查询失败"
             for row in group.get("target_rows") or []:
                 issues.setdefault(str(row), reason)
+    if not post_query.get("ok") and not issues:
+        return {"*": post_query.get("reason") or "后验查询失败"}
     return issues
+
+
+def post_query_skip_reason(rows, exit_code):
+    if not rows:
+        return "没有完成任何收款单录入行，未执行后验查询"
+    if exit_code != 0:
+        return "录入/保存阶段未全部成功，未执行后验查询"
+    return "后验查询条件未满足"
 
 
 def format_row_failure_reason(report):
@@ -1402,24 +1477,31 @@ def save_receipt_by_ctrl_s(jab, scope_hwnd=None, timeout=1.0):
             "reason": "Ctrl+S 保存前未取得收款单窗口句柄",
             "page": page,
         }
-    guard = foreground_matches_window({"hwnd": scope_hwnd})
+    target_hwnd = root_hwnd(scope_hwnd) or scope_hwnd
+    maximize = jab.maximize_window_by_handle(target_hwnd)
+    guard = foreground_matches_window({"hwnd": target_hwnd})
     if not guard.get("ok"):
         return {
             "ok": False,
             "triggered": False,
             "reason": guard.get("reason") or "当前前台窗口不是目标 NC 窗口",
+            "maximize": maximize,
             "guard": guard,
             "page": page,
+            "scope_hwnd": scope_hwnd,
+            "target_hwnd": target_hwnd,
         }
     try:
-        jab.press_hotkey("ctrl", "s", wait=0)
+        send_hotkey_ctrl_s()
     except Exception as exc:
         return {
             "ok": False,
             "triggered": False,
-            "reason": f"Ctrl+S 键盘热键触发失败：{type(exc).__name__}: {exc}",
+            "reason": f"Ctrl+S SendInput 触发失败：{type(exc).__name__}: {exc}",
             "guard": guard,
             "page": page,
+            "scope_hwnd": scope_hwnd,
+            "target_hwnd": target_hwnd,
         }
     started = time.perf_counter()
     last_state = None
@@ -1432,10 +1514,13 @@ def save_receipt_by_ctrl_s(jab, scope_hwnd=None, timeout=1.0):
             return {
                 "ok": True,
                 "triggered": True,
-                "hotkey": {"ok": True, "mode": "jab.press_hotkey", "key": "Ctrl+S"},
+                "hotkey": {"ok": True, "mode": "send_input", "key": "Ctrl+S"},
                 "precondition": {
                     "page": page,
+                    "maximize": maximize,
                     "foreground_guard": guard,
+                    "scope_hwnd": scope_hwnd,
+                    "target_hwnd": target_hwnd,
                 },
                 "seconds": round(time.perf_counter() - started, 3),
                 "oracle": {
@@ -1454,10 +1539,13 @@ def save_receipt_by_ctrl_s(jab, scope_hwnd=None, timeout=1.0):
     return {
         "ok": False,
         "triggered": True,
-        "hotkey": {"ok": True, "mode": "jab.press_hotkey", "key": "Ctrl+S"},
+        "hotkey": {"ok": True, "mode": "send_input", "key": "Ctrl+S"},
         "precondition": {
             "page": page,
+            "maximize": maximize,
             "foreground_guard": guard,
+            "scope_hwnd": scope_hwnd,
+            "target_hwnd": target_hwnd,
         },
         "seconds": round(time.perf_counter() - started, 3),
         "reason": "保存后未确认收款单父页【新增】已恢复，不能证明保存成功",
@@ -1658,15 +1746,24 @@ def build_console_report_lines(report, report_path=None, summary_path=None):
         timings = failed_row.get("timings") or []
         if timings:
             lines.append("关键耗时：" + format_timings(timings))
-    elif report.get("ok"):
-        ok_rows = [row.get("excel_row") for row in rows if row.get("ok")]
-        lines.append(f"通过行：{ok_rows}")
     elif report.get("post_query_failed_rows"):
         ok_rows = [row.get("excel_row") for row in rows if row.get("ok")]
         lines.append(f"录入保存通过行：{ok_rows}")
         lines.append("失败阶段：post-query")
         for row, reason in (report.get("post_query_failed_rows") or {}).items():
             lines.append(f"后验未匹配行 {row}：{reason}")
+    elif report.get("ok"):
+        ok_rows = [row.get("excel_row") for row in rows if row.get("ok")]
+        lines.append(f"通过行：{ok_rows}")
+        post_query = report.get("post_query") or {}
+        if post_query:
+            matched = 0
+            issues = 0
+            for group in post_query.get("groups") or []:
+                match = group.get("match") or {}
+                matched += len(match.get("matched") or {})
+                issues += len(match.get("issues") or {})
+            lines.append(f"后验查询：已执行，匹配 {matched} 行，未匹配 {issues} 行")
     elif report.get("reason"):
         lines.append(f"失败原因：{report.get('reason')}")
     if report_path:

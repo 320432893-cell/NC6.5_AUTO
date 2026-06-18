@@ -1,4 +1,4 @@
-# 职责：生成收款单查询 dry-run 匹配报告、写回计划报告和匹配输入诊断。
+# 职责：生成收款单查询 dry-run 匹配报告和匹配输入诊断。
 # 不做什么：不操作 NC/JAB 窗口，不读取分页，不解析 CLI 参数。
 # 允许依赖层：core.receipt_entry、core.receipt_matching、core.receipt_nc_extract 暴露的模型和匹配能力。
 # 谁不应该 import：JAB 底层适配器、临时探针脚本、与收款单查询无关的业务流程。
@@ -22,7 +22,6 @@ def build_dry_run_match_report(
     tables,
     org_code,
     business_date,
-    write_back=False,
 ):
     rows, candidates, excel_issues = ReceiptEntryWorkbook(config).preview_rows(
         today=business_date
@@ -36,7 +35,6 @@ def build_dry_run_match_report(
         rows,
         candidates,
         excel_issues,
-        write_back=write_back,
     )
 
 
@@ -49,7 +47,6 @@ def build_dry_run_match_report_from_preview(
     rows,
     candidates,
     excel_issues,
-    write_back=False,
     target_rows=None,
     configured_match_snapshot=None,
 ):
@@ -65,7 +62,6 @@ def build_dry_run_match_report_from_preview(
         "candidate_banks": dict(
             sorted(Counter(row.bank for row in match_candidates).items())
         ),
-        "write_back": {"enabled": bool(write_back), "updated": 0, "rows": []},
         "variants": [],
     }
     matcher = ReceiptEntryDryRunMatcher()
@@ -137,12 +133,10 @@ def build_dry_run_match_report_from_preview(
                 }
             )
             if is_configured_variant:
-                report["write_back"] = build_receipt_write_back_report(
-                    config,
+                report["match_summary"] = build_receipt_match_summary(
                     match_candidates,
                     matched,
                     match_issues,
-                    enabled=write_back,
                 )
     return report
 
@@ -158,12 +152,10 @@ def unique_ordered(values):
     return result
 
 
-def build_receipt_write_back_report(
-    config,
+def build_receipt_match_summary(
     excel_rows,
     matched,
     match_issues,
-    enabled=False,
 ):
     issue_by_row = {issue.excel_row: issue for issue in match_issues}
     statuses = {}
@@ -182,8 +174,7 @@ def build_receipt_write_back_report(
             if issue.reason.startswith("重复"):
                 duplicate_rows.append(excel_row.row)
 
-    report = {
-        "enabled": bool(enabled),
+    return {
         "planned": len(statuses),
         "matched_rows": sorted(matched),
         "not_found_rows": sorted(
@@ -192,14 +183,7 @@ def build_receipt_write_back_report(
         "duplicate_rows": sorted(duplicate_rows),
         "exception_rows": sorted(exception_rows),
         "skipped_duplicate_rows": sorted(duplicate_rows),
-        "updated": 0,
-        "rows": [],
     }
-    if enabled:
-        write_result = ReceiptEntryWorkbook(config).write_nc_done_statuses(statuses)
-        report["updated"] = write_result["updated"]
-        report["rows"] = write_result["rows"]
-    return report
 
 
 def diagnose_match_inputs(excel_rows, nc_rows):

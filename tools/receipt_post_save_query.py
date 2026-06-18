@@ -248,17 +248,28 @@ def query_one_org(
             }
         )
     except Exception as exc:
+        reason = format_query_exception(exc)
         group_report.update(
             {
                 "ok": False,
-                "reason": f"查询失败-{type(exc).__name__}:{exc}",
+                "reason": f"查询失败-{reason}",
                 "match": {
                     "matched": {},
-                    "issues": {target.row.row: f"查询失败-{exc}" for target in targets},
+                    "issues": {
+                        target.row.row: f"查询失败-{reason}" for target in targets
+                    },
                 },
             }
         )
     return group_report
+
+
+def format_query_exception(exc):
+    raw = str(exc).strip()
+    name = type(exc).__name__
+    if name == "FailSafeException" or "fail-safe" in raw.lower():
+        return "鼠标位于屏幕角落，PyAutoGUI 安全保护中断了查询快捷键，请把鼠标移出屏幕角落后重试"
+    return f"{name}:{raw}" if raw else name
 
 
 def match_snapshot_to_result(targets, match_snapshot):

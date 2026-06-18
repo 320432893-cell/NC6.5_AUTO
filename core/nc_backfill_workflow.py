@@ -21,6 +21,8 @@ class NCBackfillWorkflow:
         start_row=None,
         end_row=None,
         auto_switch=True,
+        require_generated_status=True,
+        assume_pending_ready=False,
     ):
         with self.perf.span(
             "backfill_total",
@@ -28,6 +30,8 @@ class NCBackfillWorkflow:
             start_row=start_row,
             end_row=end_row,
             auto_switch=auto_switch,
+            require_generated_status=require_generated_status,
+            assume_pending_ready=assume_pending_ready,
         ):
             self.run_state.set_stage(
                 "backfill_load_excel",
@@ -57,10 +61,20 @@ class NCBackfillWorkflow:
                 item
                 for item in items
                 if not item.parse_error
-                and str(item.voucher or "").strip() == self.generated_status
+                and (
+                    not require_generated_status
+                    or str(item.voucher or "").strip() == self.generated_status
+                )
             ]
-            with self.perf.span("excel_save_split_columns", rows=len(items)):
-                self.data_handler.save_jab_split_columns(items)
+            if require_generated_status:
+                with self.perf.span("excel_save_split_columns", rows=len(items)):
+                    self.data_handler.save_jab_split_columns(items)
+            else:
+                self.perf.event(
+                    "excel_save_split_columns_skipped",
+                    reason="same_process_generate_and_backfill",
+                    rows=len(items),
+                )
             self.perf.event("backfill_items_prepared", rows=len(items))
             self.run_state.update_counts(backfill_pending=len(items))
             if not items:
@@ -74,12 +88,15 @@ class NCBackfillWorkflow:
                 self.run_state.set_stage("backfill_done")
                 log.info("JAB 回填完成: 没有待回填行")
                 return {}
-            self.ensure_generated_page_for_backfill(items, auto_switch=auto_switch)
+            self.ensure_generated_page_for_backfill(
+                items,
+                auto_switch=auto_switch,
+                assume_pending_ready=assume_pending_ready,
+            )
             self.run_state.set_stage(
                 "backfill_match_generated_table",
                 excel_rows=[item.row for item in items],
             )
-            self.require_page_state("generated", items, command="backfill")
             matches, issues = self.table_matcher.match_generated_voucher_table(
                 items,
                 voucher_col=self.voucher_col,
@@ -169,7 +186,22 @@ class NCBackfillWorkflow:
             log.info(f"JAB 回填完成: vouchers={len(matches)}, issues={len(issues)}")
             return updates
 
-    def ensure_generated_page_for_backfill(self, items, auto_switch=True):
+    def ensure_generated_page_for_backfill(
+        self,
+        items,
+        auto_switch=True,
+        assume_pending_ready=False,
+    ):
+        if assume_pending_ready and auto_switch:
+            self.record_transition(
+                "backfill_auto_switch_generated",
+                from_state="pending",
+                to_state="generated",
+                rows=len(items),
+                reason="same_process_after_voucher_close",
+            )
+            return self.switch_to_generated_list(assume_parent_ready=True)
+
         state = self.detect_page_state(items)
         self.record_event(
             "backfill_preflight_state",
@@ -186,8 +218,7 @@ class NCBackfillWorkflow:
                 to_state="generated",
                 rows=len(items),
             )
-            self.switch_to_generated_list()
-            return self.require_page_state("generated", items, command="backfill")
+            return self.switch_to_generated_list()
 
         if state.name == "pending":
             detail = "当前在待生成页，未启用自动切换"

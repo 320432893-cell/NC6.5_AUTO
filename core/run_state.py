@@ -1,4 +1,5 @@
 import json
+import os
 import time
 from datetime import datetime
 from pathlib import Path
@@ -84,8 +85,42 @@ class RunStateRecorder:
     def write(self):
         self.data["updated_at"] = datetime.now().isoformat(timespec="seconds")
         self.data["elapsed_s"] = self.elapsed_s()
-        tmp_path = self.path.with_suffix(".json.tmp")
-        with tmp_path.open("w", encoding="utf-8") as file:
+        tmp_path = self.path.with_name(
+            f"{self.path.name}.{os.getpid()}.{time.monotonic_ns()}.tmp"
+        )
+        try:
+            self._dump_json(tmp_path)
+            self._replace_with_retry(tmp_path)
+        except OSError:
+            self._write_fallback()
+        finally:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def _dump_json(self, path):
+        with path.open("w", encoding="utf-8") as file:
             json.dump(self.data, file, ensure_ascii=False, indent=2, default=str)
             file.write("\n")
-        tmp_path.replace(self.path)
+
+    def _replace_with_retry(self, tmp_path):
+        delays = (0.03, 0.06, 0.12, 0.24, 0.4)
+        for index, delay in enumerate((0.0, *delays)):
+            if delay:
+                time.sleep(delay)
+            try:
+                tmp_path.replace(self.path)
+                return
+            except OSError:
+                if index == len(delays):
+                    raise
+
+    def _write_fallback(self):
+        fallback = self.path.with_name(
+            f"{self.path.stem}_{self.run_id}_{os.getpid()}.json"
+        )
+        try:
+            self._dump_json(fallback)
+        except OSError:
+            pass

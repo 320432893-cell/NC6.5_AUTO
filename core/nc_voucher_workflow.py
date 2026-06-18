@@ -106,11 +106,7 @@ class NCVoucherWorkflow:
                 save_batch_index=save_batches + 1,
                 excel_rows=[match.item.row for match in voucher_batch],
             )
-            self.require_page_state(
-                "voucher_open",
-                voucher_batch,
-                command="voucher-save",
-            )
+            self.ensure_voucher_window_present(voucher_batch)
             self.record_event(
                 "event_voucher_save_click",
                 save_batch_index=save_batches + 1,
@@ -200,9 +196,9 @@ class NCVoucherWorkflow:
                 match for match in pending_source if match.item.row not in saved_rows
             ]
             save_batches += 1
-            if pending_source and verify_result in ("empty_window", "window_closed"):
+            if pending_source and verify_result == "empty_window":
                 raise ContractViolation(
-                    "制单窗口已空/关闭但仍有未保存 Excel 行，停止复核: "
+                    "制单窗口已空但仍有未保存 Excel 行，停止复核: "
                     f"remaining_excel_rows={[m.item.row for m in pending_source]}"
                 )
             if cached_voucher_matches is not None:
@@ -233,6 +229,17 @@ class NCVoucherWorkflow:
 
         return saved_matches, save_batches
 
+    def ensure_voucher_window_present(self, voucher_batch):
+        if self.jab.window_exists(
+            self.voucher_window_title,
+            class_name=self.voucher_window_class,
+        ):
+            return
+        raise ContractViolation(
+            "保存前未检测到制单窗口，停止以避免误保存: "
+            f"Excel行={[match.item.row for match in voucher_batch]}"
+        )
+
     def trigger_voucher_save(self):
         if self.save_trigger == "jab_button":
             return self.jab.click_save(timeout=self.save_success_timeout)
@@ -252,7 +259,7 @@ class NCVoucherWorkflow:
 
     def prepare_hotkey_save_focus(self):
         if self.hotkey_activate_policy == "always":
-            return self.jab.activate_window_by_title(
+            return self.jab.maximize_window_by_title(
                 self.voucher_window_title,
                 class_name=self.voucher_window_class,
                 timeout=1,
@@ -260,7 +267,7 @@ class NCVoucherWorkflow:
 
         if self.hotkey_activate_policy == "first":
             if self.hotkey_save_attempts == 0:
-                return self.jab.activate_window_by_title(
+                return self.jab.maximize_window_by_title(
                     self.voucher_window_title,
                     class_name=self.voucher_window_class,
                     timeout=1,
@@ -287,8 +294,6 @@ class NCVoucherWorkflow:
             return "voucher_open"
         if verify_result == "empty_window":
             return "voucher_open_empty"
-        if verify_result == "window_closed":
-            return "pending"
         return "error"
 
     def should_use_voucher_queue_cache(self, matches):
@@ -330,13 +335,45 @@ class NCVoucherWorkflow:
         return advanced
 
     def read_voucher_tables(self, pending_count):
-        with self.perf.span("voucher_table_read", pending=pending_count):
+        return self.read_voucher_tables_once(pending_count)
+
+    def read_voucher_tables_once(self, pending_count):
+        max_rows = max(
+            int(pending_count or 0),
+            int(self.batch_cfg.get("voucher_table_read_min_rows", 5)),
+        )
+        max_rows += int(self.batch_cfg.get("voucher_table_read_row_buffer", 2))
+        with self.perf.span(
+            "voucher_table_read",
+            pending=pending_count,
+            max_rows=max_rows,
+        ):
             tables = self.jab.read_window_table_cells(
                 self.voucher_window_title,
-                max_rows=500,
+                max_rows=max_rows,
                 max_cols=13,
             )
         return self.filter_voucher_tables(tables)
+
+    def wait_for_voucher_tables(self, pending_count, timeout=None):
+        timeout = float(
+            self.batch_cfg.get("voucher_window_open_timeout", timeout or self.save_wait)
+        )
+        interval = float(self.batch_cfg.get("voucher_window_poll_interval", 0.05))
+        deadline = time.time() + max(timeout, 0.0)
+        last_error = None
+        while True:
+            check_abort()
+            try:
+                return self.read_voucher_tables_once(pending_count)
+            except JABControlNotFound as exc:
+                last_error = exc
+                if time.time() >= deadline:
+                    break
+                time.sleep(interval)
+        raise JABControlNotFound(
+            f"前台生成后未检测到制单窗口表格: timeout={timeout}"
+        ) from last_error
 
     def filter_voucher_tables(self, tables):
         voucher_tables = [
@@ -634,8 +671,6 @@ class NCVoucherWorkflow:
             return [[match] for match in matches]
         if self.save_strategy == "safe_batch_by_pending_row":
             return self.build_safe_pending_row_batches(matches)
-        if self.save_strategy == "bottom_up":
-            return self.build_voucher_bottom_up_batches(matches)
         raise ValueError(f"不支持的保存策略: {self.save_strategy!r}")
 
     def build_safe_pending_row_batches(self, matches):
@@ -676,30 +711,6 @@ class NCVoucherWorkflow:
         )
         return batches
 
-    def build_voucher_bottom_up_batches(self, matches):
-        batches = []
-        current = []
-        last_row = None
-
-        for match in matches:
-            row = match.voucher_row
-            should_split = current and (
-                row >= last_row
-                or match.table_index != current[-1].table_index
-                or (self.max_batch_size > 0 and len(current) >= self.max_batch_size)
-            )
-            if should_split:
-                batches.append(current)
-                current = []
-                last_row = None
-
-            current.append(match)
-            last_row = row
-
-        if current:
-            batches.append(current)
-        return batches
-
     def get_voucher_selection_rows(self, voucher_batch: list[VoucherSaveMatch]):
         return [match.voucher_row for match in voucher_batch]
 
@@ -707,8 +718,18 @@ class NCVoucherWorkflow:
         self, voucher_batch: list[VoucherSaveMatch], before_count
     ):
         expected_removed = len(voucher_batch)
+        expected_after = before_count - expected_removed
+        table_index = voucher_batch[0].table_index
         deadline = time.time() + self.voucher_record_timeout
         target_rows = {match.item.row for match in voucher_batch}
+        last_table_counts = []
+
+        if expected_after < 0:
+            raise ContractViolation(
+                "制单队列计数不合法，停止以避免误判保存成功: "
+                f"excel_rows={sorted(target_rows)} table={table_index} "
+                f"before={before_count} expected_removed={expected_removed}"
+            )
 
         while time.time() < deadline:
             check_abort()
@@ -716,71 +737,79 @@ class NCVoucherWorkflow:
                 self.voucher_window_title,
                 class_name=self.voucher_window_class,
             )
+            if not window_exists:
+                raise ContractViolation(
+                    "保存后制单窗口已关闭，属于异常状态，停止以避免误标记: "
+                    f"excel_rows={sorted(target_rows)} table={table_index} "
+                    f"before={before_count} expected_after={expected_after}"
+                )
+
             with self.perf.span(
                 "voucher_save_verify_counts",
                 rows=expected_removed,
                 before=before_count,
+                expected_after=expected_after,
+                table_index=table_index,
             ):
                 table_counts = self.jab.read_window_table_counts(
                     self.voucher_window_title
                 )
-            counts = [
-                table["row_count"]
-                for table in table_counts
-                if table["row_count"] > 0 and table["col_count"] == 13
-            ]
-            if not counts:
-                if window_exists:
-                    log.info(
-                        "制单窗口仍存在但制单表为空，转待生成表复核: "
-                        f"excel_rows={sorted(target_rows)} before={before_count} "
-                        f"expected_removed={expected_removed}"
-                    )
-                    return "empty_window"
-                log.info(
-                    f"制单窗口已关闭，转待生成表复核: excel_rows={sorted(target_rows)}"
-                )
-                return "window_closed"
-
-            min_count = min(counts) if counts else 0
-            if min_count <= before_count - expected_removed:
-                log.info(
-                    "制单批次保存行数验证通过: "
-                    f"excel_rows={sorted(target_rows)} before={before_count} after={min_count}"
-                )
-                return True
-
-            tables = self.jab.read_window_table_cells(
-                self.voucher_window_title,
-                max_rows=500,
-                max_cols=13,
-            )
-            voucher_tables = [
+            voucher_counts = [
                 table
-                for table in tables
-                if table["row_count"] > 0 and table["col_count"] == 13
+                for table in table_counts
+                if table.get("col_count") == 13
             ]
-            remaining_matches, issues = self.match_voucher_table(
-                voucher_batch,
-                tables=voucher_tables,
+            last_table_counts = voucher_counts
+            target_count = next(
+                (
+                    table
+                    for table in voucher_counts
+                    if table.get("table_index") == table_index
+                ),
+                None,
             )
-            remaining_rows = {match.item.row for match in remaining_matches}
 
-            if not remaining_rows and min_count <= before_count - expected_removed:
+            if target_count is not None:
+                after_count = int(target_count.get("row_count", 0))
+                if after_count == expected_after:
+                    if expected_after == 0:
+                        log.info(
+                            "制单队列已保存完成，当前表为空: "
+                            f"excel_rows={sorted(target_rows)} table={table_index} "
+                            f"before={before_count} after={after_count}"
+                        )
+                        return "empty_window"
+                    log.info(
+                        "制单批次保存行数验证通过: "
+                        f"excel_rows={sorted(target_rows)} table={table_index} "
+                        f"before={before_count} after={after_count}"
+                    )
+                    return True
+                if after_count < expected_after:
+                    raise ContractViolation(
+                        "制单表行数减少超过预期，停止以避免漏保存或误标记: "
+                        f"excel_rows={sorted(target_rows)} table={table_index} "
+                        f"before={before_count} after={after_count} "
+                        f"expected_after={expected_after}"
+                    )
+            elif expected_after == 0 and not voucher_counts:
                 log.info(
-                    "制单批次保存验证通过: "
-                    f"excel_rows={sorted(target_rows)} before={before_count} after={min_count}"
+                    "制单队列已保存完成，窗口仍存在但制单表为空: "
+                    f"excel_rows={sorted(target_rows)} table={table_index} "
+                    f"before={before_count}"
                 )
-                return True
+                return "empty_window"
 
-            time.sleep(0.3)
+            time.sleep(0.1)
 
         raise ContractViolation(
-            "制单批次保存后仍可匹配到记录或行数未减少: "
-            f"excel_rows={sorted(target_rows)} before={before_count}"
+            "制单批次保存后表格行数未按预期减少: "
+            f"excel_rows={sorted(target_rows)} table={table_index} "
+            f"before={before_count} expected_after={expected_after} "
+            f"last_counts={last_table_counts}"
         )
 
-    def close_and_verify_pending_removed(self, voucher_batch: list[VoucherSaveMatch]):
+    def close_voucher_window_after_save(self, voucher_batch: list[VoucherSaveMatch]):
         close_cfg = self.batch_cfg.get("close_voucher_window", {})
         if self.jab.window_exists(
             self.voucher_window_title,
@@ -793,87 +822,36 @@ class NCVoucherWorkflow:
             self.jab.close_window_by_title(
                 close_cfg.get("title", self.voucher_window_title),
                 class_name=close_cfg.get("class_name", self.voucher_window_class),
-                wait=float(close_cfg.get("wait", 0.5)),
+                wait=0,
             )
+            self.wait_until_voucher_window_closed()
             self.record_transition(
                 "voucher_window_closed",
                 from_state="voucher_open",
                 to_state="pending",
                 excel_rows=[match.item.row for match in voucher_batch],
             )
-
-        self.record_event(
-            "event_pending_refresh",
-            key="f5",
-            wait=float(self.batch_cfg.get("pending_refresh_wait", 1.0)),
-        )
-        self.jab.press_key(
-            "f5", wait=float(self.batch_cfg.get("pending_refresh_wait", 1.0))
-        )
-        snapshot = self.jab.read_table_snapshot()
-        index = defaultdict(list)
-        for row in snapshot:
-            if row["amount"] is None or not row["partner"]:
-                continue
-            index[(row["amount"], row["partner"])].append(row)
-
-        still_present = []
-        for match in voucher_batch:
-            item = match.item
-            key = (
-                self.table_matcher._as_decimal(item.amount),
-                self.jab.normalize_text(item.partner),
-            )
-            if index.get(key):
-                still_present.append(item.row)
-
-        if still_present:
-            raise ContractViolation(
-                f"待生成表刷新后仍存在本批记录: Excel行{still_present}"
-            )
-
         log.info(
-            "待生成表复核通过，本批记录已消失: "
+            "制单窗口收尾完成，跳过待生成表刷新复核，后续直接查询已生成列表: "
             f"excel_rows={[match.item.row for match in voucher_batch]}"
         )
         return True
 
-    def verify_current_voucher_record(self, match: VoucherSaveMatch):
-        item = match.item
-        found = self.jab.wait_for_record_visible(
-            item.amount,
-            item.partner,
-            timeout=self.voucher_record_timeout,
-            window_title=self.voucher_window_title,
-        )
-        if not found:
-            raise ContractViolation(
-                "制单界面未找到当前记录，停止以避免错保存: "
-                f"Excel行{item.row} amount={item.amount} partner={item.partner}"
+    def wait_until_voucher_window_closed(self):
+        timeout = float(
+            self.batch_cfg.get(
+                "voucher_window_close_timeout",
+                self.batch_cfg.get("state_wait_timeout", 2.0),
             )
-        log.debug(
-            "制单当前记录验证通过: "
-            f"Excel行{item.row} table={found['table_index']} row={found['row_index']} "
-            f"selected={found['selected']}"
         )
-        return found
-
-    def wait_for_next_voucher_record(self, next_match):
-        item = next_match.item
-        found = self.jab.wait_for_record_visible(
-            item.amount,
-            item.partner,
-            timeout=self.voucher_record_timeout,
-            window_title=self.voucher_window_title,
-        )
-        if not found:
-            raise ContractViolation(
-                "保存后未检测到制单界面推进到下一条，停止以避免误标记: "
-                f"下一Excel行{item.row} amount={item.amount} partner={item.partner}"
-            )
-        log.info(
-            "保存后已推进到下一条: "
-            f"Excel行{item.row} table={found['table_index']} row={found['row_index']} "
-            f"selected={found['selected']}"
-        )
-        return found
+        interval = float(self.batch_cfg.get("state_wait_interval", 0.2))
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            check_abort()
+            if not self.jab.window_exists(
+                self.voucher_window_title,
+                class_name=self.voucher_window_class,
+            ):
+                return True
+            time.sleep(interval)
+        raise ContractViolation("关闭制单窗口后仍检测到制单窗口，停止进入后验查询")

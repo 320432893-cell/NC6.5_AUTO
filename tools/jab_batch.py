@@ -3,10 +3,9 @@ import json
 import sys
 import time
 from datetime import date
+from pathlib import Path
 
-from core.paths import base_dir
-
-ROOT = base_dir()
+ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -23,21 +22,43 @@ def build_parser():
     parser.add_argument(
         "command",
         choices=(
+            "read-queue",
             "plan",
             "generate",
+            "generate-and-backfill",
             "resume-voucher",
             "switch-generated",
             "backfill",
             "split-keys",
         ),
         help=(
-            "plan=只匹配分批; generate=真实生成并保存; "
+            "read-queue=只读取并预检Excel队列; plan=匹配分批; generate=真实生成并保存; "
+            "generate-and-backfill=同一进程生成保存并回填凭证号; "
             "resume-voucher=不再点击生成，恢复保存当前制单窗口; "
             "switch-generated=自动切到已生成列表; backfill=在已生成列表回填凭证号; "
             "split-keys=把金额+对手方拼接列拆成两列"
         ),
     )
     parser.add_argument("--config", default="config.json", help="配置文件路径")
+    parser.add_argument(
+        "--excel-path",
+        default=None,
+        help="覆盖 config.json 中的 excel_path，用于 GUI 选择文件/文件夹批量处理",
+    )
+    header_group = parser.add_mutually_exclusive_group()
+    header_group.add_argument(
+        "--has-header",
+        dest="has_header",
+        action="store_true",
+        default=None,
+        help="覆盖 config.json：Excel 第 1 行是表头，从第 2 行开始读数据",
+    )
+    header_group.add_argument(
+        "--no-has-header",
+        dest="has_header",
+        action="store_false",
+        help="覆盖 config.json：Excel 第 1 行就是数据",
+    )
     parser.add_argument(
         "--limit", type=int, default=None, help="仅处理前 N 条 Excel 数据"
     )
@@ -89,7 +110,6 @@ def build_parser():
         "--save-strategy",
         choices=(
             "single",
-            "bottom_up",
             "safe_batch_by_pending_row",
         ),
         default=None,
@@ -143,6 +163,10 @@ def main():  # noqa: C901 (intentional single-function dispatch)
                 f"--generated-date 格式必须是 YYYY-MM-DD: {args.generated_date!r}"
             ) from exc
     cfg = load_config(args.config)
+    if args.excel_path is not None:
+        cfg["excel_path"] = args.excel_path
+    if args.has_header is not None:
+        cfg["has_header"] = args.has_header
     if args.save_strategy is not None:
         cfg.setdefault("jab_batch", {})["save_strategy"] = args.save_strategy
     if args.voucher_order_fallback is not None:
@@ -192,6 +216,73 @@ def main():  # noqa: C901 (intentional single-function dispatch)
         print(json.dumps(envelope, ensure_ascii=False))
 
     try:
+        if args.command == "read-queue":
+            processor.run_state.set_stage(
+                "queue_load_excel",
+                limit=args.limit,
+                start_row=args.start_row,
+                end_row=args.end_row,
+            )
+            items = processor.load_pending_items(
+                skip_filled=True,
+                skip_any_status=True,
+                limit=args.limit,
+                start_row=args.start_row,
+                end_row=args.end_row,
+            )
+            pending = [item for item in items if not item.parse_error]
+            parse_errors = [item for item in items if item.parse_error]
+            preflight = processor.data_handler.preflight_jab_items(
+                items,
+                start_row=args.start_row,
+                end_row=args.end_row,
+                limit=args.limit,
+                skip_any_status=True,
+                context="read_queue",
+            )
+            processor.run_state.event("excel_preflight_passed", **preflight)
+            split_updates = processor.data_handler.save_jab_split_columns(pending)
+            processor.run_state.update_counts(
+                excel_loaded=len(items),
+                parse_errors=len(parse_errors),
+                split_updates=split_updates,
+            )
+            processor.run_state.set_stage("queue_read_done")
+            print("凭证队列读取完成")
+            print(f"可处理: {len(pending)}")
+            print(f"格式错误: {len(parse_errors)}")
+            print(f"拆分写回: {split_updates}")
+            if args.json_output:
+                items_out = [
+                    {
+                        "ref": f"Excel行{item.row}",
+                        "outcome": "failed",
+                        "reason": f"格式错误: {item.parse_error}",
+                    }
+                    for item in parse_errors
+                ]
+                items_out.extend(
+                    {
+                        "ref": f"Excel行{item.row}",
+                        "outcome": "success",
+                        "reason": item.source,
+                    }
+                    for item in pending
+                )
+                _emit_envelope(
+                    ok=True,
+                    exit_code=0,
+                    summary={
+                        "total": len(items),
+                        "succeeded": len(pending),
+                        "failed": len(parse_errors),
+                        "skipped": 0,
+                        "split_updates": split_updates,
+                    },
+                    items=items_out,
+                )
+            return
+
         if args.command == "plan":
             result = processor.dry_run(
                 limit=args.limit,
@@ -244,13 +335,13 @@ def main():  # noqa: C901 (intentional single-function dispatch)
                 )
             return
 
-        if args.command == "generate":
+        if args.command in ("generate", "generate-and-backfill"):
             if not args.yes:
                 print("即将真实点击 NC：多选行、生成、逐张保存。")
                 answer = input("确认继续请输入 yes: ").strip().lower()
                 if answer != "yes":
-                    log.warning("用户取消 generate")
-                    processor.run_state.set_stage("generate_cancelled")
+                    log.warning(f"用户取消 {args.command}")
+                    processor.run_state.set_stage(f"{args.command}_cancelled")
                     processor.finish_run_state("cancelled")
                     state_finished = True
                     if args.json_output:
@@ -268,6 +359,38 @@ def main():  # noqa: C901 (intentional single-function dispatch)
                             error_message="用户取消",
                         )
                     return
+
+        if args.command == "generate-and-backfill":
+            result = processor.generate_and_backfill(
+                limit=args.limit,
+                max_batches=args.max_batches,
+                start_row=args.start_row,
+                end_row=args.end_row,
+            )
+            saved = int(result.get("saved", 0))
+            updates = result.get("updates") or {}
+            print(f"生成保存并回填完成: 保存 {saved} 张, 回填 {len(updates)} 行")
+            if args.json_output:
+                _emit_envelope(
+                    ok=True,
+                    exit_code=0,
+                    summary={
+                        "total": saved,
+                        "succeeded": len(updates),
+                        "failed": 0,
+                        "skipped": 0,
+                        "saved": saved,
+                        "backfilled": len(updates),
+                    },
+                    items=[
+                        {"ref": str(ref), "outcome": "success", "reason": ""}
+                        for ref in updates
+                    ],
+                    can_resume=False,
+                )
+            return
+
+        if args.command == "generate":
             saved = processor.generate_and_save(
                 limit=args.limit,
                 max_batches=args.max_batches,

@@ -21,6 +21,7 @@ class NCTableMatcher:
         items: list[ExcelVoucherItem],
         voucher_col=None,
         prefer_generated_date=False,
+        limit=None,
     ) -> tuple[list[PendingMatch], list[MatchIssue]]:
         extra_cols = [self.generated_date_col] if prefer_generated_date else None
         with self.perf.span(
@@ -28,10 +29,12 @@ class NCTableMatcher:
             items=len(items),
             voucher_col=voucher_col,
             prefer_generated_date=prefer_generated_date,
+            limit=limit,
         ):
             snapshot = self.jab.read_table_snapshot(
                 voucher_col=voucher_col,
                 extra_cols=extra_cols,
+                limit=limit,
             )
         self.perf.event("pending_snapshot_loaded", rows=len(snapshot))
         self.run_state.event(

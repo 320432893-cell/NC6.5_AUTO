@@ -34,7 +34,6 @@ def read_receipt_result_pages_until_match(
     max_rows=500,
     max_cols=80,
     read_columns=None,
-    write_back=False,
 ):
     rows, candidates, excel_issues = ReceiptEntryWorkbook(config).preview_rows(
         today=business_date
@@ -61,7 +60,6 @@ def read_receipt_result_pages_until_match(
         rows,
         candidates,
         excel_issues,
-        write_back=write_back,
         target_rows=target_rows,
         configured_match_snapshot=match_snapshot,
     )

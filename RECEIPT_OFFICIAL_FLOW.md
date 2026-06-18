@@ -9,7 +9,7 @@
 底层正式业务入口：
 
 ```bash
-/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_full_flow_entry.py --excel-rows 811,839,828 --limit 3 --save --query-after-save --write-selected-plan-sheet
+/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_full_flow_entry.py --start-row 811 --limit 3 --save --query-after-save --write-selected-plan-sheet
 ```
 
 Windows 镜像路径：
@@ -18,10 +18,10 @@ Windows 镜像路径：
 H:\python脚本\.venv\nc_auto_v2
 ```
 
-默认不保存：
+正式保存：
 
 ```bash
-/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_full_flow_entry.py --excel-row 1791 --limit 1
+/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_full_flow_entry.py --start-row 1791 --save --query-after-save --write-selected-plan-sheet
 ```
 
 现场测试只使用这个入口，一个文件内选择保存、不保存、故障恢复或 verify 审查：
@@ -30,14 +30,14 @@ H:\python脚本\.venv\nc_auto_v2
 /mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_full_flow_save_query_write_test.py
 ```
 
-该脚本直接回车默认选择“保存 + 后验查询 + 写 Sheet2”，默认使用当前三笔 `811,839,828`，条数默认 `3`，启动前等待默认 `2` 秒。可选功能：
+该脚本直接回车默认选择“保存 + 后验查询 + 写 Sheet2”，默认从 `811` 开始做 `3` 条，启动前等待默认 `2` 秒。可选功能：
 
 1. 保存 + 后验查询 + 写 Sheet2。
 2. 不保存，只跑到保存前并执行 verifier。
 3. 故障恢复诊断：客户写完后暂停，人工打开干扰窗口后继续；后续动作失败时才触发 `Alt+C` 恢复并重试当前动作一次。
 4. verify 审查：不保存，输出 JSON，重点看后台 verifier 和最终报告。
 
-真实保存必须显式传 `--save` 或使用上述现场测试 wrapper；两种方式都需要交互确认 `SAVE`，除非自动化调用方明确传 `--yes-i-understand`。
+底层 CLI 真实保存必须显式传 `--save`；桌面正式入口默认传 `--save --query-after-save --write-selected-plan-sheet`，并由 GUI 自己承担确认。命令行直接运行时仍需要交互确认 `SAVE`，除非自动化调用方明确传 `--yes-i-understand`。
 
 禁止把 `tools/tmp_*`、`tools/archive/*` 或历史真实保存 T0 脚本当正式入口。明细单独测试入口是 `tools/receipt_detail_entry.py`，但它只测当前自制录入页明细，不负责开单、表头、保存和后验查询。
 
@@ -47,7 +47,7 @@ H:\python脚本\.venv\nc_auto_v2
 
 1. 读取 `config.json` 和 Excel Sheet1。
 2. 用 `ReceiptEntryWorkbook.build_local_plan()` 做本地预检，生成 `ReceiptPlanRow`。
-3. 对选中行逐笔执行 NC 录入：启动主 JAB -> `新增 -> 自制` -> 表头 -> 明细主行 -> 手续费分支 -> 可选保存。
+3. 对选中行逐笔执行 NC 录入：启动主 JAB -> `新增 -> 自制` -> 表头 -> 明细主行 -> 手续费分支 -> 保存。
 4. 如果启用 `--query-after-save`，保存成功后按主体分组做统一后验查询。
 5. 如果启用 `--write-selected-plan-sheet`，把本批结果写入 Sheet2 `收款单自动化结果`。
 
@@ -208,7 +208,7 @@ Sheet1 银行 -> receipt_entry.accounts -> organization_code -> finance_organiza
 
 ## 8. 保存
 
-默认不保存，停在保存前。
+桌面正式入口默认保存；不保存仅作为演练/测试模式。
 
 启用 `--save` 后，正式流程在确认当前前台窗口属于收款单录入页后，用键盘热键触发 `Ctrl+S`。保存成功 oracle 是 NC 回到可新增状态，而不是单纯快捷键触发成功，也不是查找/点击凭证制单保存按钮；不要走 `SendInput(Ctrl+S)`。
 
@@ -349,7 +349,7 @@ Sheet2 当前字段：
 - `fallback_reference` 配置。
 - 查询条件旧 near-label 写入兜底。
 - 录入前按 NC 查询结果跳过 Sheet1 候选。
-- Sheet1 `是否NC已做过` 作为正式批量结果写回。
+- Sheet1 `是否NC已做过` 作为正式批量结果写回或前置筛选。
 - 用 `tools/tmp_*` 作为正式入口。
 - 无前台窗口守卫的全局键盘输入。
 - 用坐标点击、截图找坐标或 bounds 中心点点击替代 JAB/表格语义。

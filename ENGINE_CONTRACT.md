@@ -134,7 +134,7 @@ GUI 解析 stdout **最后一段** JSON 判定结果(命令可在前面打人类
 | `receipt-query`(查询 CLI) | 填 F3 条件→查→读结果→(可选)写回 | `[现状符合]` | 部分 JSON `[需改:小]` | 未接 `[需改:中]` |
 | `receipt-entry-check`(本地预检) | Excel 本地合规预检,不碰 NC | `[现状符合]` | 无 JSON `[需改:小]` | 不涉及长流程 |
 
-**关键输入**:完整流程 `--config --excel-path --excel-row(s) --limit --validation-mode --save --yes-i-understand --query-after-save --write-(selected-)plan-sheet --start-delay --json`;明细 `--fee-only --fee-amount --bank-label --cleanup-extra-rows-only --config --start-delay`(待加 `--no-wait`);查询 `--config --org-code(必填) --date-from --date-to --confirm --read-results --dry-run-match --write-back ...`。
+**关键输入**:完整流程 `--config --excel-path --start-row --limit --validation-mode --save --yes-i-understand --query-after-save --write-(selected-)plan-sheet --start-delay --json`;明细 `--fee-only --fee-amount --bank-label --cleanup-extra-rows-only --config --start-delay`(待加 `--no-wait`);查询 `--config --org-code(必填) --date-from --date-to --confirm --read-results --dry-run-match ...`。
 **保存后查询**(`receipt-post-save`)是被完整流程内部调用的库,不单独作引擎命令,经 `receipt-full-flow --query-after-save` 触发。
 
 ---

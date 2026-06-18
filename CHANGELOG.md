@@ -13,7 +13,7 @@
 
 - 文档口径修正：明确当前无正式 GUI/前端，`.bat` 只是测试菜单；`tools/nc_auto_test_menu.bat` 中凭证生成项会保存凭证、收款完整流程保存项会保存收款单；`tools/receipt_full_flow_entry.py --query-after-save` 当前只是 deferred 占位；`core/receipt_sheet.py::rewrite_plan_sheet()` 当前会重写 Sheet2 当前计划结果区，不是历史追加表。
 - 明细主行/手续费行能力已从 `tools/tmp_receipt_detail_main_line_run.py` 拆到正式 `tools/receipt_detail_*` 模块：字段映射和读回校验、明细表读取、JAB 选中+前台守卫键盘写入、整行重试、手续费流程、清账户和删多余行分别落到独立文件。
-- 新增收款单完整流程测试入口 `tools/receipt_full_flow_entry.py`：消费 `ReceiptPlanRow`，默认跑 `新增 -> 自制 -> 表头 -> 明细主行 -> 手续费分支` 后停在保存前；显式 `--save` 才调用 JAB 保存按钮真实保存。入口默认只取 1 行，支持指定 `--excel-row` 和运行前 `--write-plan-sheet`。
+- 新增收款单完整流程测试入口 `tools/receipt_full_flow_entry.py`：消费 `ReceiptPlanRow`，跑 `新增 -> 自制 -> 表头 -> 明细主行 -> 手续费分支` 后默认停在保存前；显式 `--save` 才调用 JAB 保存按钮真实保存。当前正式入口要求指定 `--start-row` 和 `--limit`，语义是从起始行开始做指定条数。
 - 新增项目级测试菜单 `tools/nc_auto_test_menu.bat`：覆盖工程检查、凭证计划/生成/回填/切已生成、收款本地预检、写 Sheet2、收款完整流程不保存/保存、明细测试、查询读取和历史写回。菜单记录开始时间、结束时间和退出码，并按只读、写 Excel、真实 NC 不保存、真实保存分组提示风险。
 - 当前仍未完成的是“保存后按主体统一后验查询 -> 保存/查询结果结构化落 Sheet2”。可测试明细正式模块的主入口是 `tools/receipt_detail_test_menu.bat`，菜单可选写主行、写手续费、清理多余行和查看帮助；脚本化入口是 `tools/receipt_detail_entry.py`。`tools/tmp_receipt_detail_main_line_run.py` 只保留短期兼容并转发到正式入口。
 - 手续费覆盖守卫已补强：第 2 行只有为空或已是手续费行时才允许覆盖；删行和字段写入返回结构会标记 `changed`、`partial_success` 和副作用策略，便于失败后人工判断是否已有部分写入。
@@ -91,7 +91,7 @@
 - `tools/close_awt_popup_residue.py --all-small` 用于显式残留清理：匹配无标题、小尺寸 `SunAwtWindow`，不区分 visible true/false，统一隐藏、移到 `-32000,-32000` 并发送 `WM_CLOSE`。旧 `--all-disabled-small` 仅保留为兼容别名，行为同 `--all-small`。
 - `receipt_account_reference_try.py` 已加前台校验雏形，但不能再作为黑盒长命令直接跑。下一步要拆成“1 秒以内前台检查”和“用户确认后的 Alt+F 搜索”两个动作。
 - 收款单查询条件的 `收款财务组织` 改为按 label 定位输入框写入，不再依赖旧固定 path、坐标范围或右侧未知按钮；默认不按 Enter，后续以查询结果是否切到目标主体作为验证。
-- `tools/receipt_query_fill.py` 新增 `--include-filled-status`，用于重跑时覆盖已经写过的 `是否NC已做过` 状态；常规候选仍默认跳过已有状态。
+- 历史状态列写回入口已淘汰；查询 dry-run 只保留只读匹配诊断，不再覆盖 Sheet1 `是否NC已做过`。
 - A001/移为已按 `2026-03-31` 至 `2026-05-31` 完成覆盖写回：NC 读取 `437` 行，Excel A001 候选 `407` 行，写回 `407` 行；其中唯一匹配 `315` 行、未找到 `4` 行、重复 `24` 行、异常/人工确认 `88` 行。
 - A006 已在真实查询窗口验证成功：查询结果 `24` 行，Excel A006 候选 `24` 行，金额和对手方 `24/24` 唯一匹配，无重复、无未找到、无异常。
 - A003 已聚焦测试：输入框可以写入 `A003`，但确认后结果仍保持 A001 口径的 `437` 行，说明 NC 没有采用 A003 查询条件；当前按权限或 NC 条件未生效处理，暂不允许据此写回。

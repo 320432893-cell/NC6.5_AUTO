@@ -3,6 +3,7 @@ import threading
 import time
 
 from core import jab_window
+from core import jab_popup
 from core.jab_control_mixin import JABControlMixin
 from core.jab_near_label_mixin import JABNearLabelMixin
 from core.jab_path_mixin import JABPathMixin
@@ -114,6 +115,17 @@ class JABOperator(JABControlMixin, JABNearLabelMixin, JABPathMixin, JABTableMixi
             search_timeout=self.search_timeout,
         )
 
+    def maximize_window_by_title(self, title, class_name=None, timeout=None):
+        return jab_window.maximize_window_by_title(
+            title,
+            class_name=class_name,
+            timeout=timeout,
+            search_timeout=self.search_timeout,
+        )
+
+    def maximize_window_by_handle(self, hwnd):
+        return jab_window.maximize_window_by_handle(hwnd)
+
     def get_foreground_window_info(self):
         return jab_window.get_foreground_window_info()
 
@@ -193,14 +205,38 @@ class JABOperator(JABControlMixin, JABNearLabelMixin, JABPathMixin, JABTableMixi
     def do_generate_front(self):
         self.ensure_started()
 
+        before_popups = jab_popup.collect_visible_popup_windows(self)
         log.debug("JAB 点击生成按钮")
         if not self.click_control(
             "生成", roles=("push button",), timeout=self.search_timeout
         ):
             return False
 
-        time.sleep(self.menu_wait)
+        popup_wait = jab_popup.wait_for_new_popup_with_menu_item(
+            self,
+            before_popups,
+            "前台生成",
+            timeout=self.menu_wait,
+            interval=0.08,
+        )
         check_abort()
+        if popup_wait.get("ok"):
+            popup = popup_wait.get("popup") or {}
+            popup_hwnd = popup.get("hwnd")
+            log.debug(f"JAB 在跟踪 popup 中点击前台生成: hwnd={popup_hwnd}")
+            choose = jab_popup.click_menu_item_in_popup(
+                self,
+                popup_wait.get("windows") or [],
+                "前台生成",
+                popup_hwnd=popup_hwnd,
+            )
+            if choose.get("ok"):
+                cleanup = jab_popup.close_popup_hwnd(popup_hwnd)
+                log.debug(f"JAB 前台生成 popup 精准清理: {cleanup}")
+                return True
+            log.warning(f"JAB 跟踪 popup 点击前台生成失败，回退全局查找: {choose}")
+        else:
+            log.debug(f"JAB 未跟踪到前台生成 popup，回退全局查找: {popup_wait}")
 
         log.debug("JAB 点击前台生成菜单项")
         return self.click_control(

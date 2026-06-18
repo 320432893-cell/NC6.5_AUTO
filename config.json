@@ -42,11 +42,9 @@
         "foreign_currency_rate": null,
         "foreign_currency_rate_tolerance": 0.02,
         "save_success_timeout": 8.0,
-        "verify_voucher_advance": true,
         "voucher_record_timeout": 8.0,
         "voucher_window_title": "制单",
         "voucher_window_class": "SunAwtDialog",
-        "pending_refresh_wait": 1.0,
         "close_voucher_window": {
             "enabled": true,
             "title": "制单",
@@ -116,7 +114,7 @@
                 "require_showing": true,
                 "guard_timeout": 3,
                 "timeout": 1,
-                "wait": 1.0
+                "wait": 0.0
             }
         ]
     },
@@ -137,8 +135,7 @@
             "currency_column": "币种",
             "customer_code_column": "客户编码",
             "fee_column": "手续费",
-            "organization_column": "主体名称",
-            "nc_done_column": "是否NC已做过"
+            "organization_column": "主体名称"
         },
         "validation_policy": {
             "mode": "strict",
@@ -256,8 +253,7 @@
         },
         "candidate_check": {
             "recent_months": 2,
-            "from_date": null,
-            "only_blank_status": true
+            "from_date": null
         },
         "finance_organizations": [
             {

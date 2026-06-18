@@ -73,7 +73,7 @@
 
 - `tools/jab_probe.py`
 - `tools/receipt_body_table_locator.py`
-- `tools/receipt_full_flow_entry.py`：收款单完整流程正式业务入口，消费 `ReceiptPlanRow`，默认开单/表头/明细/手续费后停在保存前，显式 `--save` 才真实保存。
+- `tools/receipt_full_flow_entry.py`：收款单完整流程正式业务入口，消费 `ReceiptPlanRow`。桌面正式入口默认传 `--save --query-after-save`，底层 CLI 的 `--save` 是真实保存安全闸。
 - `tools/receipt_full_flow_save_query_write_test.py`：现场测试入口，一个文件内选择完整流程保存、不保存、故障恢复诊断或 verify 审查；默认保存、后验查询并写 Sheet2 本批结果。
 - `tools/receipt_detail_entry.py`：收款单明细主行/手续费行正式 Python 入口；供脚本化测试明细写入能力，不保存、不暂存。
 - `tools/receipt_entry_check.py`
@@ -123,19 +123,19 @@ cd /mnt/h/python脚本/.venv/nc_auto_v2
 
 ## 常用命令
 
-收款单完整流程正式业务入口是 `tools/receipt_full_flow_entry.py`。它从 `ReceiptEntryWorkbook.build_local_plan()` 取通过本地预检的 `ReceiptPlanRow`，默认只跑一行，执行 `新增 -> 自制 -> 表头 -> 明细主行 -> 手续费分支` 后停在保存前，不发送保存：
+收款单完整流程正式业务入口是 `tools/receipt_full_flow_entry.py`。它从 `ReceiptEntryWorkbook.build_local_plan()` 取通过本地预检的 `ReceiptPlanRow`，必须由人工指定起始 Sheet1 行；`--limit` 不传或为 0 时从起始行做到表尾。桌面正式入口默认真实保存并做后验查询，底层 CLI 未传 `--save` 时只是不保存演练：
 
 ```bash
-/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_full_flow_entry.py --excel-row 1791 --limit 1
+/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_full_flow_entry.py --start-row 1791 --save --query-after-save --write-selected-plan-sheet
 ```
 
 运行前先把本地预检结果写入 Sheet2：
 
 ```bash
-/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_full_flow_entry.py --excel-row 1791 --limit 1 --write-plan-sheet
+/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_full_flow_entry.py --start-row 1791 --limit 1 --write-plan-sheet
 ```
 
-现场测试只保留入口 `tools/receipt_full_flow_save_query_write_test.py`。直接运行 `.py` 后先选择测试功能，再按提示输入行号/条数/等待秒数；直接回车默认功能是“保存 + 后验查询 + 写 Sheet2”，默认用当前三笔 `811,839,828`、条数 `3`、启动前等待 `2` 秒。功能 1 会自动追加 `--save --query-after-save --write-selected-plan-sheet`，仍需要输入 `SAVE` 确认；功能 2 不保存，只跑到保存前并执行 verifier；功能 3 在客户写完后暂停，人工打开干扰窗口后继续，后续动作失败时才触发现有 `Alt+C` 故障恢复并重试当前动作一次；功能 4 不保存并输出 JSON，重点看后台 verifier 和最终报告。保存动作是确认前台属于收款单录入页后，用键盘热键触发 `Ctrl+S`；保存 oracle 是保存后回到收款单录入父页并检测到可用【新增】。后验查询按本批保存成功行的主体分组，最多四个主体；每个主体用本批日期区间查一次 NC。查询入口用 `pyautogui.press("f3")` 每 `0.2s` 重试直到看到可见 `查询条件/SunAwtDialog`，不是裸 SendInput F3。结果页按动态模块前缀 + 固定后缀定位结果表和分页控件，缓存命中后以 `cached_trusted` 复用；先确保每页 500，再按页只读匹配需要的配置列并只匹配本批目标。匹配口径是原始金额精确相等、日期优先、NC 客户显示名归一化相似度不低于 90；结果只写 Sheet2，不写 Sheet1 的 `是否NC已做过`：
+现场测试只保留入口 `tools/receipt_full_flow_save_query_write_test.py`。直接运行 `.py` 后先选择测试功能，再按提示输入起始行/条数/等待秒数；直接回车默认功能是“保存 + 后验查询 + 写 Sheet2”，默认从 `811` 开始做 `3` 条、启动前等待 `2` 秒。功能 1 会自动追加 `--save --query-after-save --write-selected-plan-sheet`，仍需要输入 `SAVE` 确认；功能 2 不保存，只跑到保存前并执行 verifier；功能 3 在客户写完后暂停，人工打开干扰窗口后继续，后续动作失败时才触发现有 `Alt+C` 故障恢复并重试当前动作一次；功能 4 不保存并输出 JSON，重点看后台 verifier 和最终报告。保存动作是确认前台属于收款单录入页后，用键盘热键触发 `Ctrl+S`；保存 oracle 是保存后回到收款单录入父页并检测到可用【新增】。后验查询按本批保存成功行的主体分组，最多四个主体；每个主体用本批日期区间查一次 NC。查询入口用 `pyautogui.press("f3")` 每 `0.2s` 重试直到看到可见 `查询条件/SunAwtDialog`，不是裸 SendInput F3。结果页按动态模块前缀 + 固定后缀定位结果表和分页控件，缓存命中后以 `cached_trusted` 复用；先确保每页 500，再按页只读匹配需要的配置列并只匹配本批目标。匹配口径是原始金额精确相等、日期优先、NC 客户显示名归一化相似度不低于 90；结果只写 Sheet2，不写 Sheet1 的 `是否NC已做过`：
 
 ```bash
 /mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_full_flow_save_query_write_test.py
@@ -201,7 +201,7 @@ cd /mnt/h/python脚本/.venv/nc_auto_v2
 /mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_entry_check.py --validation-mode skip_invalid_rows --write
 ```
 
-旧的“最近 N 个月 + 是否NC已做过为空”候选预览只保留为兼容诊断入口：
+旧的“最近 N 个月”候选预览只保留为兼容诊断入口；不再按 Sheet1 `是否NC已做过` 状态列筛选：
 
 ```bash
 /mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_entry_check.py --legacy-candidates
@@ -225,16 +225,10 @@ cd /mnt/h/python脚本/.venv/nc_auto_v2
 /mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_query_fill.py --org-code A001 --date-from 2026-03-31 --date-to 2026-05-31 --confirm --dry-run-match --max-rows 600 --max-cols 140
 ```
 
-收款单匹配结果写回 Excel；唯一匹配写 `已做过`，完全未命中写 `未做过`。金额命中但名称不符、名称命中但金额不符会写明 Excel 值和 NC 候选值；重复命中按实际条数写 `重复N条：名称和金额相同，需人工确认`，重复行也会在 JSON 的 `duplicate_rows` 中报告。`金额和对手方均未匹配` 是诊断原因口径，不是当前最终写回状态。注意：该写回旧入口不再作为新批量录入主线的前置判断，当前用户口径是假定交给机器的行均未做过，录入完成后再按主体查询 NC 做后验验证：
+收款单查询 dry-run 只做只读匹配诊断，不写回 Excel 主表状态列。唯一匹配、未命中、重复和人工确认行会在 JSON `match_summary` 中报告；`金额和对手方均未匹配` 是诊断原因口径。当前用户口径是假定交给机器的行均未做过，录入完成后再按主体查询 NC 做后验验证：
 
 ```bash
-/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_query_fill.py --org-code A001 --date-from 2026-03-31 --date-to 2026-05-31 --confirm --dry-run-match --write-back --max-rows 600 --max-cols 140
-```
-
-重跑并覆盖 Excel 已有 `是否NC已做过` 状态时，加 `--include-filled-status`：
-
-```bash
-/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_query_fill.py --org-code A001 --date-from 2026-03-31 --date-to 2026-05-31 --confirm --dry-run-match --write-back --include-filled-status --max-rows 600 --max-cols 140
+/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_query_fill.py --org-code A001 --date-from 2026-03-31 --date-to 2026-05-31 --confirm --dry-run-match --max-rows 600 --max-cols 140
 ```
 
 写回前必须先确认当前 NC 页面是目标 `收款单录入`。工具会做页面和结果表守卫；如果结果表的匹配名称列疑似读成 `收款单` 单据类型列，会拒绝继续。
@@ -269,15 +263,15 @@ cd /mnt/h/python脚本/.venv/nc_auto_v2
 | `tools/jab_batch.py backfill` | 是 | 是 | 读取已生成表 | 否 | 凭证号回填 |
 | `tools/receipt_entry_check.py` | 是 | 否 | 否 | 否 | 收款单本地预检 |
 | `tools/receipt_entry_check.py --write` | 是 | 是，重写 Sheet2 当前计划结果区 | 否 | 否 | 收款单计划结果写入 |
-| `tools/receipt_full_flow_entry.py` | 是 | 可选写 Sheet2 预检；保存后可写本批 Sheet2 结果 | 是 | 默认否，`--save` 会保存 | 收款单完整流程测试入口 |
+| `tools/receipt_full_flow_entry.py` | 是 | 写本批 Sheet2 结果 | 是 | 桌面正式默认保存，CLI 需 `--save` | 收款单完整流程正式入口 |
 | `tools/receipt_full_flow_save_query_write_test.py` | 是 | 默认保存后写 Sheet2 本批结果 | 是 | 可选保存 | 现场测试：保存/不保存/故障恢复/verify 审查 |
 | `tools/receipt_query_fill.py --confirm --read-results` | 是 | 否 | 是 | 否 | 收款单查询/抽取组件 |
-| `tools/receipt_query_fill.py --dry-run-match --write-back` | 是 | 是，写 Sheet1 状态列 | 是 | 否 | 历史查重/诊断入口 |
+| `tools/receipt_query_fill.py --dry-run-match` | 是 | 否 | 是 | 否 | 历史查重/诊断入口，只读 |
 | `tools/receipt_self_made_fill_trial.py` | 是 | 否 | 是 | 默认否 | 单行/分阶段现场试填 |
 | `tools/receipt_detail_entry.py` | 否 | 否 | 是，写当前明细表 | 否 | 明细正式测试入口 |
 | `tools/tmp_*` | 视脚本而定 | 视脚本而定 | 视脚本而定 | 禁止当正式入口 | 探测/复盘参考 |
 
-收款单完整流程正式入口已经可以消费 `ReceiptPlanRow` 跑到保存前，也可以显式真实保存。现场测试只用固定 wrapper：`tools/receipt_full_flow_save_query_write_test.py`，在同一个文件内选择保存、不保存、故障恢复或 verify 审查；保存功能会按主体统一查询 NC 并写 Sheet2。本主线不写 Sheet1 状态列；`tools/receipt_query_fill.py --dry-run-match --write-back` 只保留为历史查重/诊断入口。
+收款单完整流程正式入口已经可以消费 `ReceiptPlanRow` 执行真实保存和后验查询。桌面正式入口默认保存、默认后验查询、默认写 Sheet2；不保存只作为演练/测试功能。本主线不写 Sheet1 状态列；`tools/receipt_query_fill.py --dry-run-match` 只保留为只读历史查重/诊断入口。
 
 ## NC 现场操作纪律
 
@@ -542,12 +536,11 @@ JAB 查询入口现状：
 - 制单表只读取一次初始队列；每保存一张后，缓存中位于被删行下方的行号统一减 1。
 - Excel 状态在保存结束后批量写入，减少 I/O。
 
-代码只保留稳定主线、一个快速备选策略和旧兼容策略。
+代码只保留稳定主线和一个快速备选策略；旧的 `bottom_up` 已淘汰删除。
 
 可配置策略：
 
 - `single`：当前正式策略。一行一保存，凭证号顺序最稳，速度较慢。
-- `bottom_up`：旧策略，只合并制单行号严格递减的连续 Excel 行。已保留但不再默认。
 - `safe_batch_by_pending_row`：快速备选策略。只合并 Excel 顺序中待生成 NC 行号递增、且制单窗口行号递增的连续段；其它自动拆成单张。它整体线性，但不承诺凭证号严格按 Excel 递增。
 
 已发生真实案例：Excel 行 25/26 的制单行分别是 1/9，但回填凭证号为 370/369。后续多轮实验也证明行号递增、递减、选择顺序都不能稳定保证凭证号按 Excel 顺序递增。因此严格顺序主线固定使用 `single`。
@@ -564,12 +557,11 @@ JAB 查询入口现状：
 2. 读取制单表。
 3. 目标行消失且行数减少，判定当前批保存成功。
 4. 制单窗口还在但表为空，视为本轮可能完成。
-5. 制单窗口关闭，也转待生成表复核。
+5. 制单窗口关闭，也视为本轮保存已离开制单页。
 6. 最终关闭制单窗口。
-7. 回待生成表按 F5 刷新。
-8. 按 `金额 + 对手方` 验证本轮记录是否仍存在。
+7. 不再刷新待生成表；后续直接查询已生成列表并回填凭证号。
 
-`制单` 窗口还在但表为空是正常状态，通常表示本轮选中的制单数据已保存完。正确处理是关闭窗口、刷新待生成表、再复核。
+`制单` 窗口还在但表为空是正常状态，通常表示本轮选中的制单数据已保存完。正确处理是关闭窗口，然后进入已生成列表查询。
 
 ## JAB 注意事项
 

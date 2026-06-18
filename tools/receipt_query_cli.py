@@ -4,7 +4,6 @@
 # 谁不应该 import：core 层模块不应 import；测试应优先测具体流程/读表模块而非 CLI 输出。
 
 import argparse
-from copy import deepcopy
 import json
 import os
 from pathlib import Path
@@ -45,16 +44,6 @@ def main():
         help="compare Excel candidates against NC result columns without writing Excel",
     )
     parser.add_argument(
-        "--write-back",
-        action="store_true",
-        help="write matched receipt statuses to Excel; requires --dry-run-match",
-    )
-    parser.add_argument(
-        "--include-filled-status",
-        action="store_true",
-        help="include Excel rows that already have NC status; useful for overwrite reruns",
-    )
-    parser.add_argument(
         "--no-open-query",
         action="store_true",
         help="do not press F3; require the receipt query dialog to already be open",
@@ -77,13 +66,6 @@ def main():
     _started_at = time.perf_counter()
 
     config = load_config(args.config)
-    if args.write_back and not args.dry_run_match:
-        raise SystemExit("--write-back requires --dry-run-match")
-    if args.include_filled_status:
-        config = deepcopy(config)
-        config["receipt_entry"].setdefault("candidate_check", {})[
-            "only_blank_status"
-        ] = False
     confirm = args.confirm
     read_results = args.read_results
     dry_run_match = args.dry_run_match
@@ -112,7 +94,6 @@ def main():
             total_steps=1
             + int(confirm)
             + int(read_results or dry_run_match)
-            + int(dry_run_match and args.write_back),
         )
         try:
             result = run_fill_receipt_query(
@@ -127,7 +108,6 @@ def main():
                 max_rows=max_rows,
                 max_cols=max_cols,
                 set_page_size_only=set_page_size_only,
-                write_back=args.write_back,
             )
         except ReceiptPageGuardError as exc:
             print(f"receipt page guard failed: {exc}", file=sys.stderr)

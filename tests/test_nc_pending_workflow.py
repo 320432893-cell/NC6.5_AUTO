@@ -172,6 +172,33 @@ def test_generate_stops_before_nc_clicks_on_duplicate_match(monkeypatch):
     )
 
 
+def test_generate_stops_before_nc_clicks_on_any_pending_match_issue(monkeypatch):
+    monkeypatch.setattr("core.nc_pending_workflow.check_abort", lambda: None)
+    missing_item = make_item(2)
+    unique_item = make_item(3, amount="2.00", partner="上海公司")
+    match = PendingMatch(item=unique_item, nc_row=7, row_data={})
+    issue = MatchIssue(item=missing_item, reason="未找到", rows=[])
+    processor = FakeProcessor(
+        [missing_item, unique_item],
+        matches=[match],
+        issues=[issue],
+    )
+    workflow = NCPendingWorkflow(processor)
+    processed_matches = []
+
+    def fake_process_full_selection(matches, max_save_batches=None):
+        processed_matches.extend(matches)
+        return matches, 1
+
+    monkeypatch.setattr(workflow, "process_full_selection", fake_process_full_selection)
+
+    with pytest.raises(TableMatchError, match="待生成表未全量匹配"):
+        workflow.generate_and_save()
+
+    assert processed_matches == []
+    assert processor.data_handler.result_updates == []
+
+
 def test_generate_can_skip_duplicate_match_and_process_unique_matches(monkeypatch):
     monkeypatch.setattr("core.nc_pending_workflow.check_abort", lambda: None)
     duplicate_item = make_item(2)
@@ -214,3 +241,33 @@ def test_generate_can_skip_duplicate_match_and_process_unique_matches(monkeypatc
             ],
         },
     )
+
+
+def test_process_full_selection_stops_when_voucher_match_count_is_short(monkeypatch):
+    monkeypatch.setattr("core.nc_pending_workflow.check_abort", lambda: None)
+    first_item = make_item(2)
+    second_item = make_item(3, amount="2.00", partner="上海公司")
+    first_match = PendingMatch(item=first_item, nc_row=1, row_data={})
+    second_match = PendingMatch(item=second_item, nc_row=2, row_data={})
+    processor = FakeProcessor([first_item, second_item], matches=[], issues=[])
+    workflow = NCPendingWorkflow(processor)
+    saved = []
+
+    class FakeVoucherWorkflow:
+        def match_voucher_table(self, pending):
+            return [pending[0]], []
+
+        def save_current_voucher_matches(self, voucher_matches):
+            saved.extend(voucher_matches)
+            return voucher_matches, 1
+
+        def close_voucher_window_after_save(self, voucher_batch):
+            return True
+
+    processor.voucher_workflow = FakeVoucherWorkflow()
+    processor.save_wait = 0
+
+    with pytest.raises(TableMatchError, match="制单表未全量匹配"):
+        workflow.process_full_selection([first_match, second_match])
+
+    assert saved == []

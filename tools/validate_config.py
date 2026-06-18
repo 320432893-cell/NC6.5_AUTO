@@ -4,7 +4,7 @@ from datetime import date
 from pathlib import Path
 
 
-SAVE_STRATEGIES = {"single", "bottom_up", "safe_batch_by_pending_row"}
+SAVE_STRATEGIES = {"single", "safe_batch_by_pending_row"}
 SAVE_TRIGGERS = {"jab_button", "hotkey"}
 HOTKEY_ACTIVATE_POLICIES = {"always", "first", "foreground_guard"}
 DUPE_MATCH_POLICIES = {"stop", "skip"}
@@ -358,7 +358,6 @@ def _validate_receipt_excel(excel_cfg, errors):
         "currency_column",
         "customer_code_column",
         "organization_column",
-        "nc_done_column",
     ):
         _require_non_empty_str(excel_cfg, key, errors, prefix="receipt_entry.excel")
     if "fee_column" in excel_cfg:
@@ -669,9 +668,6 @@ def _validate_receipt_candidate_check(candidate_cfg, errors):
         _iso_date(
             candidate_cfg, "from_date", errors, prefix="receipt_entry.candidate_check"
         )
-    value = candidate_cfg.get("only_blank_status")
-    if not isinstance(value, bool):
-        errors.append("receipt_entry.candidate_check.only_blank_status must be bool")
 
 
 def _validate_receipt_validation_policy(policy, errors):

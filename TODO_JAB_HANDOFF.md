@@ -81,12 +81,12 @@
 - 最新样本读取基线：`ensure_query_window=0.527s`、`query.dynamic-scope=0.275s`、`result_wait_before_read=3.327s`、`read_receipt_result_pages=1.134s`；其中 `setup_seconds=0.546s`、`read_tables_seconds=0.295s`。当前 `result_wait_before_read` 仍偏长，但正式代码已接入结果表 path ready、分页 path 缓存和必要列读取。
 - 收款 dry-run 多页结果会全部参与索引抽取，并按单据号去重；`dry_run_match.variants[].nc_summary` 会输出金额范围和名称样本，匹配诊断只看名称+金额。
 - NC/JAB 表格列位统一按 0 基索引；Excel/openpyxl 列号是 1 基。收款单结果表当前确认单据类型列 `2`、名称/客户列 `4`、原币金额列 `6`、本币金额列 `7`；`8` 是旧的 1 基误填值，配置校验会拦截。
-- 收款单 Excel 回写已有显式入口：`tools/receipt_query_fill.py --dry-run-match --write-back`。唯一匹配写 `已做过`；完全未命中写 `未做过`；金额命中但名称不符、名称命中但金额不符会写明 Excel 值和 NC 候选值；重复命中按实际条数写 `重复N条：名称和金额相同，需人工确认`。`金额和对手方均未匹配` 是诊断 reason，不是当前写回状态。重复行在 `write_back.duplicate_rows`，所有人工确认行在 `write_back.exception_rows`。
-- 误判恢复：A001 写回验证曾按错误列位执行，`name=2` 实际是单据类型 `收款单`，`amount=7` 是本币金额；后来已确认当前页面是目标收款单录入页。已清回 Excel A001 `2026-03-31` 之后 404 个自动写入状态，当前 A001 候选恢复为 407 行。后续必须先确认列位 `name=4`、`amount=6`，再允许 `--write-back`。
+- 收款单查询 dry-run 只保留只读匹配诊断，不再写回 Sheet1 状态列。唯一匹配、完全未命中、重复和人工确认行在 `match_summary` 中报告。
+- 误判恢复：A001 写回验证曾按错误列位执行，`name=2` 实际是单据类型 `收款单`，`amount=7` 是本币金额；后来已确认当前页面是目标收款单录入页。已清回 Excel A001 `2026-03-31` 之后 404 个自动写入状态，当前主线不再允许查询诊断写回状态列。
 - 已加收款查询守卫：父页需检测到 `receipt_entry.state_label`，并拒绝“匹配名称列全是 `收款单` 单据类型”的配置/页面组合。
 - 收款查询条件 `收款财务组织` 和 `单据日期` 已改为查询窗口自己的“动态前缀 + 稳定后缀 path”写入；动态 path 定位失败后才在当前查询窗口内做语义路径推断接管，不再使用旧 near-label 写入。默认不按 Enter。是否写入成功必须以后置查询结果验证，不以 JAB 文本读回为空为失败依据。
 - A001/移为已完成覆盖写回：查询 `437` 条 NC 结果，Excel A001 候选 `407` 行，写回 `407` 行；计划结果为唯一匹配 `315`、未找到 `4`、重复 `24`、异常/人工确认 `88`。
-- A006 已在真实查询窗口跑通：NC 结果 `24` 行，Excel A006 候选 `24` 行，`24/24` 唯一匹配，无未找到、无重复、无异常。若交接时 Excel 未见状态，需要用同一命令加 `--write-back --include-filled-status` 再覆盖一次。
+- A006 已在真实查询窗口跑通：NC 结果 `24` 行，Excel A006 候选 `24` 行，`24/24` 唯一匹配，无未找到、无重复、无异常。该能力只作查询诊断，不写回 Excel 主表状态。
 - A003 当前不要写回：输入框可写 `A003`，但确认后结果仍是 A001 口径 `437` 行，说明查询条件没有被 NC 采用；用户判断可能是 A003 权限问题，必须先由人工确认权限/主体可用。
 - 收款单 `新增(Ctrl+N)` 按钮本身可用，问题根因是旧 AWT cleanup 误伤了按钮弹出的 `自制/应收单` 菜单。健康 popup 下曾确认 `自制` path `0.0.1.0.0.0`、`应收单` path `0.0.1.0.0.2`，但 path/hwnd 不稳定，后续必须现场复验。
 - 收款单自制录入页的上方 `保存(Ctrl+S)`、`暂存`、`取消(Ctrl+Q)` 三按钮同时出现，即作为 `自制录入态` 成功判据；没有用户明确指令时禁止保存或暂存。
@@ -141,7 +141,7 @@
    - 表头字段提交口径按现场验证：财务组织编码、客户编码、日期、币种、表头结算方式写入后提交，再进入下一字段；表头 `结算方式=网银` 不能漏。保存前必须做一次总校验，而不是用每个字段即时 readback 代替业务 oracle。
    - 客户名称必须从客户字段写入后 NC 回显中读取，优先取有效的 description/text/name。类似 `[Ljava.lang.String;@75acf5a0` 的 Java 对象字符串不是客户名称，必须过滤；客户名称为空时不允许保存，也不能靠后验查询补救。
    - 保存前状态污染恢复：若守卫发现当前不在自制录入态，且是误打开的查询/参照/异常阻塞窗口，保存前允许用 `Alt+C` 关闭后重新检查；该动作必须有前台/窗口守卫，且只用于保存前恢复，不得在未知状态下继续写字段。
-   - `tools/nc_auto_test_menu.bat` 当前提供收款完整流程不保存/保存测试；三笔批量建议走 `tools/receipt_full_flow_entry.py --excel-rows 811,839,828 --limit 3 --save --query-after-save --write-selected-plan-sheet`，并在菜单层或命令行明确确认真实保存。
+   - 收款完整流程保存建议走 `tools/receipt_full_flow_entry.py --start-row 811 --limit 3 --save --query-after-save --write-selected-plan-sheet`，并在菜单层或命令行明确确认真实保存。
    - 当前可单独测试的明细启动入口是 `tools/receipt_detail_test_menu.bat`，菜单可选写主行、写手续费行、只清理多余行或显示帮助；脚本化入口是 `tools/receipt_detail_entry.py`，默认写主行，`--fee-only --fee-amount 10` 写手续费行，`--cleanup-extra-rows-only` 只清理多余行。该入口已调用正式 `receipt_detail_fields/reader/screen_writer/writer/rows/row_cleanup` 模块，但仍要求 NC 已停在自制录入页，不负责开单、表头或保存。
 
 3. 做完后的 NC 后验查询
@@ -154,7 +154,7 @@
    - Sheet2 只展示业务结果：`NC客户名称`、`后验核对状态`、`异常原因` 等；`NC单据号` 已作为旧列清理。按主体插入 `主体：xxx` 分割行，分割行浅蓝；后验通过浅绿，后验未匹配/待确认浅红。
 
 4. 历史查询/写回工具维护口径
-   - `tools/receipt_query_fill.py --dry-run-match --write-back` 是历史查重/诊断入口，仍可用于人工核查列位、分页和结果表守卫，但不再是新批量录入主线的前置筛选。
+   - `tools/receipt_query_fill.py --dry-run-match` 是历史查重/诊断入口，仍可用于人工核查列位、分页和结果表守卫，但不再写回 Sheet1 状态列，也不作为新批量录入主线的前置筛选。
    - 如果必须用旧入口，仍要先确认当前 NC 页面是 `收款单录入`，并看 `page_report` 确认分页实际采集；Excel/WPS 必须关闭，否则会触发 `ExcelLockedError`。
    - A003 历史问题仍保留：输入框可写 `A003`，但确认后结果曾仍是 A001 口径，按权限或 NC 条件未生效处理。
 

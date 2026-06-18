@@ -10,6 +10,12 @@ from core.models import (
     VoucherSaveMatch,
 )
 from core.utils import check_abort
+from core.voucher_plan_cache import (
+    load_voucher_plan_cache,
+    matches_from_plan_cache,
+    validate_voucher_plan_cache,
+    write_voucher_plan_cache,
+)
 
 
 class NCPendingWorkflow:
@@ -92,12 +98,29 @@ class NCPendingWorkflow:
         self.run_state.set_stage("plan_match_pending_table")
         matches, issues = self.table_matcher.match_current_table(parsed_items)
         batches = self.table_matcher.build_increasing_batches(matches)
+        plan_path = None
+        if matches and not issues and not parse_errors:
+            plan_path = write_voucher_plan_cache(
+                config=self.cfg,
+                limit=limit,
+                start_row=start_row,
+                end_row=end_row,
+                matches=matches,
+            )
         self.run_state.update_counts(
             parse_errors=len(parse_errors),
             matches=len(matches),
             issues=len(issues),
             batches=len(batches),
         )
+        if plan_path:
+            self.run_state.event(
+                "voucher_precheck_plan_cached",
+                path=str(plan_path),
+                rows=len(matches),
+                excel_rows=[match.item.row for match in matches],
+                nc_rows=[match.nc_row for match in matches],
+            )
         self.run_state.set_stage("plan_done")
 
         self._log_plan(parsed_items, parse_errors, matches, issues, batches)
@@ -110,6 +133,21 @@ class NCPendingWorkflow:
         }
 
     def generate_and_save(
+        self,
+        limit=None,
+        max_batches=None,
+        start_row=None,
+        end_row=None,
+    ):
+        result = self.generate_and_collect_saved(
+            limit=limit,
+            max_batches=max_batches,
+            start_row=start_row,
+            end_row=end_row,
+        )
+        return result["saved"]
+
+    def generate_and_collect_saved(
         self,
         limit=None,
         max_batches=None,
@@ -148,8 +186,6 @@ class NCPendingWorkflow:
                 context="generate",
             )
             self.run_state.event("excel_preflight_passed", **preflight)
-            with self.perf.span("excel_save_split_columns", rows=len(pending)):
-                self.data_handler.save_jab_split_columns(pending)
             self.perf.event(
                 "generate_items_prepared",
                 total=len(items),
@@ -162,41 +198,52 @@ class NCPendingWorkflow:
                 parse_errors=len(parse_errors),
             )
             if parse_errors:
-                self.run_state.set_stage(
-                    "generate_write_parse_errors",
-                    excel_rows=[item.row for item in parse_errors],
+                detail = "; ".join(
+                    f"Excel行{item.row} {item.parse_error}" for item in parse_errors
                 )
-                with self.perf.span("excel_save_parse_errors", rows=len(parse_errors)):
-                    self.data_handler.save_jab_results(
-                        {
-                            item.row: f"格式错误-{item.parse_error}"
-                            for item in parse_errors
-                        }
-                    )
+                raise TableMatchError(
+                    "正式生成前 Excel 存在格式错误，已暂停，未写 Excel、未点击 NC。"
+                    f" 请先预检查并修正。异常: {detail}"
+                )
 
             total_saved = 0
             total_batches = 0
             issue_updates = {}
+            saved_matches: list[VoucherSaveMatch] = []
 
             if pending:
                 check_abort()
-                self.require_page_state("pending", pending, command="generate")
                 self.run_state.set_stage(
-                    "generate_match_pending_table",
+                    "generate_load_precheck_plan",
                     excel_rows=[item.row for item in pending],
                 )
-                matches, issues = self.table_matcher.match_current_table(pending)
+                cache = load_voucher_plan_cache()
+                validate_voucher_plan_cache(
+                    cache=cache,
+                    config=self.cfg,
+                    limit=limit,
+                    start_row=start_row,
+                    end_row=end_row,
+                    pending=pending,
+                )
+                matches = matches_from_plan_cache(cache, pending)
+                issues: list[MatchIssue] = []
                 self.perf.event(
-                    "pending_match_done",
+                    "pending_match_from_precheck_plan",
                     pending=len(pending),
                     matches=len(matches),
-                    issues=len(issues),
+                    excel_rows=[match.item.row for match in matches],
+                    nc_rows=[match.nc_row for match in matches],
                 )
-                if issues:
-                    issue_updates.update(self.format_issue_updates(issues))
-                    self.handle_generate_match_issues(issues)
+                self.run_state.event(
+                    "pending_match_from_precheck_plan",
+                    rows=len(matches),
+                    excel_rows=[match.item.row for match in matches],
+                    nc_rows=[match.nc_row for match in matches],
+                )
 
                 if matches:
+                    self.ensure_full_pending_match(pending, matches, issues)
                     self.run_state.update_counts(
                         pending_matches=len(matches),
                         pending_issues=len(issues),
@@ -213,14 +260,13 @@ class NCPendingWorkflow:
                     total_saved = len(saved_matches)
 
             if issue_updates:
-                self.run_state.set_stage(
-                    "generate_write_issue_updates",
-                    rows=len(issue_updates),
+                detail = "；".join(
+                    f"Excel行{row} {reason}" for row, reason in issue_updates.items()
                 )
-                with self.perf.span(
-                    "excel_save_issue_updates", rows=len(issue_updates)
-                ):
-                    self.data_handler.save_jab_results(issue_updates)
+                raise TableMatchError(
+                    "正式生成前待生成表匹配存在异常，已暂停，未写 Excel、未点击 NC。"
+                    f" 请先预检查并修正。异常: {detail}"
+                )
 
             self.perf.event(
                 "generate_done",
@@ -234,7 +280,12 @@ class NCPendingWorkflow:
             )
             self.run_state.set_stage("generate_done")
             log.info(f"JAB 生成保存完成: batches={total_batches}, saved={total_saved}")
-            return total_saved
+            return {
+                "saved": total_saved,
+                "batches": total_batches,
+                "saved_matches": saved_matches,
+                "excel_rows": [match.item.row for match in saved_matches],
+            }
 
     def handle_generate_match_issues(self, issues: list[MatchIssue]) -> None:
         duplicate_issues = [issue for issue in issues if issue.is_duplicate_match()]
@@ -274,6 +325,41 @@ class NCPendingWorkflow:
             f" 异常: {detail}"
         )
 
+    def ensure_full_pending_match(self, pending, matches, issues) -> None:
+        if self.duplicate_match_policy == "skip":
+            return
+        pending_rows = {item.row for item in pending}
+        matched_rows = {match.item.row for match in matches}
+        missing_rows = sorted(pending_rows - matched_rows)
+        if not issues and not missing_rows and len(matches) == len(pending):
+            return
+
+        issue_detail = "; ".join(
+            f"Excel行{issue.item.row} {issue.reason}"
+            + (f" NC行{issue.rows}" if issue.rows else "")
+            for issue in issues
+        )
+        missing_detail = f"未匹配Excel行{missing_rows}" if missing_rows else ""
+        detail = "；".join(part for part in (issue_detail, missing_detail) if part)
+        raise TableMatchError(
+            "待生成表未全量匹配，已暂停，未点击生成。"
+            "请先处理预检查提示后再批量生成。"
+            f" 异常: {detail or '匹配数量不一致'}"
+        )
+
+    def ensure_full_voucher_match(self, pending, voucher_matches) -> None:
+        pending_rows = {match.item.row for match in pending}
+        matched_rows = {match.item.row for match in voucher_matches}
+        missing_rows = sorted(pending_rows - matched_rows)
+        if not missing_rows and len(voucher_matches) == len(pending):
+            return
+        raise TableMatchError(
+            "制单表未全量匹配，已暂停，未保存。"
+            "请人工检查前台生成后的制单表。"
+            f" 待保存{len(pending)}行，匹配到{len(voucher_matches)}行，"
+            f"未匹配Excel行{missing_rows}"
+        )
+
     def process_full_selection(self, matches, max_save_batches=None):
         rows = [match.nc_row for match in matches]
         self.run_state.set_stage(
@@ -305,6 +391,7 @@ class NCPendingWorkflow:
         self.run_state.set_stage("front_generate_click", nc_rows=rows)
         self.record_event("event_front_generate_click", rows=len(rows), nc_rows=rows)
         with self.perf.span("front_generate_click", rows=len(rows)):
+            self.maximize_batch_main_window()
             if not self.jab.do_generate_front():
                 raise JABActionError("点击 生成 -> 前台生成 失败")
         self.record_transition(
@@ -314,12 +401,12 @@ class NCPendingWorkflow:
             rows=len(rows),
         )
 
-        self.run_state.set_stage("front_generate_wait")
-        with self.perf.span("front_generate_wait", wait=self.save_wait):
-            time.sleep(self.save_wait)
-
         pending: list[PendingMatch] = list(matches)
-        self.require_page_state("voucher_open", pending, command="generate")
+        with self.perf.span("voucher_window_open_wait", timeout=self.save_wait):
+            voucher_tables = self.processor.voucher_workflow.wait_for_voucher_tables(
+                len(pending),
+                timeout=self.save_wait,
+            )
         saved_matches: list[VoucherSaveMatch] = []
         save_batches = 0
 
@@ -336,8 +423,12 @@ class NCPendingWorkflow:
                 save_batch_index=save_batches + 1,
             ):
                 voucher_matches, issues = (
-                    self.processor.voucher_workflow.match_voucher_table(pending)
+                    self.processor.voucher_workflow.match_voucher_table(
+                        pending,
+                        tables=voucher_tables,
+                    )
                 )
+                voucher_tables = None
             self.perf.event(
                 "voucher_match_done",
                 pending=len(pending),
@@ -350,6 +441,7 @@ class NCPendingWorkflow:
                     f"Excel行{issue.item.row} {issue.reason}" for issue in issues
                 )
                 raise TableMatchError(f"制单表匹配失败: {detail}")
+            self.ensure_full_voucher_match(pending, voucher_matches)
 
             new_saved, new_batches = (
                 self.processor.voucher_workflow.save_current_voucher_matches(
@@ -368,17 +460,18 @@ class NCPendingWorkflow:
             if pending:
                 with self.perf.span(
                     "save_batch_wait",
-                    wait=self.save_wait,
+                    wait=self.wait_between_save_batches,
                     save_batch_index=save_batches,
                 ):
-                    time.sleep(self.save_wait)
+                    if self.wait_between_save_batches > 0:
+                        time.sleep(self.wait_between_save_batches)
 
         self.run_state.set_stage(
-            "pending_final_verify",
+            "voucher_window_close",
             saved_excel_rows=[match.item.row for match in saved_matches],
         )
-        with self.perf.span("pending_final_verify", rows=len(saved_matches)):
-            self.processor.voucher_workflow.close_and_verify_pending_removed(
+        with self.perf.span("voucher_window_close", rows=len(saved_matches)):
+            self.processor.voucher_workflow.close_voucher_window_after_save(
                 saved_matches
             )
         return saved_matches, save_batches
@@ -449,11 +542,11 @@ class NCPendingWorkflow:
                 )
             )
             self.run_state.set_stage(
-                "resume_pending_final_verify",
+                "resume_voucher_window_close",
                 saved_excel_rows=[match.item.row for match in saved_matches],
             )
-            with self.perf.span("resume_pending_final_verify", rows=len(saved_matches)):
-                self.processor.voucher_workflow.close_and_verify_pending_removed(
+            with self.perf.span("resume_voucher_window_close", rows=len(saved_matches)):
+                self.processor.voucher_workflow.close_voucher_window_after_save(
                     saved_matches
                 )
             log.info(
@@ -474,6 +567,17 @@ class NCPendingWorkflow:
                 reason = f"{reason}-NC行{','.join(str(r) for r in issue.rows[:5])}"
             updates[issue.item.row] = f"{prefix}{reason}"
         return updates
+
+    def maximize_batch_main_window(self):
+        open_query = self.batch_cfg.get("open_query", {})
+        title = open_query.get("main_title", "")
+        if not title:
+            return False
+        return self.jab.maximize_window_by_title(
+            title,
+            class_name=open_query.get("main_class"),
+            timeout=float(open_query.get("activate_timeout", 1.0)),
+        )
 
     def _log_plan(self, items, parse_errors, matches, issues, batches):
         log.info(

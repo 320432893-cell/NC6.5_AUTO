@@ -69,7 +69,6 @@ class JABBatchProcessor:
         )
         self.generated_status = self.batch_cfg.get("generated_status", "已生成待回填")
         self.voucher_col = int(self.batch_cfg.get("generated_voucher_col", 22))
-        self.verify_voucher_advance = self.batch_cfg.get("verify_voucher_advance", True)
         self.voucher_record_timeout = float(
             self.batch_cfg.get("voucher_record_timeout", 8.0)
         )
@@ -131,18 +130,51 @@ class JABBatchProcessor:
     def generate_and_save(self, *args, **kwargs):
         return self.pending_workflow.generate_and_save(*args, **kwargs)
 
+    def generate_and_collect_saved(self, *args, **kwargs):
+        return self.pending_workflow.generate_and_collect_saved(*args, **kwargs)
+
+    def generate_and_backfill(self, limit=None, max_batches=None, start_row=None, end_row=None):
+        result = self.generate_and_collect_saved(
+            limit=limit,
+            max_batches=max_batches,
+            start_row=start_row,
+            end_row=end_row,
+        )
+        excel_rows = result.get("excel_rows") or []
+        if not excel_rows:
+            return {"saved": 0, "batches": 0, "updates": {}}
+
+        updates = self.backfill_generated_vouchers(
+            limit=None,
+            start_row=min(excel_rows),
+            end_row=max(excel_rows),
+            auto_switch=True,
+            require_generated_status=False,
+            assume_pending_ready=True,
+        )
+        return {
+            "saved": int(result.get("saved", 0)),
+            "batches": int(result.get("batches", 0)),
+            "updates": updates,
+            "excel_rows": excel_rows,
+        }
+
     def backfill_generated_vouchers(
         self,
         limit=None,
         start_row=None,
         end_row=None,
         auto_switch=True,
+        require_generated_status=True,
+        assume_pending_ready=False,
     ):
         return self.backfill_workflow.backfill_generated_vouchers(
             limit=limit,
             start_row=start_row,
             end_row=end_row,
             auto_switch=auto_switch,
+            require_generated_status=require_generated_status,
+            assume_pending_ready=assume_pending_ready,
         )
 
     def switch_to_generated_list(self, *args, **kwargs):
@@ -150,6 +182,9 @@ class JABBatchProcessor:
 
     def require_page_state(self, expected, items=None, command=""):
         return self.state_detector.require_page_state(expected, items, command)
+
+    def wait_for_page_state(self, expected, items=None, command="", timeout=None):
+        return self.state_detector.wait_for_page_state(expected, items, command, timeout)
 
     def detect_page_state(self, items=None):
         return self.state_detector.detect_page_state(items)

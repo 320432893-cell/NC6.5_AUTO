@@ -19,6 +19,7 @@ VK_A = 0x41
 VK_D = 0x44
 VK_I = 0x49
 VK_C = 0x43
+VK_S = 0x53
 VK_V = 0x56
 VK_MENU = 0x12
 VK_DELETE = 0x2E
@@ -258,6 +259,13 @@ def send_hotkey_ctrl_d():
     send_virtual_key(VK_CONTROL, key_up=False)
     send_virtual_key(VK_D, key_up=False)
     send_virtual_key(VK_D, key_up=True)
+    send_virtual_key(VK_CONTROL, key_up=True)
+
+
+def send_hotkey_ctrl_s():
+    send_virtual_key(VK_CONTROL, key_up=False)
+    send_virtual_key(VK_S, key_up=False)
+    send_virtual_key(VK_S, key_up=True)
     send_virtual_key(VK_CONTROL, key_up=True)
 
 

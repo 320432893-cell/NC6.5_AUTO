@@ -46,7 +46,6 @@ def receipt_config(path="unused.xlsx"):
                 "customer_code_column": "客户编码",
                 "fee_column": "手续费",
                 "organization_column": "主体名称",
-                "nc_done_column": "是否NC已做过",
             },
             "validation_policy": {
                 "mode": "strict",
@@ -55,7 +54,6 @@ def receipt_config(path="unused.xlsx"):
             "candidate_check": {
                 "recent_months": 2,
                 "from_date": None,
-                "only_blank_status": True,
             },
             "finance_organizations": [
                 {
@@ -166,38 +164,13 @@ def test_ensure_output_columns_and_subjects(tmp_path):
         "🟪原始金额",
         "银行",
         "主体名称",
-        "是否NC已做过",
     ]
     assert ws.cell(2, 5).value == "上海移为通信技术股份有限公司"
     assert ws.cell(3, 5).value is None
     saved.close()
 
 
-def test_write_nc_done_statuses_creates_status_column(tmp_path):
-    path = tmp_path / "payments.xlsx"
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "💸Payments来款通知"
-    ws.append(["到款日期", "🟪银行来款名", "🟪原始金额", "银行"])
-    ws.append([date(2026, 1, 16), "matched", 225.68, "Paypal"])
-    ws.append([date(2026, 1, 17), "missing", 100, "Paypal"])
-    wb.save(path)
-    wb.close()
-
-    result = ReceiptEntryWorkbook(receipt_config(path)).write_nc_done_statuses(
-        {2: "已做过", 3: "未做过"}
-    )
-
-    assert result == {"updated": 2, "rows": [2, 3]}
-    saved = load_workbook(path)
-    ws = saved["💸Payments来款通知"]
-    assert ws.cell(1, 5).value == "是否NC已做过"
-    assert ws.cell(2, 5).value == "已做过"
-    assert ws.cell(3, 5).value == "未做过"
-    saved.close()
-
-
-def test_candidate_rows_use_recent_months_and_blank_status(tmp_path):
+def test_candidate_rows_use_recent_months_without_status_column(tmp_path):
     path = tmp_path / "payments.xlsx"
     wb = Workbook()
     ws = wb.active
@@ -215,7 +188,7 @@ def test_candidate_rows_use_recent_months_and_blank_status(tmp_path):
 
     assert issues == []
     assert len(rows) == 3
-    assert [row.payer_name for row in candidates] == ["candidate"]
+    assert [row.payer_name for row in candidates] == ["already done", "candidate"]
 
 
 def test_candidate_from_date_overrides_recent_months(tmp_path):

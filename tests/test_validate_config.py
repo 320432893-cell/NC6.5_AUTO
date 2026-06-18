@@ -74,7 +74,6 @@ def test_validate_receipt_entry_accepts_account_mapping():
             "customer_code_column": "客户编码",
             "fee_column": "手续费",
             "organization_column": "主体名称",
-            "nc_done_column": "是否NC已做过",
         },
         "validation_policy": {
             "mode": "strict",
@@ -127,7 +126,6 @@ def test_validate_receipt_entry_accepts_account_mapping():
         "candidate_check": {
             "recent_months": 2,
             "from_date": None,
-            "only_blank_status": True,
         },
         "finance_organizations": [
             {
@@ -394,7 +392,6 @@ def test_validate_receipt_entry_rejects_invalid_start_row_and_policy():
             "currency_column": "币种",
             "customer_code_column": "客户编码",
             "organization_column": "主体名称",
-            "nc_done_column": "是否NC已做过",
         },
         "validation_policy": {
             "mode": "loose",
