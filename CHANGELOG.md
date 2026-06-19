@@ -2,6 +2,17 @@
 
 只记录影响维护判断的关键节点。具体实验流水账看 git 历史。
 
+## 2026-06-20 - 审计驱动的死码清除、大文件拆分与日志用户/开发分层
+
+- **死码清除(对抗核实后)**:删 JAB 死方法簇、core 只写不读字段、查询死门面/死函数、整删孤儿探针 `jab_date_diagnose.py`、一批零碎死参常量;补登记 `pyperclip`。**保留(核实为活,勿删)**:`receipt_nc_extract` 按名抽取链(config `result_columns` 兼容路径)、`page_reader`/`match_reader` 双读路径(用途不同)。
+- **大文件拆分(门面模式,对外 API 与测试 monkeypatch 面零变化)** —— 新模块即维护地图:
+  - `receipt_header_writer.py`(887→498)→ 抽 `receipt_header_finance_org`(财务组织写法)/`receipt_header_locator`(字段定位)/`receipt_header_state`(后端字段纯判定)。
+  - `run_one_row`(F45→C15)→ `RowRunState` + 10 个 `_run_*_stage` 阶段函数。
+  - `jab_probe.py:main`(F42→A4)→ 抽 `_build_parser`/`_select_windows`/`_dispatch_path_action` 等(JAB 结构体/loader 未碰)。
+  - `validate_config.py`(779→275)→ 抽 `validate_config_query`/`validate_config_accounts`/`validate_config_primitives`。
+- **错误信息质量**:对账/制单匹配失败由笼统话改为「Excel第N行 金额=X 对手方=Y …;请核对…」(字段+期望+实际+下一步);异常类名/栈不再当用户主消息,移入 `error_detail`/`error_traceback` 开发字段。
+- **日志用户/开发分层(见 ENGINE_CONTRACT §1.7)**:新增 `core/runtime_mode.is_engine_mode()`(读 `NC_ENGINE_MODE`,GUI 子进程注入)。引擎模式下入口层旁白/确认/`input()` 一律抑制、logger 控制台档 INFO→WARNING;stdout 只剩{进度+末段信封},开发全量细节落 `logs/run_*.log`。CLI 直跑不变。**取代 2026-06-11 条「T0 输出直接 print 中文说明」的旧口径**:面向 GUI 用户的进度走 run_state、结果走信封,人类旁白仅 CLI 模式保留。
+
 ## 2026-06-15 - 收款后验查询正式化和结果页缓存
 
 - 正式后验查询接入已验证的查询入口：用 `pyautogui.press("f3")` 重试打开 `查询条件/SunAwtDialog`，间隔 `0.2s`；不再把裸 SendInput F3 当主路径，因为现场只看到窗口变化但未稳定弹窗。
