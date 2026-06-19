@@ -679,7 +679,7 @@ def do_selection_change(dll, vm_id, context, args):
     return False
 
 
-def main():
+def _build_parser():
     parser = argparse.ArgumentParser(
         description="Probe Java Access Bridge windows and controls."
     )
@@ -761,61 +761,151 @@ def main():
         "--select-all-path",
         help="Select all children for one context path from each matching Java window.",
     )
-    args = parser.parse_args()
+    return parser
 
-    if os.name != "nt":
-        print("This script must run with Windows Python, not WSL/Linux Python.")
-        return 2
 
-    dll, path = load_access_bridge(args.dll)
-    configure_jab(dll)
-
-    stop_pump = threading.Event()
-    pump_thread = None
-
+def _start_access_bridge(dll, stop_pump):
     if hasattr(dll, "initializeAccessBridge"):
         if not dll.initializeAccessBridge():
             print(
                 "initializeAccessBridge returned false. Try `jabswitch -enable`, then restart NC and rerun."
             )
-            return 2
-    else:
-        pump_thread = threading.Thread(
-            target=run_windows_access_bridge, args=(dll, stop_pump), daemon=True
-        )
-        pump_thread.start()
+            return None, False
+        return None, True
 
-    time.sleep(args.startup_wait)
-    print(f"Loaded: {path}")
-    print("Visible Java windows:")
+    pump_thread = threading.Thread(
+        target=run_windows_access_bridge, args=(dll, stop_pump), daemon=True
+    )
+    pump_thread.start()
+    return pump_thread, True
 
-    matched = 0
-    total_windows = 0
-    java_candidates = []
+
+def _describe_window(value):
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    hwnd = wintypes.HWND(value)
+    length = user32.GetWindowTextLengthW(hwnd)
+    title_buffer = ctypes.create_unicode_buffer(length + 1)
+    user32.GetWindowTextW(hwnd, title_buffer, length + 1)
+    class_buffer = ctypes.create_unicode_buffer(256)
+    user32.GetClassNameW(hwnd, class_buffer, 256)
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return (
+        hwnd,
+        title_buffer.value,
+        class_buffer.value,
+        pid.value,
+        bool(user32.IsWindowVisible(hwnd)),
+    )
+
+
+def _select_windows(args):
     windows = enum_windows(include_children=args.children)
     if args.hwnd:
         known = {hwnd_int(hwnd) for hwnd, *_ in windows}
         for value in args.hwnd:
             if value not in known:
-                user32 = ctypes.WinDLL("user32", use_last_error=True)
-                hwnd = wintypes.HWND(value)
-                length = user32.GetWindowTextLengthW(hwnd)
-                title_buffer = ctypes.create_unicode_buffer(length + 1)
-                user32.GetWindowTextW(hwnd, title_buffer, length + 1)
-                class_buffer = ctypes.create_unicode_buffer(256)
-                user32.GetClassNameW(hwnd, class_buffer, 256)
-                pid = wintypes.DWORD()
-                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-                windows.append(
-                    (
-                        hwnd,
-                        title_buffer.value,
-                        class_buffer.value,
-                        pid.value,
-                        bool(user32.IsWindowVisible(hwnd)),
-                    )
-                )
+                windows.append(_describe_window(value))
+    return windows
 
+
+def _dispatch_path_action(dll, vm_id, context, args):
+    action_path = args.actions_path or args.do_action_path
+    selection_path = (
+        args.selection_path or args.clear_selection_path or args.select_all_path
+    )
+    if not (args.inspect_path or action_path or selection_path):
+        return False
+
+    target_path = args.inspect_path or action_path or selection_path
+    target_context, owned_contexts = get_context_by_path(
+        dll, vm_id, context, target_path
+    )
+    if not target_context:
+        print(f"Path not found: {target_path}")
+        return True
+
+    print(f"Inspecting path {target_path}:")
+    print_context_tree(
+        dll,
+        vm_id,
+        target_context,
+        max_depth=args.depth,
+        max_children=args.max_children,
+    )
+    print_table_info(dll, vm_id, target_context)
+    if args.actions_path:
+        print_actions(dll, vm_id, target_context)
+    if args.do_action_path:
+        if args.allow_hidden_action:
+            print_actions(dll, vm_id, target_context)
+            do_action_raw(dll, vm_id, target_context, args.action)
+        else:
+            do_action(dll, vm_id, target_context, args.action)
+    if selection_path:
+        print_selection_info(
+            dll, vm_id, target_context, max_children=args.max_children
+        )
+        if (
+            args.select_child_index is not None
+            or args.remove_child_index is not None
+            or args.clear_selection_path
+            or args.select_all_path
+        ):
+            do_selection_change(dll, vm_id, target_context, args)
+            print_selection_info(
+                dll,
+                vm_id,
+                target_context,
+                max_children=args.max_children,
+            )
+    for owned_context in owned_contexts:
+        if hasattr(dll, "releaseJavaObject"):
+            dll.releaseJavaObject(vm_id, owned_context)
+    return True
+
+
+def _inspect_window(dll, hwnd, title, class_name, pid, visible, args):
+    print("=" * 80)
+    print(
+        f"hwnd={hwnd_int(hwnd)} pid={pid} visible={visible} class={class_name!r} title={title!r}"
+    )
+
+    vm_id = ctypes.c_long()
+    context = JOBJECT()
+    if not dll.getAccessibleContextFromHWND(
+        hwnd, ctypes.byref(vm_id), ctypes.byref(context)
+    ):
+        print("Could not get accessible context from this window.")
+        return
+
+    if _dispatch_path_action(dll, vm_id.value, context.value, args):
+        return
+
+    if args.dump_actions:
+        print_action_contexts(
+            dll,
+            vm_id.value,
+            context.value,
+            max_depth=args.depth,
+            max_children=args.max_children,
+        )
+        return
+
+    print_context_tree(
+        dll,
+        vm_id.value,
+        context.value,
+        max_depth=args.depth,
+        max_children=args.max_children,
+        query=args.query,
+    )
+
+
+def _inspect_windows(dll, windows, args):
+    matched = 0
+    total_windows = 0
+    java_candidates = []
     hwnd_filter = {int(value) for value in args.hwnd or []}
     for hwnd, title, class_name, pid, visible in windows:
         total_windows += 1
@@ -830,88 +920,7 @@ def main():
             continue
 
         matched += 1
-        print("=" * 80)
-        print(
-            f"hwnd={hwnd_int(hwnd)} pid={pid} visible={visible} class={class_name!r} title={title!r}"
-        )
-
-        vm_id = ctypes.c_long()
-        context = JOBJECT()
-        if not dll.getAccessibleContextFromHWND(
-            hwnd, ctypes.byref(vm_id), ctypes.byref(context)
-        ):
-            print("Could not get accessible context from this window.")
-            continue
-
-        action_path = args.actions_path or args.do_action_path
-        selection_path = (
-            args.selection_path or args.clear_selection_path or args.select_all_path
-        )
-        if args.inspect_path or action_path or selection_path:
-            target_path = args.inspect_path or action_path or selection_path
-            target_context, owned_contexts = get_context_by_path(
-                dll, vm_id.value, context.value, target_path
-            )
-            if target_context:
-                print(f"Inspecting path {target_path}:")
-                print_context_tree(
-                    dll,
-                    vm_id.value,
-                    target_context,
-                    max_depth=args.depth,
-                    max_children=args.max_children,
-                )
-                print_table_info(dll, vm_id.value, target_context)
-                if args.actions_path:
-                    print_actions(dll, vm_id.value, target_context)
-                if args.do_action_path:
-                    if args.allow_hidden_action:
-                        print_actions(dll, vm_id.value, target_context)
-                        do_action_raw(dll, vm_id.value, target_context, args.action)
-                    else:
-                        do_action(dll, vm_id.value, target_context, args.action)
-                if selection_path:
-                    print_selection_info(
-                        dll, vm_id.value, target_context, max_children=args.max_children
-                    )
-                    if (
-                        args.select_child_index is not None
-                        or args.remove_child_index is not None
-                        or args.clear_selection_path
-                        or args.select_all_path
-                    ):
-                        do_selection_change(dll, vm_id.value, target_context, args)
-                        print_selection_info(
-                            dll,
-                            vm_id.value,
-                            target_context,
-                            max_children=args.max_children,
-                        )
-                for owned_context in owned_contexts:
-                    if hasattr(dll, "releaseJavaObject"):
-                        dll.releaseJavaObject(vm_id.value, owned_context)
-            else:
-                print(f"Path not found: {target_path}")
-            continue
-
-        if args.dump_actions:
-            print_action_contexts(
-                dll,
-                vm_id.value,
-                context.value,
-                max_depth=args.depth,
-                max_children=args.max_children,
-            )
-            continue
-
-        print_context_tree(
-            dll,
-            vm_id.value,
-            context.value,
-            max_depth=args.depth,
-            max_children=args.max_children,
-            query=args.query,
-        )
+        _inspect_window(dll, hwnd, title, class_name, pid, visible, args)
 
     if matched == 0:
         print("No matching Java windows found.")
@@ -925,6 +934,28 @@ def main():
         print(
             "Checks: NC is open, Java Access Bridge is enabled, and this script uses the same bitness as Java."
         )
+
+
+def main():
+    args = _build_parser().parse_args()
+
+    if os.name != "nt":
+        print("This script must run with Windows Python, not WSL/Linux Python.")
+        return 2
+
+    dll, path = load_access_bridge(args.dll)
+    configure_jab(dll)
+
+    stop_pump = threading.Event()
+    pump_thread, started = _start_access_bridge(dll, stop_pump)
+    if not started:
+        return 2
+
+    time.sleep(args.startup_wait)
+    print(f"Loaded: {path}")
+    print("Visible Java windows:")
+
+    _inspect_windows(dll, _select_windows(args), args)
 
     stop_pump.set()
     if pump_thread:
