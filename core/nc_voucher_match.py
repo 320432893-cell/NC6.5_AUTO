@@ -182,8 +182,6 @@ class NCVoucherMatchMixin:
             table_rows=found["table"]["row_count"],
             voucher_row=found["row"]["row_index"],
             voucher_cells=found["row"]["cells"],
-            match_mode=getattr(match, "match_mode", ""),
-            fallback_reason=found.get("fallback_reason", ""),
         )
         voucher_match.validate_for_save(context="voucher_match")
         voucher_matches.append(voucher_match)

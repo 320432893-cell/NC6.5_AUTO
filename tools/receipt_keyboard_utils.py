@@ -21,7 +21,6 @@ VK_I = 0x49
 VK_C = 0x43
 VK_V = 0x56
 VK_MENU = 0x12
-VK_DELETE = 0x2E
 
 
 class KEYBDINPUT(ctypes.Structure):
@@ -345,12 +344,4 @@ def guarded_send_ctrl_d(table_window):
         "Ctrl+D",
         send_hotkey_ctrl_d,
         settle_seconds=0.0,
-    )
-
-
-def guarded_send_delete(table_window):
-    return guarded_send_table_hotkey(
-        table_window,
-        "Delete",
-        lambda: send_virtual_key(VK_DELETE),
     )

@@ -104,19 +104,6 @@ class JABControlMixin:
             self.save_button_path = path
         return ok
 
-    def wait_for_control(self, name, roles=(), timeout=None, require_showing=False):
-        self.ensure_started()
-        context, vm_id, owned_contexts = self.find_context(
-            name,
-            roles=roles,
-            timeout=timeout,
-            require_showing=require_showing,
-        )
-        if not context:
-            return False
-        self.release_contexts(vm_id, owned_contexts)
-        return True
-
     def normalize_amount(self, value):
         return normalize_amount(value)
 

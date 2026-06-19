@@ -35,7 +35,6 @@ class DetailPipelineVerifier:
         self.forced_cached_path_report = None
         self.flow_started_at = flow_started_at
         self.started_at = None
-        self.finished_at = None
         self._queue = queue.Queue()
         self._lock = threading.Lock()
         self._results = {}
@@ -160,7 +159,6 @@ class DetailPipelineVerifier:
         self._queue.put(None)
         if self._thread is not None:
             self._thread.join(timeout=max(float(timeout), 0.0))
-        self.finished_at = time.perf_counter()
 
     def _new_task_id(self, prefix):
         return f"{prefix}-{uuid.uuid4().hex[:10]}"

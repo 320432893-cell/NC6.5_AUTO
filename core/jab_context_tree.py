@@ -5,6 +5,7 @@
 
 import ctypes
 
+from core.logger import log
 from tools.jab_probe import AccessibleContextInfo
 
 
@@ -150,5 +151,6 @@ def release_contexts(jab, vm_id, contexts):
     for context in reversed(contexts):
         try:
             jab.dll.releaseJavaObject(vm_id, context)
-        except Exception:
-            pass
+        except Exception as exc:
+            # 句柄释放失败不阻断其余释放,但留 DEBUG 痕迹,避免 JAB 句柄泄漏完全无线索
+            log.debug(f"释放 JAB context 失败(忽略): vm_id={vm_id} err={exc}")

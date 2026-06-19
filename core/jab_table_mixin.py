@@ -242,25 +242,6 @@ class JABTableMixin:
             window_title=window_title,
         )
 
-    def select_record_in_visible_tables_once(
-        self,
-        amount,
-        partner_name,
-        window_title=None,
-        selection_col=0,
-        max_rows=200,
-        max_cols=50,
-    ):
-        return jab_table_ops.select_record_in_visible_tables_once(
-            self,
-            amount,
-            partner_name,
-            window_title=window_title,
-            selection_col=selection_col,
-            max_rows=max_rows,
-            max_cols=max_cols,
-        )
-
     def resolve_amount_col(self, amount_col):
         return jab_table_ops.resolve_amount_col(self, amount_col)
 

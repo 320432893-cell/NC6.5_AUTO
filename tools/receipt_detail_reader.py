@@ -1,15 +1,35 @@
 # 职责：读取收款单明细表缓存 path、指定行单元格和行数
 # 不做什么：不写入 NC，不发送键盘输入，不决定业务字段顺序
-# 允许依赖层：tools.receipt_body_table_locator、tools.receipt_self_made_fill_trial
+# 允许依赖层：tools.receipt_body_table_locator
 # 谁不应该 import：配置校验、Excel/Sheet 写入模块不应 import
 
 import time
 
 from tools.receipt_body_table_locator import (
+    locate_receipt_body_table,
     locate_receipt_body_table_cached,
     read_receipt_body_table_by_cached_path,
 )
-from tools.receipt_self_made_fill_trial import read_body_table
+
+
+def read_body_table(jab, step, scope_hwnd=None):
+    located = locate_receipt_body_table(jab, max_rows=3, scope_hwnd=scope_hwnd)
+    best = located.get("best")
+    if not best:
+        return {
+            "step": step,
+            "ok": False,
+            "reason": "body table not found",
+            "candidates": located.get("candidates", [])[:3],
+        }
+    return {
+        "step": step,
+        "ok": True,
+        "path": best.get("path"),
+        "row_count": best.get("row_count"),
+        "col_count": best.get("col_count"),
+        "rows": best.get("rows"),
+    }
 
 
 def read_body_table_by_path(jab, located, step, max_rows=5, semantic_fallback=False):

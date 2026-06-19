@@ -94,7 +94,6 @@ def repair_detail_pipeline_failures(
                 int(task["row_index"]),
                 row_count,
                 field,
-                field["col"],
                 task["business"],
                 2,
                 current_col=None,

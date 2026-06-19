@@ -83,7 +83,6 @@ FEE_FIELDS = [
     },
 ]
 ACCOUNT_COL = 4
-BUSINESS_TYPE_COL = 1
 SUBJECT_COL = 5
 AMOUNT_COL = 7
 
@@ -145,38 +144,6 @@ def make_detail_step(field, business, row_index, row_count, col_count):
             "cell_height": None,
         },
     }
-
-
-def field_mismatch_reason(step, actual, prefix="读回值未匹配目标值"):
-    return (
-        f"{prefix}：字段={step.get('name')}，行={int(step.get('row') or 0) + 1}，"
-        f"列={step.get('col')}，期望={step.get('value')!r}，实际={actual!r}"
-    )
-
-
-def validate_step_from_cells(step, cells, screen_ok=True, reason=None):
-    actual = cells.get(str(step["col"]))
-    ok = bool(screen_ok) and field_matches(
-        actual, step.get("raw_value") or step["value"], step.get("kind")
-    )
-    step["ok"] = ok
-    step["blocked"] = not ok
-    step["actual"] = actual
-    step["reason"] = None if ok else reason or field_mismatch_reason(step, actual)
-
-
-def apply_readback_to_steps(steps, cells):
-    for step in steps:
-        actual = cells.get(str(step["col"]))
-        step["actual"] = actual
-        ok = bool(step.get("input_ok")) and field_matches(
-            actual, step.get("raw_value") or step["value"], step.get("kind")
-        )
-        step["ok"] = ok
-        step["blocked"] = not ok
-        step["reason"] = (
-            None if ok else field_mismatch_reason(step, actual, "整行校验失败")
-        )
 
 
 def cells_from_steps(steps):

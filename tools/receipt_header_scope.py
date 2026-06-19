@@ -1,7 +1,7 @@
 # 职责：收款单表头 scope/anchor 解析——定位财务组织锚点、校验锚点、按客户名纠正动态索引、语义推断 scope
 # 不做什么：不写表头字段(委托 writer),不算 path 模板(委托 paths),不读 Excel/不解析 CLI
 # 允许依赖层：tools.receipt_header_paths(纯计算);被 monkeypatch 的协作者(writer/tree 的字段定位
-#             及本模块自身被 patch 的函数)经 _trial 代理读 tools.receipt_self_made_fill_trial
+#             及本模块自身被 patch 的函数)经 _trial 代理读 tools.receipt_self_made_flow
 # 谁不应该 import：receipt_header_paths 不应 import 本模块(会成环)
 
 import sys
@@ -16,14 +16,14 @@ from tools.receipt_header_paths import (
 
 
 class _TrialNamespace:
-    # 按调用时从已加载的 tools.receipt_self_made_fill_trial 取属性：
+    # 按调用时从已加载的 tools.receipt_self_made_flow 取属性：
     # 让测试对 trial 上 validate_receipt_header_scope_anchor /
     # correct_header_anchor_dynamic_index_by_customer / infer_receipt_header_scope_by_semantic /
     # find_header_label_context_with_window / find_receipt_header_field_by_dynamic_path /
     # find_receipt_header_field_by_semantic_label 的 monkeypatch 与拆分前一致地生效，
     # 同时打破 scope<->writer 的加载期循环依赖(不在加载期 import 入口模块)。
     def __getattr__(self, name):
-        return getattr(sys.modules["tools.receipt_self_made_fill_trial"], name)
+        return getattr(sys.modules["tools.receipt_self_made_flow"], name)
 
 
 _trial = _TrialNamespace()

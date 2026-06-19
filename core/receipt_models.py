@@ -32,7 +32,6 @@ class ReceiptAccount:
     header_currency_code: str = ""
     id: str = ""
     bank_id: str = ""
-    display_name: str = ""
     aliases: tuple[str, ...] = ()
     excel_bank_aliases: tuple[str, ...] = ()
     nc_candidates_by_currency: dict[str, tuple[str, ...]] | None = None

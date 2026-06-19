@@ -11,68 +11,26 @@ from core.jab_operator import JABOperator  # noqa: E402
 from core.receipt_nc_extract import ReceiptNCResultExtractor  # noqa: E402
 from core.receipt_parsing import parse_date  # noqa: E402
 
-# 兼容导出：旧测试和少量 probe 仍从 receipt_query_fill import 查询辅助函数。
-# 清理条件：外部调用迁到 receipt_query_guard/pagination/page_reader/match_reader/result_tables/report 后删除本段 re-export。
+# guard 三项与 wait_after_query_confirm 经本模块 re-export 供 cli / 旧测试消费;
+# 其余为本模块自身使用,按需直取源模块(不再做全量兼容转发)。
 from tools.receipt_query_guard import (  # noqa: E402
     ReceiptPageGuardError as ReceiptPageGuardError,
     guard_receipt_parent_page as guard_receipt_parent_page,
     guard_receipt_result_tables as guard_receipt_result_tables,
 )
 from tools.receipt_query_pagination import (  # noqa: E402
-    click_next_page as click_next_page,
-    parse_int_text as parse_int_text,
-    parse_page_label as parse_page_label,
-    read_page_label as read_page_label,
-    read_page_size_text as read_page_size_text,
-    set_receipt_page_size as set_receipt_page_size,
+    set_receipt_page_size,
     wait_after_query_confirm as wait_after_query_confirm,
-    wait_receipt_result_ready as wait_receipt_result_ready,
-    wait_receipt_result_stable as wait_receipt_result_stable,
-)
-from tools.receipt_query_pagination_paths import (  # noqa: E402
-    infer_result_area_prefix_from_page_path as infer_result_area_prefix_from_page_path,
-    infer_result_area_prefix_from_table_path as infer_result_area_prefix_from_table_path,
-    join_context_path as join_context_path,
-    resolve_receipt_pagination_paths as resolve_receipt_pagination_paths,
-    resolve_receipt_pagination_paths_dynamic as resolve_receipt_pagination_paths_dynamic,
-    split_context_path as split_context_path,
-    strip_context_path_suffix as strip_context_path_suffix,
-    validate_context_path as validate_context_path,
-    validate_receipt_pagination_path_report as validate_receipt_pagination_path_report,
-    with_runtime_pagination_paths as with_runtime_pagination_paths,
 )
 from tools.receipt_query_dynamic_fields import (  # noqa: E402
     find_query_condition_scope,
     set_query_dynamic_text,
 )
-from tools.receipt_query_reader import (  # noqa: E402
-    dedupe_page_tables as dedupe_page_tables,
-    evaluate_paging_match_stop as evaluate_paging_match_stop,
-    read_receipt_result_pages as read_receipt_result_pages,
-    read_receipt_result_pages_incremental as read_receipt_result_pages_incremental,
-    read_receipt_result_pages_until_match as read_receipt_result_pages_until_match,
-    unresolved_excel_rows as unresolved_excel_rows,
+from tools.receipt_query_page_reader import read_receipt_result_pages  # noqa: E402
+from tools.receipt_query_match_reader import (  # noqa: E402
+    read_receipt_result_pages_until_match,
 )
-from tools.receipt_query_result_tables import (  # noqa: E402
-    enumerate_receipt_result_table_paths as enumerate_receipt_result_table_paths,
-    find_table_paths_in_context as find_table_paths_in_context,
-    first_non_empty_cell as first_non_empty_cell,
-    first_non_empty_cell_at as first_non_empty_cell_at,
-    is_receipt_result_table_candidate as is_receipt_result_table_candidate,
-    read_receipt_result_table_by_path as read_receipt_result_table_by_path,
-    read_receipt_result_tables_runtime as read_receipt_result_tables_runtime,
-    read_receipt_tables as read_receipt_tables,
-    receipt_result_read_columns as receipt_result_read_columns,
-    summarize_receipt_tables as summarize_receipt_tables,
-)
-from tools.receipt_query_report import (  # noqa: E402
-    build_dry_run_match_report as build_dry_run_match_report,
-    build_dry_run_match_report_from_preview as build_dry_run_match_report_from_preview,
-    build_receipt_write_back_report as build_receipt_write_back_report,
-    diagnose_match_inputs as diagnose_match_inputs,
-    summarize_nc_rows as summarize_nc_rows,
-    unique_ordered as unique_ordered,
-)
+from tools.receipt_query_result_tables import receipt_result_read_columns  # noqa: E402
 
 
 class TimingRecorder:
@@ -93,20 +51,7 @@ def resolve_today(value):
     return date.today().isoformat() if value == "{today}" else value
 
 
-def set_text(jab, jab_cfg, path, value):
-    return jab.set_text_by_path(
-        path,
-        value,
-        title=jab_cfg["dialog_title"],
-        class_name=jab_cfg["dialog_class"],
-        role="text",
-        wait=float(jab_cfg.get("text_set_wait", 0.0)),
-        timeout=2,
-        require_showing=True,
-    )
-
-
-def set_finance_org_text(jab, jab_cfg, field_cfg, value, dynamic_scope=None):
+def set_finance_org_text(jab, jab_cfg, value, dynamic_scope=None):
     scope = dynamic_scope or find_query_condition_scope(jab, jab_cfg)
     result = set_query_dynamic_text(jab, jab_cfg, scope, "finance_org", value)
     return bool(result.get("ok"))
@@ -213,7 +158,6 @@ def fill_receipt_query(
             set_finance_org_text,
             jab,
             jab_cfg,
-            None,
             org_code,
             query_scope,
         )

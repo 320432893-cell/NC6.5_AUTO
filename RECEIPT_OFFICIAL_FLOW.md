@@ -365,7 +365,7 @@ Sheet2 当前字段（顺序以代码 `core/receipt_sheet.py` 的 `RESULT_SHEET_
 Linux 侧检查：
 
 ```bash
-.venv/bin/python -m pytest -q tests/test_receipt_full_flow_entry.py tests/test_receipt_full_flow_test_wrappers.py tests/test_receipt_query_fill.py tests/test_receipt_post_save_query.py tests/test_receipt_self_made_fill_trial.py tests/test_receipt_entry.py tests/test_validate_config.py
+.venv/bin/python -m pytest -q tests/test_receipt_full_flow_entry.py tests/test_receipt_full_flow_test_wrappers.py tests/test_receipt_query_fill.py tests/test_receipt_post_save_query.py tests/test_receipt_self_made_flow.py tests/test_receipt_entry.py tests/test_validate_config.py
 .venv/bin/python tools/check.py changed
 python3 tools/validate_config.py config.json
 git diff --check

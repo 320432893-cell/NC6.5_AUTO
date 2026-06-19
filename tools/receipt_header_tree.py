@@ -4,8 +4,6 @@
 # 谁不应该 import：receipt_header_paths 不应 import 本模块(会成环)
 
 import ctypes
-from ctypes import wintypes
-import os
 import time
 
 from tools.receipt_header_paths import (
@@ -281,27 +279,3 @@ def find_header_label_in_tree(
     return None, [], []
 
 
-def window_root_hwnd(hwnd):
-    if os.name != "nt" or not hasattr(ctypes, "windll") or not hwnd:
-        return 0
-    return int(ctypes.windll.user32.GetAncestor(wintypes.HWND(int(hwnd)), 2) or 0)
-
-
-def do_context_commit_action(jab, vm_id, context):
-    actions = jab.get_action_names(vm_id, context)
-    preferred = ("确认", "确定", "提交", "单击", "click", "press")
-    for action_name in preferred:
-        if action_name not in actions:
-            continue
-        try:
-            ok = bool(jab.do_action(vm_id, context, action_name=action_name))
-        except Exception as exc:
-            return {
-                "ok": False,
-                "action": action_name,
-                "exception": repr(exc),
-                "actions": actions,
-            }
-        if ok:
-            return {"ok": True, "action": action_name, "actions": actions}
-    return {"ok": False, "reason": "no commit action", "actions": actions}

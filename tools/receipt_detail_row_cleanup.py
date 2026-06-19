@@ -1,4 +1,4 @@
-# 职责：执行收款单明细多余行删除和手续费账户清空规则
+# 职责：执行收款单明细多余行删除规则
 # 不做什么：不新增手续费行，不定义字段映射，不负责 CLI/打印
 # 允许依赖层：tools.receipt_detail_fields/reader/screen_writer、tools.receipt_body_table_locator
 # 谁不应该 import：配置校验、Sheet 写入、收款匹配模块不应 import
@@ -8,7 +8,6 @@ import time
 
 from tools.receipt_body_table_locator import locate_receipt_body_table_cached
 from tools.receipt_detail_fields import (
-    ACCOUNT_COL,
     AMOUNT_COL,
     SUBJECT_COL,
     normalize_amount_text,
@@ -21,10 +20,7 @@ from tools.receipt_detail_reader import (
     wait_body_row_count,
     wait_table_row_count_by_path,
 )
-from tools.receipt_detail_screen_writer import (
-    focus_detail_cell,
-    keyboard_write_selected_cell,
-)
+from tools.receipt_detail_screen_writer import focus_detail_cell
 from tools.receipt_keyboard_utils import guarded_send_ctrl_d
 
 
@@ -224,54 +220,6 @@ def cleanup_rows_after_first(jab, located, scope_hwnd=None):
         },
         expected_rows=1,
     )
-
-
-def clear_fee_account_if_filled(jab, located, row_index, known_cells=None):
-    snapshot = None
-    cells = known_cells or {}
-    before = normalize_text(cells.get(str(ACCOUNT_COL)))
-    if known_cells is None or str(ACCOUNT_COL) not in cells:
-        snapshot, cells = read_row_cells(jab, row_index, located)
-        before = normalize_text(cells.get(str(ACCOUNT_COL)))
-        if not snapshot.get("ok"):
-            return {
-                "ok": False,
-                "reason": f"清空前无法读取手续费行：{snapshot.get('reason')}",
-            }
-    if not before:
-        return {
-            "ok": True,
-            "skipped": True,
-            "before": before,
-            "after": before,
-            "source": "known_cells" if known_cells is not None else "read_row_cells",
-            "reason": "手续费账户列为空，不切换焦点",
-        }
-
-    best = located.get("best") or {}
-    table_window = best.get("window") or {}
-    focused = focus_detail_cell(jab, located, row_index, ACCOUNT_COL)
-    if not focused.get("ok"):
-        return {
-            "ok": False,
-            "before": before,
-            "reason": focused.get("reason"),
-            "focused": focused,
-        }
-
-    sent = keyboard_write_selected_cell(table_window, "", clear_only=True)
-    _after_snapshot, after_cells = read_row_cells(jab, row_index, located)
-    after = normalize_text(after_cells.get(str(ACCOUNT_COL)))
-    return {
-        "ok": bool(sent.get("ok")) and not after,
-        "before": before,
-        "after": after,
-        "focused": focused,
-        "sent": sent,
-        "reason": None
-        if bool(sent.get("ok")) and not after
-        else sent.get("reason") or "Delete 后账户列仍非空",
-    }
 
 
 def delete_extra_row_if_present(

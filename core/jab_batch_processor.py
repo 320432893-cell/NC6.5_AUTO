@@ -156,18 +156,6 @@ class JABBatchProcessor:
     def detect_voucher_window_state(self):
         return self.state_detector.detect_voucher_window_state()
 
-    def collect_page_controls(self):
-        return self.state_detector.probe.collect_named_controls(
-            ("单据生成", "查询", "生成", "前台生成", "正式单据")
-        )
-
-    def collect_window_controls(self, window_title, window_class, names):
-        return self.state_detector.probe.collect_named_controls(
-            names,
-            window_title=window_title,
-            window_class=window_class,
-        )
-
     def read_page_table_signatures(self):
         return self.state_detector.probe.read_page_table_signatures(
             self.generated_date_col,
@@ -175,47 +163,6 @@ class JABBatchProcessor:
             self.jab.amount_col,
             self.jab.partner_col,
         )
-
-    def describe_signature_table(self, table):
-        date_values = self.sample_table_col(table, self.generated_date_col)
-        voucher_values = self.sample_table_col(table, self.voucher_col)
-        return {
-            "table_index": table["table_index"],
-            "window_title": table.get("window_title"),
-            "window_class": table.get("window_class"),
-            "row_count": table["row_count"],
-            "col_count": table["col_count"],
-            "date_values": date_values,
-            "voucher_values": voucher_values,
-            "rows": [
-                {
-                    "row_index": row["row_index"],
-                    "amount": self.jab.normalize_amount(
-                        row["cells"][self.jab.amount_col]
-                        if self.jab.amount_col < len(row["cells"])
-                        else ""
-                    ),
-                    "partner": self.jab.normalize_text(
-                        row["cells"][self.jab.partner_col]
-                        if self.jab.partner_col < len(row["cells"])
-                        else ""
-                    ),
-                }
-                for row in table.get("rows", [])
-            ],
-        }
-
-    def sample_table_col(self, table, col):
-        if col is None:
-            return []
-        values = []
-        for row in table.get("rows", []):
-            cells = row.get("cells", [])
-            if 0 <= col < len(cells):
-                text = str(cells[col]).strip()
-                if text:
-                    values.append(text)
-        return values
 
     def choose_main_signature_table(self, tables):
         from core.nc_state import choose_main_signature_table

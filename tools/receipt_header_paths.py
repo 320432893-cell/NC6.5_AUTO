@@ -17,13 +17,6 @@ HEADER_FORM_TEXT_INDEXES = {
     "结算方式": 31,
 }
 HEADER_REQUIRED_LABELS = ("财务组织", "客户", "单据日期", "币种", "结算方式")
-HEADER_LABEL_ALIASES = {
-    "财务组织": ("财务组织(O)",),
-    "客户": ("客户",),
-    "单据日期": ("单据日期",),
-    "币种": ("币种",),
-    "结算方式": ("结算方式",),
-}
 HEADER_PROBE_LABEL_KEYS = {
     "finance": "财务组织",
     "finance_org": "财务组织",

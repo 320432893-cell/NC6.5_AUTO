@@ -1,12 +1,12 @@
 # 职责：从开单探测报告萃取入口上下文(scope_hwnd/动态前缀/锚点 path)并定位明细表
 # 不做什么：不写入字段，不做报告渲染，不触发保存，不做行编排
-# 允许依赖层：tools.receipt_body_table_locator、tools.receipt_self_made_fill_trial
+# 允许依赖层：tools.receipt_body_table_locator、tools.receipt_self_made_flow
 # 谁不应该 import：core 层模块不应 import；本模块不应反向 import row_runner
 
 import sys
 import time
 
-from tools.receipt_self_made_fill_trial import receipt_header_dynamic_prefix
+from tools.receipt_self_made_flow import receipt_header_dynamic_prefix
 
 BODY_TABLE_SUFFIX = "0.0.0.1.1.0.0.0.0.1.0.2.1.0.0.0.0.0"
 

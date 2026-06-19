@@ -18,50 +18,6 @@ class NCPageProbe:
         self.jab = jab
         self.batch_cfg = batch_cfg
 
-    def build_report(self, max_rows=5, max_cols=25):
-        self.jab.ensure_started()
-        windows = self.collect_java_windows()
-        controls = self.collect_controls()
-        tables = self.jab.read_all_table_cells(max_rows=max_rows, max_cols=max_cols)
-
-        voucher_window = self.batch_cfg.get("voucher_window_title", "制单")
-        query_title = self.batch_cfg.get("open_query", {}).get("dialog_title", "查询")
-        blockers = [
-            window
-            for window in windows
-            if window["title"] in (voucher_window, query_title)
-            and window["class"] == "SunAwtDialog"
-            and window["visible"]
-        ]
-
-        return {
-            "blocking_child_windows": blockers,
-            "parent_markers": [item for item in controls if item["name"] == "单据生成"],
-            "watched_controls": controls,
-            "table_signatures": [self.describe_table(table) for table in tables],
-        }
-
-    def collect_java_windows(self):
-        windows = []
-        for hwnd, title, class_name, pid, visible in enum_windows(
-            include_children=True
-        ):
-            try:
-                is_java = bool(self.jab.dll.isJavaWindow(hwnd))
-            except Exception:
-                is_java = False
-            if is_java:
-                windows.append(
-                    {
-                        "hwnd": int(hwnd),
-                        "title": title,
-                        "class": class_name,
-                        "pid": pid,
-                        "visible": bool(visible),
-                    }
-                )
-        return windows
-
     def collect_controls(self):
         found = []
         seen = set()
@@ -155,29 +111,6 @@ class NCPageProbe:
                 vm_id, child, path + [index], window, found, seen, depth + 1
             )
             self.jab.release_contexts(vm_id, [child])
-
-    def describe_table(self, table):
-        generated_date_col = self.batch_cfg.get("generated_date_col", 18)
-        voucher_col = self.batch_cfg.get("generated_voucher_col", 22)
-        return {
-            "table_index": table["table_index"],
-            "window_title": table.get("window_title"),
-            "window_class": table.get("window_class"),
-            "row_count": table["row_count"],
-            "col_count": table["col_count"],
-            "date_col": generated_date_col,
-            "date_values": sample_col(table, generated_date_col)[:8],
-            "voucher_col": voucher_col,
-            "voucher_values": sample_col(table, voucher_col)[:8],
-            "sample_rows": [
-                {
-                    "row_index": row["row_index"],
-                    "cells": row["cells"],
-                    "selected": row["selected"],
-                }
-                for row in table["rows"]
-            ],
-        }
 
     def collect_named_controls(
         self,

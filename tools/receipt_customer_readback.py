@@ -8,12 +8,12 @@ import sys
 
 
 class _TrialNamespace:
-    # 按调用时从已加载的 tools.receipt_self_made_fill_trial 取属性：
+    # 按调用时从已加载的 tools.receipt_self_made_flow 取属性：
     # 让测试对 trial 上 find_receipt_header_field_by_dynamic_path /
     # find_receipt_header_field_by_semantic_label 的 monkeypatch 与拆分前一致地生效，
     # 且不在加载期 import 入口模块以避免成环。
     def __getattr__(self, name):
-        return getattr(sys.modules["tools.receipt_self_made_fill_trial"], name)
+        return getattr(sys.modules["tools.receipt_self_made_flow"], name)
 
 
 _trial = _TrialNamespace()

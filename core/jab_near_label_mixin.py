@@ -48,69 +48,6 @@ class JABNearLabelMixin:
             require_showing=require_showing,
         )
 
-    def describe_controls_near_label(
-        self,
-        label,
-        title=None,
-        class_name=None,
-        require_showing=True,
-        max_vertical_distance=28,
-        max_right_distance=420,
-    ):
-        return jab_near_label.describe_controls_near_label(
-            self,
-            label,
-            title=title,
-            class_name=class_name,
-            require_showing=require_showing,
-            max_vertical_distance=max_vertical_distance,
-            max_right_distance=max_right_distance,
-        )
-
-    def controls_near_label_info(
-        self,
-        vm_id,
-        controls,
-        label_info,
-        max_vertical_distance=28,
-        max_right_distance=420,
-    ):
-        return jab_near_label.controls_near_label_info(
-            self,
-            vm_id,
-            controls,
-            label_info,
-            max_vertical_distance=max_vertical_distance,
-            max_right_distance=max_right_distance,
-        )
-
-    def click_control_near_label(
-        self,
-        label,
-        role,
-        index=0,
-        title=None,
-        class_name=None,
-        require_showing=True,
-        max_vertical_distance=28,
-        max_right_distance=420,
-        action_name=None,
-        wait=None,
-    ):
-        return jab_near_label.click_control_near_label(
-            self,
-            label,
-            role,
-            index=index,
-            title=title,
-            class_name=class_name,
-            require_showing=require_showing,
-            max_vertical_distance=max_vertical_distance,
-            max_right_distance=max_right_distance,
-            action_name=action_name,
-            wait=wait,
-        )
-
     def describe_text_near_label(
         self,
         label,

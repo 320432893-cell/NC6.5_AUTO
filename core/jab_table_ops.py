@@ -29,7 +29,6 @@ from core.jab_table_select import (  # noqa: F401
     get_selected_child_indexes,
     has_selection_api,
     resolve_selection_col,
-    select_record_in_visible_tables_once,
     select_table_rows,
     select_table_rows_from_context,
     select_visible_table_rows,

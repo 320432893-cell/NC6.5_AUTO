@@ -1,6 +1,6 @@
 # 职责：提供收款单明细主行/手续费行正式测试 CLI 入口
 # 不做什么：不打开收款单、不写表头、不保存/暂存、不读取 Excel 批量计划
-# 允许依赖层：core 配置/JAB、tools.receipt_detail_*、tools.receipt_self_made_fill_trial 读表兼容函数
+# 允许依赖层：core 配置/JAB、tools.receipt_detail_*、tools.receipt_self_made_flow 读表兼容函数
 # 谁不应该 import：Sheet 写入、收款匹配、凭证批量模块不应 import
 
 import argparse
@@ -31,7 +31,7 @@ from tools.receipt_detail_row_cleanup import (  # noqa: E402
 )
 from tools.receipt_detail_rows import StepTimer, run_fee_only  # noqa: E402
 from tools.receipt_detail_writer import write_detail_line_by_screen  # noqa: E402
-from tools.receipt_self_made_fill_trial import (  # noqa: E402
+from tools.receipt_self_made_flow import (  # noqa: E402
     read_body_table,
     wait_header_account_description,
 )
@@ -94,7 +94,7 @@ def get_test_account(config, bank_label):
     raise RuntimeError(f"config.json 中找不到银行账户映射：{bank_label}")
 
 
-def detail_bank_account_no(account, currency=DEFAULT_TEST_CURRENCY):
+def detail_bank_account_no(account):
     return account.account_no
 
 

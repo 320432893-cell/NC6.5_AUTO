@@ -2,7 +2,7 @@ import json
 import subprocess
 import ctypes
 
-from tools import receipt_self_made_fill_trial as trial
+from tools import receipt_self_made_flow as trial
 from tools import receipt_new_probe
 from tools.receipt_new_probe import (
     detect_self_made_entry_state,
@@ -1093,13 +1093,6 @@ def test_header_dynamic_field_prefers_dynamic_path_over_scoped_label(monkeypatch
     )
     monkeypatch.setattr(
         trial,
-        "find_receipt_header_field_by_scoped_label",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("dynamic path 命中后不能再逐字段语义搜索")
-        ),
-    )
-    monkeypatch.setattr(
-        trial,
         "guarded_paste_header_value",
         lambda *_args: {
             "ok": True,
@@ -1197,7 +1190,6 @@ def test_header_dynamic_field_uses_live_semantic_after_path_miss(
         {
             "scope_hwnd": 919586,
             "timeout": trial.HEADER_LIVE_SEMANTIC_FALLBACK_TIMEOUT,
-            "include_scoped": False,
         }
     ]
 
@@ -1227,13 +1219,6 @@ def test_header_dynamic_field_short_semantic_failure_does_not_deep_scan(
             "reason": "semantic label not found",
             "timeout": kwargs.get("timeout"),
         },
-    )
-    monkeypatch.setattr(
-        trial,
-        "find_receipt_header_field_by_scoped_label",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("正式短语义兜底失败后不应继续 scoped 深扫")
-        ),
     )
 
     result = trial.set_receipt_header_dynamic_field(
@@ -1300,24 +1285,6 @@ def test_visible_control_does_not_require_positive_coordinates():
     }
 
     assert is_current_visible_control(control) is True
-
-
-def test_context_commit_action_uses_jab_action():
-    class FakeJAB:
-        def get_action_names(self, vm_id, context):
-            return ["单击"]
-
-        def do_action(self, vm_id, context, action_name=None):
-            self.called = (vm_id, context, action_name)
-            return True
-
-    jab = FakeJAB()
-
-    result = trial.do_context_commit_action(jab, 1, 2)
-
-    assert result["ok"] is True
-    assert result["action"] == "单击"
-    assert jab.called == (1, 2, "单击")
 
 
 def test_header_dynamic_field_records_snapshot_without_blocking_after_guarded_paste(
@@ -1717,14 +1684,6 @@ def test_header_dynamic_field_blocks_when_path_fails(monkeypatch):
                 },
             }
 
-    monkeypatch.setattr(
-        trial,
-        "find_receipt_header_field_by_scoped_label",
-        lambda *_args, **_kwargs: {
-            "ok": False,
-            "reason": "scoped label missing",
-        },
-    )
     monkeypatch.setattr(
         trial,
         "find_receipt_header_field_by_dynamic_path",

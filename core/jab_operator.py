@@ -16,12 +16,6 @@ from tools.jab_probe import (
 )
 
 
-def take_desktop_screenshot():
-    import pyautogui
-
-    return pyautogui.screenshot()
-
-
 class JABOperator(JABControlMixin, JABNearLabelMixin, JABPathMixin, JABTableMixin):
     """Small Java Access Bridge wrapper for stable NC button/menu actions."""
 
@@ -85,8 +79,9 @@ class JABOperator(JABControlMixin, JABNearLabelMixin, JABPathMixin, JABTableMixi
     def __del__(self):
         try:
             self.close()
-        except Exception:
-            pass
+        except Exception as exc:
+            # 析构期清理失败可忽略,但留 DEBUG 痕迹,避免清理问题完全无声
+            log.debug(f"JABOperator.__del__ close 失败(忽略): {exc}")
 
     def hide_blank_awt_windows(self):
         """Force-hide only hidden no-title AWT residue left by JAB/Java.

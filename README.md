@@ -78,12 +78,12 @@
 - `tools/receipt_detail_entry.py`：收款单明细主行/手续费行正式 Python 入口；供脚本化测试明细写入能力，不保存、不暂存。
 - `tools/receipt_entry_check.py`
 - `tools/receipt_query_fill.py`
-- `tools/receipt_self_made_fill_trial.py`
+- `tools/receipt_self_made_flow.py`
 - `tools/close_awt_popup_residue.py`
 - `tools/query_jab.bat`
 - `tools/run_jab_probe.bat`
 
-仍存在的 `tools/tmp_*` 只作为现场探测、复盘或窄场景诊断参考，不是正式批量入口：`tmp_receipt_cell_probe_run.py`、`tmp_receipt_tables_probe.py`、`tmp_receipt_detail_main_line_run.py`、`tmp_jab_recovery_probe.py`。其中 `tmp_receipt_detail_main_line_run.py` 只是兼容壳，会转发到正式入口 `tools/receipt_detail_entry.py`；旧表头账户参照探针已移入 `tools/archive/`，已删除的真实保存 T0 脚本只能从 git 历史恢复。
+现场探测、复盘或窄场景诊断用的临时脚本已清理，不再保留为入口；明细主行/手续费行能力已沉淀到正式入口 `tools/receipt_detail_entry.py`。旧表头账户参照探针已移入 `tools/archive/`，已删除的真实保存 T0 脚本只能从 git 历史恢复。
 
 历史探针和人工现场测试入口已收口到 `tools/archive/`。这些文件只作复盘证据，不是测试人员默认入口，也不能被正式流程 import；需要重新启用时先移回合适目录并补检查闭包。
 
@@ -273,7 +273,7 @@ cd /mnt/h/python脚本/.venv/nc_auto_v2
 | `tools/receipt_full_flow_save_query_write_test.py` | 是 | 默认保存后写 Sheet2 本批结果 | 是 | 可选保存 | 现场测试：保存/不保存/故障恢复/verify 审查 |
 | `tools/receipt_query_fill.py --confirm --read-results` | 是 | 否 | 是 | 否 | 收款单查询/抽取组件 |
 | `tools/receipt_query_fill.py --dry-run-match --write-back` | 是 | 是，写 Sheet1 状态列 | 是 | 否 | 历史查重/诊断入口 |
-| `tools/receipt_self_made_fill_trial.py` | 是 | 否 | 是 | 默认否 | 单行/分阶段现场试填 |
+| `tools/receipt_self_made_flow.py` | 是 | 否 | 是 | 默认否 | 单行/分阶段现场试填 |
 | `tools/receipt_detail_entry.py` | 否 | 否 | 是，写当前明细表 | 否 | 明细正式测试入口 |
 | `tools/tmp_*` | 视脚本而定 | 视脚本而定 | 视脚本而定 | 禁止当正式入口 | 探测/复盘参考 |
 
@@ -305,7 +305,7 @@ NC 表头层级很深，JAB 默认搜索深度必须保持 `max_depth=50`。`25`
 
 `新增 -> 自制` 的成功标准是上方 `保存(Ctrl+S)`、`暂存`、`取消(Ctrl+Q)` 三个按钮同时出现；只看到 JAB action 返回成功或菜单项被点击，不算进入自制录入态。25 列明细表只作为填明细前的单独校验，不作为开单成功条件。完整流程复用同一个主 JAB 完成开单、表头、明细和保存；`自制` 后不得再起子进程或重新启动主 JAB 造成空等。
 
-`tools/receipt_self_made_fill_trial.py` 默认只负责开单和表头阶段；表头字段主路是“当前 canvas + 动态前缀 + 固定后缀 path”写入，`财务组织(O)` 是前缀硬锚点。完整流程开单成功后立即写表头首字段；下方表格 path 预热只在财务组织写入成功后后台启动，不得阻塞财务组织写入。明细填入默认禁用，必须显式传 `--fill-detail` 才会尝试进入明细；明细正式入口统一调用 `tools/receipt_detail_*`，使用受保护前台键盘和剪贴板粘贴，不能回退到坐标或无守卫 typing。
+`tools/receipt_self_made_flow.py` 默认只负责开单和表头阶段；表头字段主路是“当前 canvas + 动态前缀 + 固定后缀 path”写入，`财务组织(O)` 是前缀硬锚点。完整流程开单成功后立即写表头首字段；下方表格 path 预热只在财务组织写入成功后后台启动，不得阻塞财务组织写入。明细填入默认禁用，必须显式传 `--fill-detail` 才会尝试进入明细；明细正式入口统一调用 `tools/receipt_detail_*`，使用受保护前台键盘和剪贴板粘贴，不能回退到坐标或无守卫 typing。
 
 可取消 Java 弹窗恢复不是正常路径前置扫描。完整流程只在某个动作失败、异常、前台窗口不匹配、JAB 写入失败、剪贴板失败或键盘写入失败后，才检查是否出现 `SunAwtDialog` 且带 `取消/Alt+C` 控件的可恢复弹窗；命中后先聚焦弹窗，再发送 `Alt+C`，随后只重试刚才失败的当前动作一次。
 

@@ -25,7 +25,6 @@ def write_field_once(
     row_index,
     row_count,
     field,
-    next_col,
     business,
     attempt_no,
     current_col=None,
@@ -156,7 +155,6 @@ def write_detail_line_by_screen(
             break
 
         step = make_detail_step(field, business, row_index, row_count, col_count)
-        next_field = fields[index + 1] if index + 1 < len(fields) else fields[0]
         attempt = write_field_once(
             jab,
             located,
@@ -164,7 +162,6 @@ def write_detail_line_by_screen(
             row_index,
             row_count,
             field,
-            next_field["col"],
             business,
             attempt_no=1,
             current_col=current_col,

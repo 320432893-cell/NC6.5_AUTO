@@ -1,11 +1,11 @@
 # 职责：读回/诊断已写表头字段，确认客户名称，并归纳表头写入失败原因
 # 不做什么：不写入字段，不触发保存，不做报告落盘，不做行编排
-# 允许依赖层：tools.receipt_self_made_fill_trial 的表头字段定位/客户名校验
+# 允许依赖层：tools.receipt_self_made_flow 的表头字段定位/客户名校验
 # 谁不应该 import：core 层模块不应 import；本模块不应反向 import row_runner
 
 import sys
 
-from tools.receipt_self_made_fill_trial import is_valid_customer_name_candidate
+from tools.receipt_self_made_flow import is_valid_customer_name_candidate
 
 
 class _FlowNamespace:

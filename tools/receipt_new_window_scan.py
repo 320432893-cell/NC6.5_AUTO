@@ -72,7 +72,7 @@ def resolve_current_canvas_header_anchor(jab, windows):
     ]
     if not canvas_hwnds:
         return {"ok": False, "reason": "current SunAwtCanvas not found"}
-    from tools.receipt_self_made_fill_trial import (
+    from tools.receipt_self_made_flow import (
         resolve_receipt_header_anchor_in_canvas,
     )
 

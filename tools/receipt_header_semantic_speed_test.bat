@@ -32,7 +32,7 @@ echo Read-only probe: field=%LABEL_KEY% timeout=%PROBE_TIMEOUT%s repeat=%PROBE_R
 echo Make sure NC is already on the receipt self-made entry page.
 echo This script will not type, save, or open a receipt.
 echo.
-py -3.11 tools\receipt_self_made_fill_trial.py --probe-header-semantic-field "%LABEL_KEY%" --probe-timeout %PROBE_TIMEOUT% --probe-repeat %PROBE_REPEAT% --json
+py -3.11 tools\receipt_self_made_flow.py --probe-header-semantic-field "%LABEL_KEY%" --probe-timeout %PROBE_TIMEOUT% --probe-repeat %PROBE_REPEAT% --json
 set "EXITCODE=%ERRORLEVEL%"
 echo.
 echo Exit code: %EXITCODE%

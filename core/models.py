@@ -78,8 +78,6 @@ class VoucherSaveMatch:
     table_rows: int
     voucher_row: int
     voucher_cells: list[str]
-    match_mode: str = ""
-    fallback_reason: str = ""
 
     def validate_for_save(self, context: str = "") -> None:
         errors = []

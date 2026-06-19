@@ -13,7 +13,6 @@ class ReceiptEntryConfig:
     def __init__(self, config):
         receipt_cfg = config.get("receipt_entry") or {}
         self.receipt_cfg = receipt_cfg
-        self.schema_version = int(receipt_cfg.get("schema_version", 1))
         self.excel_cfg = receipt_cfg.get("excel") or {}
         self.candidate_cfg = receipt_cfg.get("candidate_check") or {}
         self.detail_entry_policy = receipt_cfg.get("detail_entry_policy") or {}
@@ -43,7 +42,6 @@ class ReceiptEntryConfig:
                 header_currency_code=item.get("header_currency_code", ""),
                 id=item.get("id") or default_account_id(item),
                 bank_id=item.get("bank_id", ""),
-                display_name=item.get("display_name", ""),
                 aliases=tuple(item.get("aliases") or ()),
                 excel_bank_aliases=tuple(item.get("excel_bank_aliases") or ()),
                 nc_candidates_by_currency=normalize_candidate_map(

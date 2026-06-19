@@ -15,7 +15,8 @@ from core.jab_operator import JABOperator  # noqa: E402
 from core.receipt_config import ReceiptEntryConfig  # noqa: E402
 from core.utils import load_config  # noqa: E402
 from tools.read_receipt_excel_row import DEFAULT_FIELDS  # noqa: E402
-from tools.receipt_body_table_locator import locate_receipt_body_table  # noqa: E402
+# read_body_table 已归位到 receipt_detail_reader(它是读明细表的正式模块);此处 re-export 以保留可导入面与 monkeypatch 锚点
+from tools.receipt_detail_reader import read_body_table  # noqa: E402, F401
 from tools.receipt_new_probe import (  # noqa: E402
     collect_receipt_new_windows,
     detect_self_made_entry_state,
@@ -33,7 +34,7 @@ from tools.receipt_table_cell_probe import select_cell  # noqa: E402
 # 收款单表头库已纯搬移到 receipt_header_{paths,tree,scope,writer} 与
 # receipt_customer_readback；本文件保留探针 CLI(main)与 run_receipt_new_probe[_with_jab]，
 # 并 re-export 搬出的名字以保持原可导入面与测试 monkeypatch 语义(tests/外部模块仍从
-# tools.receipt_self_made_fill_trial import)。子模块在调用期经各自的 _trial 代理读本模块属性，
+# tools.receipt_self_made_flow import)。子模块在调用期经各自的 _trial 代理读本模块属性，
 # 因此对本模块上这些名字的 monkeypatch 仍对子模块内部协作调用生效。
 from tools.receipt_header_paths import (  # noqa: E402, F401
     CURRENCY_NAMES,
@@ -43,7 +44,6 @@ from tools.receipt_header_paths import (  # noqa: E402, F401
     HEADER_COMMON_SUFFIX_TEMPLATE,
     HEADER_DYNAMIC_PREFIX_BASE,
     HEADER_FORM_TEXT_INDEXES,
-    HEADER_LABEL_ALIASES,
     HEADER_LIVE_SEMANTIC_FALLBACK_TIMEOUT,
     HEADER_PROBE_LABEL_KEYS,
     HEADER_REQUIRED_LABELS,
@@ -67,13 +67,11 @@ from tools.receipt_header_paths import (  # noqa: E402, F401
     split_header_path,
 )
 from tools.receipt_header_tree import (  # noqa: E402, F401
-    do_context_commit_action,
     find_context_with_window,
     find_header_label_context_with_window,
     find_header_label_in_tree,
     find_label_following_text,
     first_text_descendant,
-    window_root_hwnd,
 )
 from tools.receipt_header_scope import (  # noqa: E402, F401
     correct_header_anchor_dynamic_index_by_customer,
@@ -92,7 +90,6 @@ from tools.receipt_header_writer import (  # noqa: E402, F401
     fill_header,
     find_receipt_header_field_by_dynamic_path,
     find_receipt_header_field_by_live_semantic,
-    find_receipt_header_field_by_scoped_label,
     find_receipt_header_field_by_semantic_label,
     guarded_paste_header_value,
     probe_finance_org_accepted_text_in_scope,
@@ -785,25 +782,6 @@ def cell_changed(result, value):
         and str(value) in after
     )
 
-
-def read_body_table(jab, step, scope_hwnd=None):
-    located = locate_receipt_body_table(jab, max_rows=3, scope_hwnd=scope_hwnd)
-    best = located.get("best")
-    if not best:
-        return {
-            "step": step,
-            "ok": False,
-            "reason": "body table not found",
-            "candidates": located.get("candidates", [])[:3],
-        }
-    return {
-        "step": step,
-        "ok": True,
-        "path": best.get("path"),
-        "row_count": best.get("row_count"),
-        "col_count": best.get("col_count"),
-        "rows": best.get("rows"),
-    }
 
 if __name__ == "__main__":
     raise SystemExit(main())

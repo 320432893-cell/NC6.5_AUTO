@@ -180,14 +180,6 @@ def is_receipt_result_table_candidate(table, query_cfg):
     return receipt_result_table_rows_match(table, query_cfg)
 
 
-def enumerate_receipt_result_table_paths(jab, query_cfg, window_class):
-    return [
-        candidate
-        for candidate in enumerate_visible_table_paths(jab, window_class)
-        if is_receipt_result_table_candidate(candidate, query_cfg)
-    ]
-
-
 def enumerate_visible_table_paths(jab, window_class):
     if not hasattr(jab, "dll"):
         return []
