@@ -13,7 +13,18 @@ if str(ROOT) not in sys.path:
 from core.data_handler import DataHandler  # noqa: E402
 from core.jab_batch_processor import JABBatchProcessor  # noqa: E402
 from core.logger import log  # noqa: E402
+from core.runtime_mode import is_engine_mode  # noqa: E402
 from core.utils import load_config  # noqa: E402
+
+
+def _human_print(*args, **kwargs):
+    """面向人工操作员的旁白/摘要：CLI 直跑照常打印；引擎模式(子进程)下抑制。
+
+    机器结果信封(_emit_envelope 的 JSON)不走这里，任何模式都照常 print。
+    """
+    if is_engine_mode():
+        return
+    print(*args, **kwargs)
 
 
 def build_parser():
@@ -198,7 +209,8 @@ def main():  # noqa: C901 (intentional single-function dispatch)
                 start_row=args.start_row,
                 end_row=args.end_row,
             )
-            print_summary(result)
+            if not is_engine_mode():
+                print_summary(result)
             if args.json_output:
                 matches = result["matches"]
                 issues = result["issues"]
@@ -245,7 +257,9 @@ def main():  # noqa: C901 (intentional single-function dispatch)
             return
 
         if args.command == "generate":
-            if not args.yes:
+            # 引擎模式(子进程无 TTY，input() 会挂)或显式 --yes 时跳过人工二次确认；
+            # CLI 直跑且未给 --yes 才保留旁白+input。
+            if not args.yes and not is_engine_mode():
                 print("即将真实点击 NC：多选行、生成、逐张保存。")
                 answer = input("确认继续请输入 yes: ").strip().lower()
                 if answer != "yes":
@@ -274,7 +288,7 @@ def main():  # noqa: C901 (intentional single-function dispatch)
                 start_row=args.start_row,
                 end_row=args.end_row,
             )
-            print(f"生成保存完成: {saved} 张")
+            _human_print(f"生成保存完成: {saved} 张")
             if args.json_output:
                 _emit_envelope(
                     ok=True,
@@ -297,7 +311,7 @@ def main():  # noqa: C901 (intentional single-function dispatch)
                 start_row=args.start_row,
                 end_row=args.end_row,
             )
-            print(f"恢复制单窗口保存完成: {saved} 张")
+            _human_print(f"恢复制单窗口保存完成: {saved} 张")
             if args.json_output:
                 _emit_envelope(
                     ok=True,
@@ -314,7 +328,7 @@ def main():  # noqa: C901 (intentional single-function dispatch)
 
         if args.command == "switch-generated":
             processor.switch_to_generated_list()
-            print("已切换到已生成列表")
+            _human_print("已切换到已生成列表")
             if args.json_output:
                 _emit_envelope(
                     ok=True,
@@ -333,7 +347,7 @@ def main():  # noqa: C901 (intentional single-function dispatch)
                 end_row=args.end_row,
                 auto_switch=not args.no_backfill_auto_switch,
             )
-            print(f"回填完成: {len(updates)} 行")
+            _human_print(f"回填完成: {len(updates)} 行")
             if args.json_output:
                 items = [
                     {"ref": str(ref), "outcome": "success", "reason": ""}
@@ -355,7 +369,7 @@ def main():  # noqa: C901 (intentional single-function dispatch)
 
         if args.command == "split-keys":
             result = DataHandler(cfg).split_jab_keys_to_columns(limit=args.limit)
-            print(
+            _human_print(
                 "拆分完成: "
                 f"{result['updates']} 行, "
                 f"金额列={result['amount_col']}, 对手方列={result['partner_col']}, "

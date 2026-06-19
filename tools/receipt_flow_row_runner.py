@@ -8,6 +8,7 @@ import threading
 import time
 from dataclasses import asdict, dataclass, field
 
+from core.runtime_mode import is_engine_mode
 from tools.receipt_detail_rows import StepTimer, run_fee_only
 from tools.receipt_flow_detail_repair import (
     force_one_detail_field_pending,
@@ -289,11 +290,13 @@ def _run_header_stage(state):
             header_steps_so_far_labels.append(label)
         if state.pause_after_header_field != label:
             return None
-        print(
-            f"诊断暂停：表头字段 [{label}] 已写入。"
-            "可以现在人工打开干扰窗口或清理已输入字段；回车后继续检查。"
-        )
-        input("完成干扰后按回车继续: ")
+        # 引擎模式(子进程无 TTY)下不打印旁白、不 input()，避免阻塞挂起；CLI 诊断保留交互。
+        if not is_engine_mode():
+            print(
+                f"诊断暂停：表头字段 [{label}] 已写入。"
+                "可以现在人工打开干扰窗口或清理已输入字段；回车后继续检查。"
+            )
+            input("完成干扰后按回车继续: ")
         report = {
             "ok": True,
             "paused_after": label,

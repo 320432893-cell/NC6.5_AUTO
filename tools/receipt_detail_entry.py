@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
 from core.jab_operator import JABOperator  # noqa: E402
 from core.receipt_config import ReceiptEntryConfig  # noqa: E402
 from core.run_state import RunStateRecorder  # noqa: E402
+from core.runtime_mode import is_engine_mode  # noqa: E402
 from core.utils import load_config  # noqa: E402
 from tools.jab_health_check import check_jab_ready  # noqa: E402
 from tools.receipt_keyboard_utils import (  # noqa: E402
@@ -124,12 +125,16 @@ def main(argv=None):
 
     recorder = RunStateRecorder(command="receipt-detail", config=config)
 
-    print_header(detail_bank_account_no(account), args, args.start_delay)
-    print()
-    print(f"请在 {args.start_delay:g} 秒内切到 NC 收款单窗口...")
+    # 引擎模式抑制面向操作员的旁白(操作说明/切窗提示/开始测试)；结果仍由 --json 信封承载。
+    engine_mode = is_engine_mode()
+    if not engine_mode:
+        print_header(detail_bank_account_no(account), args, args.start_delay)
+        print()
+        print(f"请在 {args.start_delay:g} 秒内切到 NC 收款单窗口...")
     wait_started_at = time.perf_counter()
     time.sleep(max(float(args.start_delay), 0))
-    print("开始测试。")
+    if not engine_mode:
+        print("开始测试。")
     run_started_at = time.perf_counter()
     timings = StepTimer()
     timings.add("startup.wait-before-run", time.perf_counter() - wait_started_at)
@@ -147,10 +152,11 @@ def main(argv=None):
         result = run_detail_trial(config, account, args, report, timings, recorder)
         report["total_seconds"] = round(time.perf_counter() - run_started_at, 3)
         report["timings"] = timings.items
-        print()
-        print_summary(report)
-        print()
-        if not args.no_wait:
+        if not engine_mode:
+            print()
+            print_summary(report)
+            print()
+        if not args.no_wait and not engine_mode:
             wait_exit()
         if args.json_output:
             _print_envelope(report, result, run_started_at)
@@ -174,10 +180,11 @@ def main(argv=None):
         )
         report["total_seconds"] = round(time.perf_counter() - run_started_at, 3)
         report["timings"] = timings.items
-        print()
-        print_summary(report)
-        print()
-        if not args.no_wait:
+        if not engine_mode:
+            print()
+            print_summary(report)
+            print()
+        if not args.no_wait and not engine_mode:
             wait_exit()
         if args.json_output:
             _print_envelope(report, 1, run_started_at)

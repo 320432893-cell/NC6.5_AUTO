@@ -16,6 +16,7 @@ from core.jab_operator import JABOperator  # noqa: E402, F401
 from core.receipt_entry import ReceiptEntryWorkbook  # noqa: E402
 from core.receipt_models import ReceiptBatchResultRow  # noqa: E402
 from core.run_state import RunStateRecorder  # noqa: E402
+from core.runtime_mode import is_engine_mode  # noqa: E402
 from core.utils import check_abort, load_config  # noqa: E402
 
 # 以下外部协作者在本入口命名空间内保留为模块属性：拆分出去的 flow 子模块通过
@@ -339,8 +340,10 @@ def main(argv=None):
 
 
 def confirm_save(args):
-    print("高风险：--save 会用键盘热键 Ctrl+S 真实保存 NC 收款单。")
-    print("保存前请确认：当前账号权限、Excel 行、NC 页面、测试单据清理方案均已确认。")
+    # 引擎模式抑制面向操作员的高风险旁白(GUI 已自带二次确认)；CLI 直跑仍打印。
+    if not is_engine_mode():
+        print("高风险：--save 会用键盘热键 Ctrl+S 真实保存 NC 收款单。")
+        print("保存前请确认：当前账号权限、Excel 行、NC 页面、测试单据清理方案均已确认。")
     if args.yes_i_understand:
         return
     answer = input("确认保存请输入 SAVE: ").strip()
