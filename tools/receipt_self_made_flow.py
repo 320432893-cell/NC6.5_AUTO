@@ -36,7 +36,6 @@ from tools.receipt_keyboard_utils import (  # noqa: E402, F401
     send_hotkey_ctrl_v,
     set_clipboard_text,
 )
-from tools.receipt_table_cell_probe import select_cell  # noqa: E402
 
 # 收款单表头库已纯搬移到 receipt_header_{paths,tree,scope,writer} 与
 # receipt_customer_readback；本文件保留探针 CLI(main)与 run_receipt_new_probe[_with_jab]，
@@ -161,11 +160,6 @@ def main():
         default=1,
         help="重复测速次数，默认 1。",
     )
-    parser.add_argument(
-        "--fill-detail",
-        action="store_true",
-        help="fill receipt detail cells after header verification",
-    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -216,18 +210,6 @@ def main():
             print_json(report)
             return 1
         report["steps"].append(read_body_table(jab, "before_detail_fill"))
-        if args.fill_detail:
-            report["steps"].extend(fill_detail_line(jab, business))
-            report["steps"].append(read_body_table(jab, "after_detail_fill"))
-        else:
-            report["steps"].append(
-                {
-                    "step": "detail_fill",
-                    "ok": False,
-                    "blocked": True,
-                    "reason": "detail fill requires explicit --fill-detail",
-                }
-            )
     finally:
         jab.close()
 
@@ -718,94 +700,6 @@ def find_context_by_path_readonly(jab, path, scope_hwnd=None, role=None):
         }
     finally:
         jab.release_contexts(vm_id, owned)
-
-
-def fill_detail_line(jab, business):
-    steps = []
-    for col, name, value in [
-        (1, "收款业务类型", business["main_business_type"]),
-        (4, "收款银行账户", business["bank_account"]),
-        (5, "科目", business["main_subject"]),
-        (7, "贷方原币金额", business["amount"]),
-        (11, "结算方式", business["settlement"]),
-    ]:
-        steps.append(fill_cell(jab, 0, col, name, value))
-    return steps
-
-
-def fill_cell(jab, row, col, name, value):
-    attempts = []
-    for mode, kwargs in [
-        (
-            "direct",
-            {"set_cell_text": value, "commit_key": "none", "focus_target": "cell"},
-        ),
-    ]:
-        try:
-            result = select_cell(
-                jab,
-                table_index=0,
-                row=row,
-                col=col,
-                window_title=None,
-                locate_body_table=True,
-                wait=0.35,
-                **kwargs,
-            )
-        except Exception as exc:
-            result = {"ok": False, "exception": repr(exc)}
-        attempts.append({"mode": mode, "result": compact_selection_result(result)})
-        if cell_changed(result, value):
-            break
-        time.sleep(0.2)
-    ok = any(cell_changed(attempt["result"], value) for attempt in attempts)
-    return {
-        "step": "detail_cell",
-        "ok": ok,
-        "blocked": not ok,
-        "reason": (
-            None
-            if ok
-            else "backend cell input failed; global keyboard input is disabled"
-        ),
-        "row": row,
-        "col": col,
-        "name": name,
-        "value": value,
-        "attempts": attempts,
-    }
-
-
-def compact_selection_result(result):
-    if not isinstance(result, dict):
-        return result
-    keep = {
-        key: result.get(key)
-        for key in (
-            "ok",
-            "reason",
-            "row_count",
-            "col_count",
-            "child_index",
-            "selected_before",
-            "selected_after",
-            "cell_text_before",
-            "cell_text_after",
-            "edit",
-            "exception",
-        )
-        if key in result
-    }
-    return keep
-
-
-def cell_changed(result, value):
-    after = str((result or {}).get("cell_text_after") or "")
-    return (
-        after
-        and after != str((result or {}).get("cell_text_before") or "")
-        and str(value) in after
-    )
 
 
 if __name__ == "__main__":
