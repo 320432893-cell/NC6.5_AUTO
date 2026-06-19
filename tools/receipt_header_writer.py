@@ -10,6 +10,7 @@ import sys
 
 import ctypes  # noqa: F401  # 供搬移函数内 ctypes.* 使用
 
+from core.receipt_business_constants import RECEIPT_SETTLEMENT
 from tools.receipt_header_paths import (
     HEADER_LIVE_SEMANTIC_FALLBACK_TIMEOUT,
     HEADER_SCOPE_ANCHOR_LABEL,
@@ -113,7 +114,7 @@ def fill_header(
         },
         {
             "label": "结算方式",
-            "value": business.get("settlement") or "网银",
+            "value": business.get("settlement") or RECEIPT_SETTLEMENT,
             "dynamic_path": True,
         },
     ]:

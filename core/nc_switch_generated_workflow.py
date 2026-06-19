@@ -5,6 +5,7 @@ from pathlib import Path
 
 from core.errors import JABActionError, JABControlNotFound, WorkflowStateError
 from core.logger import log
+from core.voucher_constants import VOUCHER_TABLE_COL_COUNT, is_voucher_table
 
 
 class NCSwitchGeneratedWorkflow:
@@ -506,13 +507,9 @@ class NCSwitchGeneratedWorkflow:
             tables = self.jab.read_window_table_cells(
                 self.voucher_window_title,
                 max_rows=20,
-                max_cols=13,
+                max_cols=VOUCHER_TABLE_COL_COUNT,
             )
-            voucher_tables = [
-                table
-                for table in tables
-                if table["row_count"] > 0 and table["col_count"] == 13
-            ]
+            voucher_tables = [table for table in tables if is_voucher_table(table)]
             if voucher_tables:
                 rows = sum(table["row_count"] for table in voucher_tables)
                 log.info(f"NC 状态: 制单子窗口打开，制单表 rows={rows}")

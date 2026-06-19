@@ -12,6 +12,7 @@ from core.errors import (
 )
 from core.logger import log
 from core.models import MatchIssue, VoucherPendingMatch, VoucherSaveMatch
+from core.voucher_constants import VOUCHER_TABLE_COL_COUNT, is_voucher_table
 
 
 class NCVoucherMatchMixin:
@@ -20,16 +21,12 @@ class NCVoucherMatchMixin:
             tables = self.jab.read_window_table_cells(
                 self.voucher_window_title,
                 max_rows=500,
-                max_cols=13,
+                max_cols=VOUCHER_TABLE_COL_COUNT,
             )
         return self.filter_voucher_tables(tables)
 
     def filter_voucher_tables(self, tables):
-        voucher_tables = [
-            table
-            for table in tables
-            if table["row_count"] > 0 and table["col_count"] == 13
-        ]
+        voucher_tables = [table for table in tables if is_voucher_table(table)]
         self.perf.event(
             "voucher_table_loaded",
             tables=len(voucher_tables),
@@ -41,7 +38,8 @@ class NCVoucherMatchMixin:
                 for table in tables
             ) or "无任何表格"
             raise JABControlNotFound(
-                f"未找到制单窗口表格：在【{self.voucher_window_title}】窗口期望 N 行 x 13 列"
+                f"未找到制单窗口表格：在【{self.voucher_window_title}】窗口期望 N 行 x "
+                f"{VOUCHER_TABLE_COL_COUNT} 列"
                 f"的制单表，实际读到 {seen}；请确认前台是制单窗口、表格已加载且未被参照框遮挡。"
             )
         return voucher_tables

@@ -7,6 +7,17 @@ import ctypes
 
 from tools.jab_probe import JOBJECT
 
+# first_non_empty_cell_at 的 SSOT 在 tools.receipt_query_guard(零依赖底层模块)。
+# 本模块按列取首个非空单元格时复用同一实现并 re-export，避免与 guard 各留一份字面相同的副本。
+from tools.receipt_query_guard import first_non_empty_cell_at as first_non_empty_cell_at
+
+# 收款单查询结果表的原币金额/名称候选列(0 基)，作为配置列之外的兜底诊断候选。
+# 口径来自 README「收款单查询结果表」：原币金额 col=6、本币金额 col=7、col=8 是旧错误值;
+# 单据类型 col=2、名称/客户 col=4。这里收敛为本模块单一来源，供 receipt_query_report 复用;
+# 金额候选保持 (8, 6, 7) 顺序(report 变体生成依赖该顺序;set.update 对顺序不敏感)。
+RECEIPT_RESULT_AMOUNT_CANDIDATE_COLUMNS = (8, 6, 7)
+RECEIPT_RESULT_NAME_CANDIDATE_COLUMNS = (2, 4, 19)
+
 
 def summarize_receipt_tables(jab, query_cfg, scope_hwnd=None):
     indexes = receipt_result_read_columns(query_cfg)
@@ -48,7 +59,7 @@ def receipt_result_read_columns(query_cfg, include_amount_candidates=False):
         if isinstance(column, int) and column >= 0
     }
     if include_amount_candidates:
-        columns.update({6, 7, 8})
+        columns.update(RECEIPT_RESULT_AMOUNT_CANDIDATE_COLUMNS)
     return sorted(columns)
 
 
@@ -326,9 +337,3 @@ def first_non_empty_cell(cells):
         if text:
             return text
     return ""
-
-
-def first_non_empty_cell_at(cells, column):
-    if column >= len(cells):
-        return ""
-    return str(cells[column] or "").strip()

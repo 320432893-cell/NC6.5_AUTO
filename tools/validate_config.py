@@ -28,10 +28,14 @@ from tools.validate_config_primitives import (  # noqa: E402
 )
 from tools.validate_config_query import _validate_receipt_query  # noqa: E402
 
+# 保存策略/触发/激活枚举的 SSOT 在 core.voucher_constants(core 与 jab_batch 共用)。
+# 这里直接复用，避免与 core 运行时分支、jab_batch argparse choices 三处口径漂移。
+from core.voucher_constants import (  # noqa: E402
+    HOTKEY_ACTIVATE_POLICIES,
+    SAVE_STRATEGIES,
+    SAVE_TRIGGERS,
+)
 
-SAVE_STRATEGIES = {"single", "bottom_up", "safe_batch_by_pending_row"}
-SAVE_TRIGGERS = {"jab_button", "hotkey"}
-HOTKEY_ACTIVATE_POLICIES = {"always", "first", "foreground_guard"}
 DUPE_MATCH_POLICIES = {"stop", "skip"}
 OPEN_QUERY_METHODS = {"hotkey", "jab_action"}
 RECEIPT_VALIDATION_MODES = {"strict", "skip_invalid_rows"}

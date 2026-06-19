@@ -12,6 +12,7 @@ from core.errors import (
 from core.logger import log
 from core.models import VoucherSaveMatch
 from core.utils import check_abort
+from core.voucher_constants import VOUCHER_TABLE_COL_COUNT, is_voucher_table
 
 
 class NCVoucherVerifyMixin:
@@ -39,7 +40,7 @@ class NCVoucherVerifyMixin:
             counts = [
                 table["row_count"]
                 for table in table_counts
-                if table["row_count"] > 0 and table["col_count"] == 13
+                if is_voucher_table(table)
             ]
             if not counts:
                 if window_exists:
@@ -65,13 +66,9 @@ class NCVoucherVerifyMixin:
             tables = self.jab.read_window_table_cells(
                 self.voucher_window_title,
                 max_rows=500,
-                max_cols=13,
+                max_cols=VOUCHER_TABLE_COL_COUNT,
             )
-            voucher_tables = [
-                table
-                for table in tables
-                if table["row_count"] > 0 and table["col_count"] == 13
-            ]
+            voucher_tables = [table for table in tables if is_voucher_table(table)]
             remaining_matches, issues = self.match_voucher_table(
                 voucher_batch,
                 tables=voucher_tables,

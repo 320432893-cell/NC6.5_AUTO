@@ -15,6 +15,11 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from core.jab_operator import JABOperator  # noqa: E402
+from core.receipt_business_constants import (  # noqa: E402
+    RECEIPT_MAIN_BUSINESS_TYPE,
+    RECEIPT_MAIN_SUBJECT,
+    RECEIPT_SETTLEMENT,
+)
 from core.receipt_config import ReceiptEntryConfig  # noqa: E402
 from core.run_state import RunStateRecorder  # noqa: E402
 from core.runtime_mode import is_engine_mode  # noqa: E402
@@ -104,9 +109,9 @@ def build_business(account):
         "currency": DEFAULT_TEST_CURRENCY,
         "bank_account": detail_bank_account_no(account),
         "amount": "1090",
-        "settlement": "网银",
-        "main_subject": "1002",
-        "main_business_type": "货款",
+        "settlement": RECEIPT_SETTLEMENT,
+        "main_subject": RECEIPT_MAIN_SUBJECT,
+        "main_business_type": RECEIPT_MAIN_BUSINESS_TYPE,
     }
 
 

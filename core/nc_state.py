@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from core.errors import WorkflowStateError
 from core.logger import log
 from core.nc_page_probe import NCPageProbe
+from core.voucher_constants import VOUCHER_TABLE_COL_COUNT, is_voucher_table
 
 
 @dataclass
@@ -161,15 +162,11 @@ class NCStateDetector:
             for table in self.jab.read_window_table_cells(
                 self.voucher_window_title,
                 max_rows=5,
-                max_cols=13,
+                max_cols=VOUCHER_TABLE_COL_COUNT,
             )
             if table.get("window_class") == self.voucher_window_class
         ]
-        voucher_tables = [
-            table
-            for table in tables
-            if table.get("row_count", 0) > 0 and table.get("col_count") == 13
-        ]
+        voucher_tables = [table for table in tables if is_voucher_table(table)]
         buttons = self.probe.collect_named_controls(
             ("修改", "保存"),
             window_title=self.voucher_window_title,

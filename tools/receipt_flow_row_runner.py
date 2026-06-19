@@ -8,6 +8,13 @@ import threading
 import time
 from dataclasses import asdict, dataclass, field
 
+from core.receipt_business_constants import (
+    RECEIPT_FEE_BUSINESS_TYPE,
+    RECEIPT_FEE_SUBJECT,
+    RECEIPT_MAIN_BUSINESS_TYPE,
+    RECEIPT_MAIN_SUBJECT,
+    RECEIPT_SETTLEMENT,
+)
 from core.runtime_mode import is_engine_mode
 from tools.receipt_detail_rows import StepTimer, run_fee_only
 from tools.receipt_flow_detail_repair import (
@@ -747,11 +754,11 @@ def business_from_plan_row(row):
         "amount": str(row.raw_amount),
         "fee": str(row.fee),
         "has_fee": row.fee > 0,
-        "settlement": "网银",
-        "main_subject": "1002",
-        "main_business_type": "货款",
-        "fee_subject": "660305",
-        "fee_business_type": "手续费",
+        "settlement": RECEIPT_SETTLEMENT,
+        "main_subject": RECEIPT_MAIN_SUBJECT,
+        "main_business_type": RECEIPT_MAIN_BUSINESS_TYPE,
+        "fee_subject": RECEIPT_FEE_SUBJECT,
+        "fee_business_type": RECEIPT_FEE_BUSINESS_TYPE,
     }
 
 

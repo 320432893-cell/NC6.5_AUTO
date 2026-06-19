@@ -5,6 +5,11 @@
 
 from decimal import Decimal, InvalidOperation
 
+from core.receipt_business_constants import (
+    RECEIPT_FEE_BUSINESS_TYPE,
+    RECEIPT_FEE_SUBJECT,
+    RECEIPT_SETTLEMENT,
+)
 from tools.receipt_keyboard_utils import amount_matches
 
 
@@ -157,9 +162,9 @@ def cells_from_steps(steps):
 
 def build_fee_business(fee_amount):
     return {
-        "fee_business_type": "手续费",
+        "fee_business_type": RECEIPT_FEE_BUSINESS_TYPE,
         "fee_account": "",
-        "fee_subject": "660305",
+        "fee_subject": RECEIPT_FEE_SUBJECT,
         "fee_amount": str(fee_amount),
-        "settlement": "网银",
+        "settlement": RECEIPT_SETTLEMENT,
     }

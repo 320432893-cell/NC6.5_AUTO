@@ -6,13 +6,13 @@
 from collections import defaultdict
 from dataclasses import dataclass
 from decimal import Decimal
-import time
 
 from core.jab_operator import JABOperator
 from core.receipt_amounts import receipt_nc_amount
 from core.receipt_models import ReceiptBatchResultRow, ReceiptPlanRow
 from core.receipt_nc_extract import ReceiptNCResultExtractor
 from tools.receipt_query_fill import (
+    TimingRecorder,
     ensure_query_window,
 )
 from tools.receipt_query_dynamic_fields import (
@@ -40,19 +40,6 @@ class PostSaveQueryError(Exception):
 class BatchQueryTarget:
     row: ReceiptPlanRow
     row_report: dict
-
-
-class TimingRecorder:
-    def __init__(self):
-        self.items = []
-
-    def measure(self, name, func, *args, **kwargs):
-        started = time.perf_counter()
-        result = func(*args, **kwargs)
-        self.items.append(
-            {"name": name, "seconds": round(time.perf_counter() - started, 3)}
-        )
-        return result
 
 
 def run_post_save_batch_query(config, selected_rows, row_reports):

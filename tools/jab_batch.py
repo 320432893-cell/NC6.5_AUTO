@@ -15,6 +15,11 @@ from core.jab_batch_processor import JABBatchProcessor  # noqa: E402
 from core.logger import log  # noqa: E402
 from core.runtime_mode import is_engine_mode  # noqa: E402
 from core.utils import load_config  # noqa: E402
+from core.voucher_constants import (  # noqa: E402
+    HOTKEY_ACTIVATE_POLICIES,
+    SAVE_STRATEGIES,
+    SAVE_TRIGGERS,
+)
 
 
 def _human_print(*args, **kwargs):
@@ -92,17 +97,13 @@ def build_parser():
     )
     parser.add_argument(
         "--save-trigger",
-        choices=("jab_button", "hotkey"),
+        choices=SAVE_TRIGGERS,
         default=None,
         help="覆盖保存触发方式：jab_button=JAB按钮；hotkey=Ctrl+S",
     )
     parser.add_argument(
         "--save-strategy",
-        choices=(
-            "single",
-            "bottom_up",
-            "safe_batch_by_pending_row",
-        ),
+        choices=SAVE_STRATEGIES,
         default=None,
         help="覆盖制单保存策略；备选批量用 safe_batch_by_pending_row",
     )
@@ -126,7 +127,7 @@ def build_parser():
     )
     parser.add_argument(
         "--hotkey-activate-policy",
-        choices=("always", "first", "foreground_guard"),
+        choices=HOTKEY_ACTIVATE_POLICIES,
         default=None,
         help="Ctrl+S 保存前窗口处理：always=每张激活；first=仅首张激活；foreground_guard=只校验前台制单",
     )

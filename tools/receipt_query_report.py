@@ -14,6 +14,10 @@ from core.receipt_matching import (
     format_receipt_name_amount_mismatch_reason,
     names_match,
 )
+from tools.receipt_query_result_tables import (
+    RECEIPT_RESULT_AMOUNT_CANDIDATE_COLUMNS,
+    RECEIPT_RESULT_NAME_CANDIDATE_COLUMNS,
+)
 
 
 def build_dry_run_match_report(
@@ -77,8 +81,12 @@ def build_dry_run_match_report_from_preview(
         .get("dry_run_all_variants", False)
     )
     if dry_run_all_variants:
-        amount_columns = unique_ordered([configured_amount_column, 8, 6, 7])
-        name_columns = unique_ordered([configured_name_column, 2, 4, 19])
+        amount_columns = unique_ordered(
+            [configured_amount_column, *RECEIPT_RESULT_AMOUNT_CANDIDATE_COLUMNS]
+        )
+        name_columns = unique_ordered(
+            [configured_name_column, *RECEIPT_RESULT_NAME_CANDIDATE_COLUMNS]
+        )
     else:
         amount_columns = [configured_amount_column]
         name_columns = [configured_name_column]
