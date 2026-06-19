@@ -206,13 +206,17 @@ class DetailPipelineVerifier:
                     with self._lock:
                         self._results[task.get("id") or "unknown-task"] = {
                             "ok": False,
-                            "reason": f"未知 verifier 任务类型：{task.get('type')}",
+                            # 给人看的业务原因；内部任务类型只留作开发诊断字段。
+                            "reason": "明细后台校验未执行：收到无法识别的校验请求，本行明细未完成后台核对。",
+                            "error_detail": f"unknown_task_type={task.get('type')}",
                         }
         except Exception as exc:
             with self._lock:
                 self._results["worker-error"] = {
                     "ok": False,
-                    "reason": f"{type(exc).__name__}: {exc}",
+                    # 给人看的业务原因；异常类型/原文只留作开发诊断字段。
+                    "reason": "明细后台校验中断：未能完成本行明细的后台读回核对，请人工核对当前明细行。",
+                    "error_detail": f"{type(exc).__name__}: {exc}",
                 }
         finally:
             if owns_jab:

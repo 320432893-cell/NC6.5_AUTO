@@ -28,6 +28,14 @@ from tools.receipt_query_pagination import wait_after_query_confirm
 from tools.receipt_query_result_tables import receipt_result_read_columns
 
 
+class PostSaveQueryError(Exception):
+    """后验查询失败：message 是给人看的业务原因；detail 仅作开发诊断，不进 Sheet2。"""
+
+    def __init__(self, message, detail=""):
+        super().__init__(message)
+        self.detail = detail
+
+
 @dataclass(frozen=True)
 class BatchQueryTarget:
     row: ReceiptPlanRow
@@ -164,7 +172,11 @@ def query_one_org(
             False,
         )
         if not opened:
-            raise RuntimeError("查询窗口未打开")
+            raise PostSaveQueryError(
+                f"后验查询失败：主体 {org_code} 的查询条件窗口未能打开"
+                "（期望按 F3 弹出【查询条件】窗口，实际未出现）；"
+                "请确认 NC 已停在收款单录入页且前台未被其它窗口占用后重试。"
+            )
         query_scope = timings.measure(
             "query.dynamic-scope",
             find_query_condition_scope,
@@ -172,8 +184,10 @@ def query_one_org(
             jab_cfg,
         )
         if not query_scope.get("ok"):
-            raise RuntimeError(
-                f"查询条件动态 path 定位失败:{query_scope.get('reason')}"
+            raise PostSaveQueryError(
+                f"后验查询失败：主体 {org_code} 的查询条件窗口已打开，"
+                "但未能定位收款财务组织/单据日期输入区；请人工在 NC 中手动查询核对。",
+                detail=f"query_scope:{query_scope.get('reason')}",
             )
         org_ok = timings.measure(
             "set_finance_org",
@@ -185,7 +199,11 @@ def query_one_org(
             org_code,
         )
         if not org_ok.get("ok"):
-            raise RuntimeError(f"主体写入失败:{org_code}")
+            raise PostSaveQueryError(
+                f"后验查询失败：收款财务组织条件写入失败，期望写入主体编码 {org_code}，"
+                "NC 未接受该值；请人工在查询条件中确认主体后重试。",
+                detail=f"set_finance_org:{org_ok.get('reason')}",
+            )
         for name, value in [
             ("document_date_from", date_from),
             ("document_date_to", date_to),
@@ -200,7 +218,14 @@ def query_one_org(
                 value,
             )
             if not written.get("ok"):
-                raise RuntimeError(f"日期条件写入失败:{name}={value}")
+                field_label = (
+                    "单据日期起" if name == "document_date_from" else "单据日期止"
+                )
+                raise PostSaveQueryError(
+                    f"后验查询失败：{field_label}条件写入失败，期望写入 {value}，"
+                    "NC 未接受该值；请人工在查询条件中确认日期区间后重试。",
+                    detail=f"{name}={value} reason={written.get('reason')}",
+                )
         confirmed = timings.measure(
             "confirm_query",
             jab.do_action_by_path,
@@ -214,7 +239,10 @@ def query_one_org(
             require_showing=True,
         )
         if not confirmed:
-            raise RuntimeError("确定查询失败")
+            raise PostSaveQueryError(
+                f"后验查询失败：主体 {org_code} 的查询条件已填好，但点击【确定】未生效；"
+                "请人工在 NC 中手动确认查询后核对结果。",
+            )
         wait_after_query_confirm(jab, query_cfg)
         tables, page_report, match_snapshot = timings.measure(
             "read_receipt_result_pages_incremental",
@@ -247,14 +275,33 @@ def query_one_org(
                 "match": match,
             }
         )
-    except Exception as exc:
+    except PostSaveQueryError as exc:
+        user_reason = str(exc)
         group_report.update(
             {
                 "ok": False,
-                "reason": f"查询失败-{type(exc).__name__}:{exc}",
+                "reason": user_reason,
+                "error_detail": exc.detail,
                 "match": {
                     "matched": {},
-                    "issues": {target.row.row: f"查询失败-{exc}" for target in targets},
+                    "issues": {target.row.row: user_reason for target in targets},
+                },
+            }
+        )
+    except Exception as exc:
+        # 给人看的原因保持业务可读；异常类型/原文只留作开发诊断字段，不进 Sheet2。
+        user_reason = (
+            f"后验查询失败：主体 {org_code} 在查询/读结果阶段中断；"
+            "请人工在 NC 中手动查询该主体本批日期区间后核对单据号。"
+        )
+        group_report.update(
+            {
+                "ok": False,
+                "reason": user_reason,
+                "error_detail": f"{type(exc).__name__}: {exc}",
+                "match": {
+                    "matched": {},
+                    "issues": {target.row.row: user_reason for target in targets},
                 },
             }
         )

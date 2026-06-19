@@ -73,12 +73,25 @@ class NCTableMatcher:
                 issues.append(
                     MatchIssue(
                         item=item,
-                        reason="未找到" if not rows else f"重复{len(rows)}条",
+                        reason=self._pending_issue_reason(item, rows),
                         rows=[row["row_index"] for row in rows],
                     )
                 )
 
         return matches, issues
+
+    def _pending_issue_reason(self, item, rows):
+        amount = item.amount
+        partner = item.partner or "空"
+        if not rows:
+            return (
+                f"未找到：Excel第{item.row}行 金额={amount} 对手方={partner} "
+                "在 NC 待生成表无匹配；请核对金额/对手方或确认该行是否已生成。"
+            )
+        return (
+            f"重复{len(rows)}条：Excel第{item.row}行 金额={amount} 对手方={partner} "
+            "在 NC 待生成表命中多行，需人工确认后再生成。"
+        )
 
     def match_generated_voucher_table(
         self,
@@ -150,7 +163,7 @@ class NCTableMatcher:
             issues.append(
                 MatchIssue(
                     item=item,
-                    reason="未找到" if not rows else f"重复{len(rows)}条",
+                    reason=self._pending_issue_reason(item, rows),
                     rows=[row["row_index"] for row in rows],
                 )
             )

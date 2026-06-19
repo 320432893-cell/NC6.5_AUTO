@@ -36,7 +36,14 @@ class NCVoucherMatchMixin:
             rows=sum(table["row_count"] for table in voucher_tables),
         )
         if not voucher_tables:
-            raise JABControlNotFound("未找到制单窗口表格")
+            seen = ", ".join(
+                f"{table.get('row_count')}行x{table.get('col_count')}列"
+                for table in tables
+            ) or "无任何表格"
+            raise JABControlNotFound(
+                f"未找到制单窗口表格：在【{self.voucher_window_title}】窗口期望 N 行 x 13 列"
+                f"的制单表，实际读到 {seen}；请确认前台是制单窗口、表格已加载且未被参照框遮挡。"
+            )
         return voucher_tables
 
     def match_voucher_table(
@@ -159,12 +166,25 @@ class NCVoucherMatchMixin:
                 issues.append(
                     MatchIssue(
                         item=match.item,
-                        reason="未找到" if not rows else f"重复{len(rows)}条",
+                        reason=self._voucher_issue_reason(match.item, rows),
                         rows=[row["row"]["row_index"] for row in rows],
                     )
                 )
 
         return voucher_matches, issues
+
+    def _voucher_issue_reason(self, item, rows):
+        amount = item.amount
+        partner = item.partner or "空"
+        if not rows:
+            return (
+                f"未找到：Excel第{item.row}行 金额={amount} 对手方={partner} "
+                "在制单表中无金额+对手方匹配；请核对制单表是否已生成该行或金额是否被改。"
+            )
+        return (
+            f"重复{len(rows)}条：Excel第{item.row}行 金额={amount} 对手方={partner} "
+            "在制单表命中多行，需人工确认后再保存。"
+        )
 
     def _append_voucher_match(self, voucher_matches, match, found, assigned_rows):
         row_key = (

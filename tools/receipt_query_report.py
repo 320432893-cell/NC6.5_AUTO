@@ -7,11 +7,11 @@ from collections import Counter
 
 from core.receipt_entry import ReceiptEntryWorkbook
 from core.receipt_matching import (
+    RECEIPT_NOT_FOUND_MARKER,
     ReceiptEntryDryRunMatcher,
     format_receipt_amount_name_mismatch_reason,
     format_receipt_duplicate_reason,
     format_receipt_name_amount_mismatch_reason,
-    format_receipt_not_found_reason,
     names_match,
 )
 
@@ -174,7 +174,7 @@ def build_receipt_write_back_report(
             statuses[excel_row.row] = "已做过"
             continue
         issue = issue_by_row.get(excel_row.row)
-        if issue and issue.reason == format_receipt_not_found_reason():
+        if issue and issue.reason.startswith(RECEIPT_NOT_FOUND_MARKER):
             statuses[excel_row.row] = "未做过"
         elif issue:
             statuses[excel_row.row] = issue.reason

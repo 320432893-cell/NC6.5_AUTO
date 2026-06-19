@@ -149,7 +149,7 @@ def build_plan_row(config, ws, columns, row_index):
                 config.raw_amount_column,
                 raw_amount,
                 "receipt_entry.excel.raw_amount_column",
-                str(exc),
+                f"Excel第{row_index}行 金额列：{exc}",
             )
         )
 

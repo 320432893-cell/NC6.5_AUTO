@@ -24,7 +24,7 @@ def parse_date(value):
 
 def parse_amount(value):
     if value is None or str(value).strip() == "":
-        raise ValueError("原始金额为空")
+        raise ValueError("原始金额字段为空，请在该行金额列填写有效金额")
     text = re.sub(r"\s+", "", str(value).strip().replace(",", ""))
     if re.fullmatch(r"\([+-]?\d+(?:\.\d+)?\)", text):
         inner = text[1:-1].lstrip("+")

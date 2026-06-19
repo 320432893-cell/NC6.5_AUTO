@@ -64,7 +64,11 @@ def _match_receipts(excel_rows, nc_rows, name_attr):
                         nc_amounts=[row.original_amount for row in name_candidates],
                     )
                     if name_candidates
-                    else format_receipt_not_found_reason()
+                    else format_receipt_not_found_reason(
+                        excel_row=excel_row.row,
+                        excel_amount=excel_row.raw_amount,
+                        excel_name=excel_row.payer_name,
+                    )
                 )
                 issue_rows = [row.row_index for row in name_candidates]
             issues.append(
@@ -107,8 +111,20 @@ def format_receipt_name_amount_mismatch_reason(
     )
 
 
-def format_receipt_not_found_reason():
-    return "金额和对手方均未匹配"
+# 诊断口径分类标记：保持稳定前缀，供写回分类按前缀判定“未命中”而非异常。
+RECEIPT_NOT_FOUND_MARKER = "金额和对手方均未匹配"
+
+
+def format_receipt_not_found_reason(
+    excel_row=None, excel_amount=None, excel_name=None
+):
+    if excel_row is None and excel_amount is None and excel_name is None:
+        return RECEIPT_NOT_FOUND_MARKER
+    return (
+        f"{RECEIPT_NOT_FOUND_MARKER}："
+        f"Excel第{excel_row}行 金额={format_receipt_value(excel_amount)} "
+        f"对手方={format_receipt_value(excel_name)} 在结果表均无匹配；请核对单据。"
+    )
 
 
 def normalize_counterparty(value):

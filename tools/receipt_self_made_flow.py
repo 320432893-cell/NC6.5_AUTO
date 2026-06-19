@@ -506,11 +506,29 @@ def probe_customer_name_readback(config, timeout=None):
             "scope": scope,
             "best": best,
             "field_candidates": candidates,
-            "reason": None if best else "未读到有效 NC 客户名称候选",
+            "reason": None if best else _customer_readback_failure_reason(scope, candidates),
         }
     finally:
         jab.hide_blank_awt_windows_enabled = False
         jab.close()
+
+
+def _customer_readback_failure_reason(scope, candidates):
+    """区分客户名回读失败的类别，给人可读原因 + 下一步。"""
+    if not scope.get("ok"):
+        return (
+            "未读到 NC 客户名称：当前页面未定位到收款单表头（可能未停在收款单自制录入页"
+            "或表头尚未加载/超时）；请确认 NC 停在收款单自制录入界面后重试。"
+        )
+    if not candidates:
+        return (
+            "未读到 NC 客户名称：已定位到表头但客户字段为空；"
+            "请确认客户编码已写入并由 NC 带出客户名后再回读。"
+        )
+    return (
+        "未读到 NC 客户名称：读到客户字段内容但格式不符合有效客户名（疑似编码/句柄占位）；"
+        "请确认 NC 已用客户编码带出正式客户名后重试。"
+    )
 
 
 def resolve_current_header_scope_for_probe(jab, timeout=None):

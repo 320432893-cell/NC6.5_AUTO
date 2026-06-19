@@ -622,7 +622,13 @@ def test_dry_run_matcher_reports_no_amount_or_name_match():
 
     assert matched == {}
     assert len(issues) == 1
-    assert issues[0].reason == format_receipt_not_found_reason()
+    reason = issues[0].reason
+    # 业务意图：保留“未命中”诊断标记作为写回分类前缀，并带上行号/金额/对手方/下一步。
+    assert reason.startswith(format_receipt_not_found_reason())
+    assert "第10行" in reason
+    assert "100.00" in reason
+    assert "Christoff Pretorius" in reason
+    assert "核对单据" in reason
     assert issues[0].nc_rows == []
 
 

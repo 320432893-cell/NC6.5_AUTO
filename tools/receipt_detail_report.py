@@ -137,8 +137,10 @@ def print_summary(report):
         return
 
     if report.get("exception"):
-        print(f"脚本异常：{report.get('exception')}")
-        print(f"原因：{report.get('reason')}")
+        print(f"失败：{report.get('reason') or '明细写入未完成，运行中发生未预期错误。'}")
+        error_detail = report.get("error_detail")
+        if error_detail:
+            print(f"（开发诊断：{error_detail}）")
         return
 
     if report.get("failed_step") == "jab-health-check":

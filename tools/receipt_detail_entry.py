@@ -160,9 +160,16 @@ def main(argv=None):
         report.update(
             {
                 "ok": False,
+                # 给人看的主原因：业务可读，不直接抛 Python 异常类名/栈。
+                "reason": (
+                    "明细写入未完成：运行中发生未预期错误，已停止，未保存、未暂存；"
+                    "请确认 NC 停在收款单自制录入界面、无参照窗口遮挡后重试。"
+                ),
+                # exception 仅作环境类错误的内部分类标记，不作为给用户的主消息文案。
                 "exception": type(exc).__name__,
-                "reason": str(exc),
-                "traceback": traceback.format_exc(),
+                # 技术细节仅作开发诊断，不作为给用户的主消息。
+                "error_detail": f"{type(exc).__name__}: {exc}",
+                "error_traceback": traceback.format_exc(),
             }
         )
         report["total_seconds"] = round(time.perf_counter() - run_started_at, 3)
