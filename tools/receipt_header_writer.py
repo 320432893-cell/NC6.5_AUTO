@@ -1,30 +1,43 @@
-# 职责：收款单表头字段写入——fill_header 编排、动态字段提交、财务组织专用写法、剪贴板粘贴、字段定位与回读校验
-# 不做什么：不解析 CLI/不读 Excel,不做探针报告,不做 scope 锚点解析(委托 scope 模块)
-# 允许依赖层：core/JAB + tools.receipt_header_{paths,tree,scope} + tools.receipt_keyboard_utils;
+# 职责：收款单表头字段写入门面——fill_header 编排、动态字段提交、剪贴板守护粘贴;
+#       并 re-export 已抽出的财务组织专用写法(finance_org)、字段定位 finders(locator)、后端字段纯状态判定(state),对外 API 零变化
+# 不做什么：不解析 CLI/不读 Excel,不做探针报告,不做 scope 锚点解析(委托 scope 模块),
+#           不再自实现财务组织写法(委托 finance_org)、字段定位(委托 locator)与纯状态判定(委托 state)
+# 允许依赖层：core/JAB + tools.receipt_header_{paths,tree,scope,state,finance_org,locator} + tools.receipt_keyboard_utils;
 #             被 monkeypatch 的协作者(同/跨模块)经 _trial 代理读 tools.receipt_self_made_flow
-# 谁不应该 import：receipt_header_{paths,tree} 不应 import 本模块(会成环)
+# 谁不应该 import：receipt_header_{paths,tree,state,finance_org,locator} 不应 import 本模块(会成环)
 
 import sys
 
 import ctypes  # noqa: F401  # 供搬移函数内 ctypes.* 使用
 
 from tools.receipt_header_paths import (
-    FINANCE_ORG_ACCEPTED_TEXT,
     HEADER_LIVE_SEMANTIC_FALLBACK_TIMEOUT,
     HEADER_SCOPE_ANCHOR_LABEL,
-    HEADER_SCOPE_ANCHOR_TEXT,
     accepted_text_from_backend,
-    build_receipt_header_dynamic_label_path,
-    build_receipt_header_dynamic_path,
-    build_receipt_header_label_path_from_template,
-    build_receipt_header_path_from_template,
     clear_receipt_header_path_template_cache,
     infer_header_path_template_from_field,
-    infer_header_text_path_from_label_path,
     receipt_header_dynamic_prefix,
     set_receipt_header_path_template,
 )
 from tools.receipt_header_scope import resolve_receipt_header_scope
+
+# 抽出的兄弟模块：原文件在此 import 回来并 re-export,保持对外 API(及测试 monkeypatch 面)零变化。
+from tools.receipt_header_finance_org import (  # noqa: F401
+    confirm_finance_org_accepted,
+    probe_finance_org_accepted_text_in_scope,
+    set_finance_org_by_legacy_control_name,
+)
+from tools.receipt_header_locator import (  # noqa: F401
+    find_receipt_header_field_by_dynamic_path,
+    find_receipt_header_field_by_live_semantic,
+    find_receipt_header_field_by_semantic_label,
+)
+from tools.receipt_header_state import (  # noqa: F401
+    backend_field_accepts,
+    backend_field_has_written_value,
+    context_contains,
+    describe_backend_field_state,
+)
 
 import time  # noqa: E402,F401  # 供搬移函数内 time.* 使用;测试经 _trial.time.sleep monkeypatch
 
@@ -437,231 +450,6 @@ def set_receipt_header_dynamic_field(
         jab.release_contexts(vm_id, owned_contexts)
 
 
-def find_receipt_header_field_by_live_semantic(
-    jab,
-    label,
-    scope_hwnd=None,
-    timeout=HEADER_LIVE_SEMANTIC_FALLBACK_TIMEOUT,
-):
-    found = _trial.find_receipt_header_field_by_semantic_label(
-        jab,
-        label,
-        scope_hwnd=scope_hwnd,
-        timeout=timeout,
-    )
-    if found.get("ok"):
-        found["source"] = "semantic-live-after-path-miss"
-        return found
-    return {
-        **found,
-        "source": "semantic-live-after-path-miss",
-        "timeout": timeout,
-    }
-
-
-def set_finance_org_by_legacy_control_name(
-    jab,
-    value,
-    scope_hwnd=None,
-    accepted_text=None,
-):
-    accepted_text = accepted_text or FINANCE_ORG_ACCEPTED_TEXT
-    context, vm_id, owned_contexts, owned_indexes, window_info = (
-        _trial.find_context_with_window(
-            jab,
-            HEADER_SCOPE_ANCHOR_TEXT,
-            roles=("text",),
-            timeout=1.5,
-            require_showing=True,
-            window_class="SunAwtCanvas",
-            visible_only=True,
-            scope_hwnd=scope_hwnd,
-        )
-    )
-    if not context:
-        return {
-            "ok": False,
-            "method": "legacy-control-name-guarded-paste-enter",
-            "reason": "control not found",
-            "control_name": HEADER_SCOPE_ANCHOR_TEXT,
-            "scope_hwnd": scope_hwnd,
-        }
-    path = "0" + "".join(f".{index}" for index in owned_indexes)
-    try:
-        info_before = jab.get_context_info(vm_id, context)
-        before = jab.get_text_context_value(vm_id, context)
-        paste_result = _trial.guarded_paste_header_value(
-            jab,
-            vm_id,
-            context,
-            window_info,
-            value,
-        )
-        set_text_result = None
-        if not paste_result.get("ok"):
-            set_ok = bool(jab.set_text_context(vm_id, context, value))
-            set_text_result = {"ok": set_ok, "method": "setTextContents"}
-        info_after = jab.get_context_info(vm_id, context)
-        after = jab.get_text_context_value(vm_id, context)
-        backend_state = describe_backend_field_state(
-            info_after,
-            after,
-            value=value,
-            accepted_text=accepted_text,
-        )
-        acceptance_probe = confirm_finance_org_accepted(
-            jab,
-            vm_id,
-            context,
-            expected_text=accepted_text,
-            value=value,
-            scope_hwnd=scope_hwnd,
-        )
-        accepted = bool(acceptance_probe.get("accepted"))
-        write_ok = bool(paste_result.get("ok") or (set_text_result or {}).get("ok"))
-        return {
-            "ok": bool(write_ok and accepted),
-            "method": "legacy-control-name-guarded-paste-enter",
-            "source": "legacy-control-name",
-            "control_name": HEADER_SCOPE_ANCHOR_TEXT,
-            "path": path,
-            "window": window_info,
-            "scope_hwnd": scope_hwnd,
-            "text_before": before,
-            "description_before": (
-                info_before.description.strip() if info_before else None
-            ),
-            "set_ok": write_ok,
-            "set_text_ok": bool((set_text_result or {}).get("ok")),
-            "guarded_paste": paste_result,
-            "set_text_fallback": set_text_result,
-            "enter_ok": bool(paste_result.get("enter_ok")),
-            "post_write_snapshot": backend_state,
-            "acceptance_probe": acceptance_probe,
-            "accepted_text": accepted_text_from_backend(
-                acceptance_probe.get("matched_snapshot") or backend_state,
-                value,
-                accepted_text,
-            ),
-            "text_after": after,
-            "description_after": (
-                info_after.description.strip() if info_after else None
-            ),
-        }
-    finally:
-        jab.release_contexts(vm_id, owned_contexts)
-
-
-def confirm_finance_org_accepted(
-    jab,
-    vm_id,
-    context,
-    expected_text=FINANCE_ORG_ACCEPTED_TEXT,
-    value=None,
-    scope_hwnd=None,
-    timeout=2.0,
-    interval=0.15,
-):
-    deadline = time.time() + max(float(timeout or 0), 0.0)
-    attempts = []
-    first = True
-    while first or time.time() < deadline:
-        first = False
-        info = jab.get_context_info(vm_id, context)
-        text = jab.get_text_context_value(vm_id, context)
-        snapshot = describe_backend_field_state(
-            info,
-            text,
-            value=value,
-            accepted_text=expected_text,
-        )
-        attempts.append(snapshot)
-        if snapshot.get("accepted"):
-            return {
-                "ok": True,
-                "accepted": True,
-                "expected_text": expected_text,
-                "source": "current-context",
-                "attempts": attempts,
-                "matched_snapshot": snapshot,
-            }
-        scoped_match = _trial.probe_finance_org_accepted_text_in_scope(
-            jab,
-            expected_text,
-            scope_hwnd=scope_hwnd,
-        )
-        if scoped_match.get("accepted"):
-            return {
-                "ok": True,
-                "accepted": True,
-                "expected_text": expected_text,
-                "source": "scope-text-probe",
-                "attempts": attempts,
-                "matched_snapshot": scoped_match.get("snapshot"),
-                "scope_probe": scoped_match,
-            }
-        if time.time() >= deadline:
-            break
-        time.sleep(max(float(interval or 0), 0.0))
-    return {
-        "ok": False,
-        "accepted": False,
-        "expected_text": expected_text,
-        "attempts": attempts,
-        "scope_probe": _trial.probe_finance_org_accepted_text_in_scope(
-            jab,
-            expected_text,
-            scope_hwnd=scope_hwnd,
-        ),
-        "reason": "财务组织未确认解析为中文",
-    }
-
-
-def probe_finance_org_accepted_text_in_scope(
-    jab,
-    expected_text=FINANCE_ORG_ACCEPTED_TEXT,
-    scope_hwnd=None,
-):
-    context, vm_id, owned_contexts, owned_indexes, window_info = (
-        _trial.find_context_with_window(
-            jab,
-            expected_text,
-            roles=(),
-            timeout=0.05,
-            require_showing=False,
-            window_class="SunAwtCanvas",
-            visible_only=True,
-            scope_hwnd=scope_hwnd,
-        )
-    )
-    if not context:
-        return {
-            "ok": False,
-            "accepted": False,
-            "expected_text": expected_text,
-            "reason": "scope accepted text not found",
-        }
-    try:
-        info = jab.get_context_info(vm_id, context)
-        text = jab.get_text_context_value(vm_id, context)
-        snapshot = describe_backend_field_state(
-            info,
-            text,
-            value=None,
-            accepted_text=expected_text,
-        )
-        return {
-            "ok": bool(snapshot.get("accepted")),
-            "accepted": bool(snapshot.get("accepted")),
-            "expected_text": expected_text,
-            "path": "0" + "".join(f".{index}" for index in owned_indexes),
-            "window": window_info,
-            "snapshot": snapshot,
-        }
-    finally:
-        jab.release_contexts(vm_id, owned_contexts)
-
-
 def guarded_paste_header_value(jab, vm_id, context, window_info, value):
     focus_ok = True
     if hasattr(jab.dll, "requestFocus"):
@@ -708,179 +496,3 @@ def guarded_paste_header_value(jab, vm_id, context, window_info, value):
             clipboard_restored = False
         if result is not None:
             result["clipboard_restored"] = clipboard_restored
-
-
-def find_receipt_header_field_by_semantic_label(
-    jab,
-    label,
-    scope_hwnd=None,
-    timeout=1.5,
-):
-    label_found = _trial.find_header_label_context_with_window(
-        jab,
-        label,
-        timeout=timeout,
-        require_showing=label != HEADER_SCOPE_ANCHOR_LABEL,
-        scope_hwnd=scope_hwnd,
-    )
-    label_context, vm_id, owned_contexts, owned_indexes, window = label_found
-    if not label_context:
-        return {"ok": False, "label": label, "reason": "semantic label not found"}
-    label_path = None
-    if owned_indexes:
-        label_path = "0" + "".join(f".{index}" for index in owned_indexes)
-    jab.release_contexts(vm_id, owned_contexts)
-    if not label_path:
-        return {"ok": False, "label": label, "reason": "semantic label path missing"}
-    text_path = infer_header_text_path_from_label_path(label, label_path)
-    if not text_path:
-        return {
-            "ok": False,
-            "label": label,
-            "label_path": label_path,
-            "reason": "semantic label path cannot infer text path",
-        }
-    label_window_hwnd = (window or {}).get("hwnd") or scope_hwnd
-    context, vm_id, owned_contexts, window_info = jab.find_context_by_path_once(
-        text_path,
-        class_name="SunAwtCanvas",
-        scope_hwnd=label_window_hwnd,
-        role="text",
-        require_showing=True,
-        require_valid_bounds=False,
-    )
-    if not context:
-        return {
-            "ok": False,
-            "label": label,
-            "label_path": label_path,
-            "path": text_path,
-            "reason": "semantic inferred text path not found",
-            "label_window": window,
-            "path_scope_hwnd": label_window_hwnd,
-        }
-    return {
-        "ok": True,
-        "label": label,
-        "context": context,
-        "vm_id": vm_id,
-        "owned_contexts": owned_contexts,
-        "path": text_path,
-        "label_path": label_path,
-        "window": window_info,
-    }
-
-
-def find_receipt_header_field_by_dynamic_path(
-    jab,
-    label,
-    dynamic_index,
-    scope_hwnd=None,
-    require_showing=True,
-    require_valid_bounds=True,
-    path_template=None,
-):
-    text_path = (
-        build_receipt_header_path_from_template(dynamic_index, label, path_template)
-        if path_template
-        else build_receipt_header_dynamic_path(dynamic_index, label)
-    )
-    if not text_path:
-        return {
-            "ok": False,
-            "reason": "header dynamic path not configured",
-            "label": label,
-            "dynamic_index": dynamic_index,
-        }
-    context, vm_id, owned_contexts, window_info = jab.find_context_by_path_once(
-        text_path,
-        class_name="SunAwtCanvas",
-        scope_hwnd=scope_hwnd,
-        role="text",
-        require_showing=require_showing,
-        require_valid_bounds=require_valid_bounds,
-    )
-    if not context:
-        return {
-            "ok": False,
-            "reason": "header dynamic path not found",
-            "label": label,
-            "path": text_path,
-            "dynamic_index": dynamic_index,
-        }
-    return {
-        "ok": True,
-        "context": context,
-        "vm_id": vm_id,
-        "owned_contexts": owned_contexts,
-        "path": text_path,
-        "label_path": (
-            build_receipt_header_label_path_from_template(
-                dynamic_index,
-                label,
-                path_template,
-            )
-            if path_template
-            else build_receipt_header_dynamic_label_path(dynamic_index, label)
-        ),
-        "window": window_info,
-        "dynamic_index": dynamic_index,
-        "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
-        "path_template": path_template,
-    }
-
-
-def describe_backend_field_state(info, text, value=None, accepted_text=None):
-    name = info.name.strip() if info else ""
-    description = info.description.strip() if info else ""
-    accepted = backend_field_accepts(info, text, value, accepted_text)
-    written = backend_field_has_written_value(info, text, value)
-    return {
-        "accepted": bool(accepted),
-        "written": bool(written),
-        "unlocked": False,
-        "text": text,
-        "name": name,
-        "description": description,
-    }
-
-
-def backend_field_has_written_value(info, text, value=None):
-    expected = str(value).strip() if value is not None else ""
-    if not info or not expected:
-        return False
-    actual_text = str(text or "").strip()
-    description = info.description.strip()
-    return actual_text == expected or description == expected
-
-
-def backend_field_accepts(info, text, value=None, accepted_text=None):
-    if not info:
-        return False
-    if accepted_text:
-        return context_contains(info, accepted_text)
-    expected = str(value).strip() if value is not None else ""
-    actual_text = str(text or "").strip()
-    description = info.description.strip()
-    if expected and (actual_text == expected or description == expected):
-        return True
-    return bool(description)
-
-
-def context_contains(info, expected_text):
-    if not info or not expected_text:
-        return False
-    expected = str(expected_text).strip()
-    haystack = " ".join(
-        part
-        for part in (
-            info.name.strip(),
-            info.description.strip(),
-            info.role.strip(),
-            info.role_en_US.strip(),
-            info.states.strip(),
-            info.states_en_US.strip(),
-        )
-        if part
-    )
-    return expected in haystack
