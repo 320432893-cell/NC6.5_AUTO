@@ -69,59 +69,12 @@ def test_header_fill_writes_customer_before_date(monkeypatch):
     assert calls == ["财务组织", "客户", "单据日期", "币种", "结算方式"]
 
 
-def test_header_fill_uses_path_flow_without_background_semantic(monkeypatch):
-    calls = []
-
-    monkeypatch.setattr(
-        trial,
-        "set_receipt_header_dynamic_field",
-        lambda _jab, label, *_args, **_kwargs: calls.append(label) or {"ok": True},
-    )
-    monkeypatch.setattr(
-        trial,
-        "infer_receipt_header_scope_by_semantic",
-        lambda *_args, **_kwargs: {
-            "ok": True,
-            "scope_hwnd": 123,
-            "mode": "semantic-path-inference",
-            "dynamic_index": 2,
-            "dynamic_prefix": "0.0.1.0.0.0.0.2",
-        },
-    )
-    monkeypatch.setattr(
-        trial,
-        "validate_receipt_header_scope_anchor",
-        lambda _jab, scope_hwnd, dynamic_index, **_kwargs: {
-            "ok": True,
-            "scope_hwnd": scope_hwnd,
-            "mode": "provided-canvas-anchor",
-            "dynamic_index": dynamic_index,
-            "dynamic_prefix": f"0.0.1.0.0.0.0.{dynamic_index}",
-            "matched_labels": ["财务组织"],
-            "anchor_text": {"name": "财务组织(O)", "description": ""},
-        },
-    )
-
-    class FakeJAB:
-        config = {"jab": {}}
-
-        def release_contexts(self, _vm_id, _contexts):
-            pass
-
-    trial.fill_header(
-        FakeJAB(),
-        {
-            "finance_org_code": "A001",
-            "document_date": "2026-04-02",
-            "customer_code": "YW03200",
-            "currency": "美元",
-            "bank_account": "FTE123",
-        },
-        scope_hwnd=123,
-        dynamic_index=2,
-    )
-
-    assert calls == ["财务组织", "客户", "单据日期", "币种", "结算方式"]
+# 注：原 test_header_fill_uses_path_flow_without_background_semantic 与
+# test_header_fill_writes_customer_before_date 测同一业务意图（fill_header 按
+# 财务组织→客户→单据日期→币种→结算方式 顺序写表头）。fill_header 源码不读
+# jab.config、也无 background-semantic 分支，前者的 config/无 path 返回属惰性差异、
+# 无独立 oracle，已合并删除（模板学习分支由
+# test_header_fill_learns_header_template_from_customer 独立覆盖）。
 
 
 def test_probe_header_semantic_field_speed_releases_context(monkeypatch):

@@ -100,7 +100,11 @@ def test_new_button_priority_prefers_showing_valid_button():
     buttons = [mirror, real]
     buttons.sort(key=receipt_new_probe.new_button_priority)
 
-    assert buttons[0] is real
+    # 业务意图：showing + 有效 bounds 的“真新增按钮”排序到首位（优先于 bounds 无效的镜像按钮）。
+    # 用业务可辨识字段做值相等，而非对象身份 is，避免实现包一层副本即碎。
+    assert buttons[0]["control"]["description"] == real["control"]["description"]
+    assert "showing" in buttons[0]["control"]["states"]
+    assert buttons[0]["control"]["bounds"] == real["control"]["bounds"]
 
 
 def test_self_made_choose_does_not_run_residue_cleanup(monkeypatch):

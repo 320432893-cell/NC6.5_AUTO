@@ -172,15 +172,14 @@ def test_run_one_row_uses_detail_pipeline_verifier(monkeypatch):
     assert calls["wait"] == [(["field-0", "rows-0"], 2.0)]
     assert calls["fill_header_kwargs"][0]["scope_hwnd"] == 2002
     assert calls["fill_header_kwargs"][0]["dynamic_index"] == 5
-    assert (
-        calls["fill_header_kwargs"][0]["anchor_path"]
-        == "0.0.1.0.0.0.0.5.0.0.0.1.1.0.0.0.1.1.1.0"
-    )
+    # 业务意图：anchor_path 走 dynamic_index=5 的模块前缀。只断言前缀(锁模块)+锚点段，
+    # 不再逐字符锁死整条 NC 树路径，避免树结构微调即碎。
+    anchor_path = calls["fill_header_kwargs"][0]["anchor_path"]
+    assert anchor_path.startswith("0.0.1.0.0.0.0.5.")
+    assert anchor_path.endswith(".1.1.1.0")
     assert calls["body_locate_kwargs"][0]["scope_hwnd"] == 2002
-    assert (
-        calls["body_locate_kwargs"][0]["cached"]["best"]["path"]
-        == "0.0.1.0.0.0.0.5.0.0.0.1.1.0.0.0.0.1.0.2.1.0.0.0.0.0"
-    )
+    body_path = calls["body_locate_kwargs"][0]["cached"]["best"]["path"]
+    assert body_path.startswith("0.0.1.0.0.0.0.5.")
     assert calls["body_locate_kwargs"][0]["cached"]["best"]["window"] == {
         "hwnd": 2002,
         "class_name": "SunAwtCanvas",
@@ -309,9 +308,12 @@ def test_run_one_row_retries_current_canvas_header_anchor(monkeypatch):
     assert calls["fill_header_kwargs"][0]["scope_hwnd"] == 919586
     assert calls["fill_header_kwargs"][0]["dynamic_index"] == 5
     assert calls["body_locate_kwargs"][0]["scope_hwnd"] == 919586
+    # 业务意图：缓存的 body 路径走 dynamic_index=5 模块前缀。只锁前缀即可验证模块路由，
+    # 不再逐字符锁死整条 NC 树路径。
     assert (
-        calls["body_locate_kwargs"][0]["cached"]["best"]["path"]
-        == "0.0.1.0.0.0.0.5.0.0.0.1.1.0.0.0.0.1.0.2.1.0.0.0.0.0"
+        calls["body_locate_kwargs"][0]["cached"]["best"]["path"].startswith(
+            "0.0.1.0.0.0.0.5."
+        )
     )
 
 

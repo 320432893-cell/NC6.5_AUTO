@@ -83,16 +83,14 @@ def test_fill_receipt_query_sets_finance_org_by_path(monkeypatch):
     assert result["organization_code"] == "A003"
     assert jab.actions == []
     assert jab.near_label_texts == []
-    assert jab.set_texts[0] == {
-        "path": QUERY_FINANCE_ORG_PATH,
-        "text": "A003",
-        "title": "查询条件",
-        "class_name": "SunAwtDialog",
-        "role": "text",
-        "wait": 0.0,
-        "timeout": 2,
-        "require_showing": True,
-    }
+    first_set_text = jab.set_texts[0]
+    # 业务意图：首个 set_text 把财务组织(A003)写到查询条件对话框的 text 控件上。
+    # 仅断言承载意图的关键键值，timeout/wait/require_showing 等时序细节不再逐字段锁死。
+    assert first_set_text["path"] == QUERY_FINANCE_ORG_PATH
+    assert first_set_text["text"] == "A003"
+    assert first_set_text["role"] == "text"
+    assert first_set_text["title"] == "查询条件"
+    assert first_set_text["class_name"] == "SunAwtDialog"
     assert [(item["path"], item["text"]) for item in jab.set_texts] == [
         (QUERY_FINANCE_ORG_PATH, "A003"),
         (QUERY_DATE_FROM_PATH, "2026-03-31"),

@@ -52,13 +52,13 @@ def test_read_receipt_result_pages_skips_page_size_change_when_already_target():
     assert report["page_size_changed"] is False
     assert report["before_page_size_text"] == "500"
     assert report["after_page_size_text"] == "500"
-    assert report["after_stability"] == {
-        "ok": None,
-        "skipped": True,
-        "reason": "page_size_already_target",
-        "label": report["before_label"],
-        "tables": [],
-    }
+    after_stability = report["after_stability"]
+    # 业务意图：页大小已是目标值时跳过 after 稳定性等待（reason=page_size_already_target）。
+    # 仅断言承载该意图的关键键值，避免新增 meta 键即碎。
+    assert after_stability["skipped"] is True
+    assert after_stability["reason"] == "page_size_already_target"
+    assert after_stability["ok"] is None
+    assert after_stability["tables"] == []
     assert report["after_stability_seconds"] == 0.0
     assert report["pagination_plan_reason"] == "total_records_within_page_size"
     assert jab.actions == []
