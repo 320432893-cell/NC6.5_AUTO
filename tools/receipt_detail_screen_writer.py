@@ -12,6 +12,7 @@ from tools.receipt_keyboard_utils import (
     get_clipboard_text,
     read_window_info,
     restore_clipboard_text,
+    same_window_root,
     send_hotkey_ctrl_a,
     send_hotkey_ctrl_v,
     send_text,
@@ -150,11 +151,7 @@ def foreground_matches_table(table_window):
             "table_window": table_info,
             "foreground": foreground_info,
         }
-    same_root = (
-        foreground_info.get("hwnd") == table_info.get("root_hwnd")
-        or foreground_info.get("root_hwnd") == table_info.get("root_hwnd")
-        or foreground_info.get("hwnd") == table_info.get("hwnd")
-    )
+    same_root = same_window_root(foreground_info, table_info)
     return {
         "ok": bool(same_root),
         "reason": None if same_root else "当前前台窗口不是本次定位到的 NC 收款单窗口",

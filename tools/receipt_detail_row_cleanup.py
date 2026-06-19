@@ -136,17 +136,16 @@ def cleanup_rows_after_first(jab, located, scope_hwnd=None):
     current_rows = before_rows
     while current_rows > 1:
         step_started_at = time.perf_counter()
-        refreshed = locate_receipt_body_table_cached(
+        attempt = _delete_one_extra_row_step(
             jab,
-            cached=located,
+            located,
+            current_rows,
+            step_started_at,
+            scope_hwnd,
             max_rows=5,
-            scope_hwnd=scope_hwnd
-            or ((located.get("best") or {}).get("window") or {}).get("hwnd"),
+            wait_label="after_cleanup_one_extra_row",
         )
-        best = refreshed.get("best") or {}
-        table_window = best.get("window") or {}
-        target_row = current_rows - 1
-        focused = focus_detail_cell(jab, refreshed, target_row, 1)
+        focused = attempt["focused"]
         if not focused.get("ok"):
             return _with_delete_effect(
                 {
@@ -160,7 +159,7 @@ def cleanup_rows_after_first(jab, located, scope_hwnd=None):
                 },
                 expected_rows=1,
             )
-        guard = guard_extra_row_deletable(jab, refreshed, target_row)
+        guard = attempt["guard"]
         if not guard.get("ok"):
             return _with_delete_effect(
                 {
@@ -174,25 +173,8 @@ def cleanup_rows_after_first(jab, located, scope_hwnd=None):
                 },
                 expected_rows=1,
             )
-        sent = guarded_send_ctrl_d(table_window)
-        waited = wait_body_row_count(
-            jab,
-            refreshed,
-            expected_rows=current_rows - 1,
-            label="after_cleanup_one_extra_row",
-            scope_hwnd=scope_hwnd,
-        )
-        after = waited.get("snapshot") or {}
-        after_rows = int(after.get("row_count") or 0)
-        step = _delete_row_step(
-            target_row,
-            current_rows,
-            after_rows,
-            step_started_at,
-            focused,
-            sent,
-            waited,
-        )
+        after_rows = attempt["after_rows"]
+        step = attempt["step"]
         steps.append(step)
         if not step["ok"]:
             return _with_delete_effect(
@@ -290,17 +272,16 @@ def delete_extra_row_if_present(
     current_rows = before_rows
     while current_rows > expected_rows:
         step_started_at = time.perf_counter()
-        refreshed = locate_receipt_body_table_cached(
+        attempt = _delete_one_extra_row_step(
             jab,
-            cached=located,
+            located,
+            current_rows,
+            step_started_at,
+            scope_hwnd,
             max_rows=max(5, current_rows),
-            scope_hwnd=scope_hwnd
-            or ((located.get("best") or {}).get("window") or {}).get("hwnd"),
+            wait_label="after_extra_row_delete",
         )
-        best = refreshed.get("best") or {}
-        table_window = best.get("window") or {}
-        target_row = current_rows - 1
-        focused = focus_detail_cell(jab, refreshed, target_row, 1)
+        focused = attempt["focused"]
         if not focused.get("ok"):
             return _with_delete_effect(
                 {
@@ -314,7 +295,7 @@ def delete_extra_row_if_present(
                 },
                 expected_rows=expected_rows,
             )
-        guard = guard_extra_row_deletable(jab, refreshed, target_row)
+        guard = attempt["guard"]
         if not guard.get("ok"):
             return _with_delete_effect(
                 {
@@ -328,25 +309,8 @@ def delete_extra_row_if_present(
                 },
                 expected_rows=expected_rows,
             )
-        sent = guarded_send_ctrl_d(table_window)
-        waited = wait_body_row_count(
-            jab,
-            refreshed,
-            expected_rows=current_rows - 1,
-            label="after_extra_row_delete",
-            scope_hwnd=scope_hwnd,
-        )
-        after = waited.get("snapshot") or {}
-        after_rows = int(after.get("row_count") or 0)
-        step = _delete_row_step(
-            target_row,
-            current_rows,
-            after_rows,
-            step_started_at,
-            focused,
-            sent,
-            waited,
-        )
+        after_rows = attempt["after_rows"]
+        step = attempt["step"]
         steps.append(step)
         if not step["ok"]:
             return _with_delete_effect(
@@ -510,6 +474,69 @@ def fast_delete_extra_rows_by_row_count(
         },
         expected_rows=expected_rows,
     )
+
+
+def _delete_one_extra_row_step(
+    jab,
+    located,
+    current_rows,
+    step_started_at,
+    scope_hwnd,
+    max_rows,
+    wait_label,
+):
+    refreshed = locate_receipt_body_table_cached(
+        jab,
+        cached=located,
+        max_rows=max_rows,
+        scope_hwnd=scope_hwnd
+        or ((located.get("best") or {}).get("window") or {}).get("hwnd"),
+    )
+    best = refreshed.get("best") or {}
+    table_window = best.get("window") or {}
+    target_row = current_rows - 1
+    focused = focus_detail_cell(jab, refreshed, target_row, 1)
+    if not focused.get("ok"):
+        return {
+            "refreshed": refreshed,
+            "target_row": target_row,
+            "focused": focused,
+        }
+    guard = guard_extra_row_deletable(jab, refreshed, target_row)
+    if not guard.get("ok"):
+        return {
+            "refreshed": refreshed,
+            "target_row": target_row,
+            "focused": focused,
+            "guard": guard,
+        }
+    sent = guarded_send_ctrl_d(table_window)
+    waited = wait_body_row_count(
+        jab,
+        refreshed,
+        expected_rows=current_rows - 1,
+        label=wait_label,
+        scope_hwnd=scope_hwnd,
+    )
+    after = waited.get("snapshot") or {}
+    after_rows = int(after.get("row_count") or 0)
+    step = _delete_row_step(
+        target_row,
+        current_rows,
+        after_rows,
+        step_started_at,
+        focused,
+        sent,
+        waited,
+    )
+    return {
+        "refreshed": refreshed,
+        "target_row": target_row,
+        "focused": focused,
+        "guard": guard,
+        "after_rows": after_rows,
+        "step": step,
+    }
 
 
 def _delete_row_step(
