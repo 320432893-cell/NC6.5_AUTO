@@ -2,7 +2,7 @@
 
 只记录影响维护判断的关键节点。具体实验流水账看 git 历史。
 
-## 2026-06-20 - 审计驱动的死码清除、大文件拆分与日志用户/开发分层
+## 2026-06-20 - 审计驱动的重构:死码清除、大文件拆分、SSOT 收敛、日志分层、测试治理
 
 - **死码清除(对抗核实后)**:删 JAB 死方法簇、core 只写不读字段、查询死门面/死函数、整删孤儿探针 `jab_date_diagnose.py`、一批零碎死参常量;补登记 `pyperclip`。**保留(核实为活,勿删)**:`receipt_nc_extract` 按名抽取链(config `result_columns` 兼容路径)、`page_reader`/`match_reader` 双读路径(用途不同)。
 - **大文件拆分(门面模式,对外 API 与测试 monkeypatch 面零变化)** —— 新模块即维护地图:
@@ -12,6 +12,10 @@
   - `validate_config.py`(779→275)→ 抽 `validate_config_query`/`validate_config_accounts`/`validate_config_primitives`。
 - **错误信息质量**:对账/制单匹配失败由笼统话改为「Excel第N行 金额=X 对手方=Y …;请核对…」(字段+期望+实际+下一步);异常类名/栈不再当用户主消息,移入 `error_detail`/`error_traceback` 开发字段。
 - **日志用户/开发分层(见 ENGINE_CONTRACT §1.7)**:新增 `core/runtime_mode.is_engine_mode()`(读 `NC_ENGINE_MODE`,GUI 子进程注入)。引擎模式下入口层旁白/确认/`input()` 一律抑制、logger 控制台档 INFO→WARNING;stdout 只剩{进度+末段信封},开发全量细节落 `logs/run_*.log`。CLI 直跑不变。**取代 2026-06-11 条「T0 输出直接 print 中文说明」的旧口径**:面向 GUI 用户的进度走 run_state、结果走信封,人类旁白仅 CLI 模式保留。
+- **SSOT 收敛(业务口径单一来源)**:制单表「13 列」判定散 5 处 → `core/voucher_constants.is_voucher_table()` + `VOUCHER_TABLE_COL_COUNT`;收款业务常量 1002/货款/660305/手续费/网银 散 5 处 → `core/receipt_business_constants`;`save_strategy/save_trigger/hotkey` 枚举 SSOT 放 core(`validate_config`/`jab_batch` 从 core import,不反依赖);候选列、`first_non_empty_cell_at`/`TimingRecorder` 各去一份重复副本。
+- **取代残留清除**:删 `receipt_self_made_flow` 的 `--fill-detail` 旧后台写明细整条死链(生产明细只走前台主线 `tools/receipt_detail_*`,探针止于读 body 表)。
+- **坏味道去重(行为保持)**:删行循环两处真同构慢路径抽 `_delete_one_extra_row_step`(不同构的 fast 路径保守未合);`receipt_detail_screen_writer` 前台守卫复用 `receipt_keyboard_utils.same_window_root`。
+- **测试治理**:4 个千行测试按业务场景拆为 20 个场景文件 + 4 个 `_*_helpers` 共享模块;脆性断言(整条 UI 路径串/整字典全等/对象身份)降级为子集断言、保住业务 oracle;核实并合并 1 组真重复用例(另两组核实为各测独立分支、保留)。用例数 224 → 231(新增引擎模式测试)→ 230(合并重复)。
 
 ## 2026-06-15 - 收款后验查询正式化和结果页缓存
 
