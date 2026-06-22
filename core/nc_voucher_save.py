@@ -155,6 +155,8 @@ class NCVoucherSaveMixin:
                 rows=len(voucher_batch),
             )
             saved_matches.extend(voucher_batch)
+            # 累计已落库行数,供中途异常时上报真实"已存 N 单"(而非误报 0)
+            self.run_state.add_count("voucher_saved", len(voucher_batch))
             saved_rows = {match.item.row for match in voucher_batch}
             batch_status_updates = {
                 match.item.row: self.generated_status for match in voucher_batch

@@ -6,6 +6,7 @@
 import re
 import unicodedata
 
+from core.receipt_amounts import receipt_nc_amount
 from core.receipt_models import ReceiptMatchIssue
 from core.receipt_parsing import format_receipt_value, format_receipt_values
 
@@ -32,7 +33,9 @@ def _match_receipts(excel_rows, nc_rows, name_attr):
     matched = {}
     issues = []
     for excel_row in excel_rows:
-        amount_candidates = index.get(excel_row.raw_amount, [])
+        # 按 NC 原币口径(raw+fee)匹配:NC 结果行 original_amount 含手续费,
+        # 仅用 raw_amount 会让有手续费的收款系统性假报未匹配
+        amount_candidates = index.get(receipt_nc_amount(excel_row), [])
         candidates = [
             nc_row
             for nc_row in amount_candidates

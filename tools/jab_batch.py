@@ -406,13 +406,28 @@ def main():  # noqa: C901 (intentional single-function dispatch)
             is_aborted = isinstance(exc, KeyboardInterrupt) or (
                 isinstance(exc, SystemExit) and getattr(exc, "code", 0) == 3
             )
+            # 中途异常时上报真实"已落库"数,避免 GUI 误报 0 成功(其实已存 N 单)
+            saved_so_far = processor.run_state.data.get("counts", {}).get(
+                "voucher_saved", 0
+            )
+            base_message = f"{type(exc).__name__}: {exc}"
+            error_message = (
+                f"{base_message}(已成功落库 {saved_so_far} 单,可 resume 续做剩余)"
+                if saved_so_far
+                else base_message
+            )
             _emit_envelope(
                 ok=False,
                 exit_code=3 if is_aborted else 4,
-                summary={"total": 0, "succeeded": 0, "failed": 0, "skipped": 0},
+                summary={
+                    "total": saved_so_far,
+                    "succeeded": saved_so_far,
+                    "failed": 0,
+                    "skipped": 0,
+                },
                 items=[],
                 error_category="aborted" if is_aborted else "environment",
-                error_message=f"{type(exc).__name__}: {exc}",
+                error_message=error_message,
                 can_resume=(args.command == "generate"),
                 resume_command=(
                     "resume-voucher" if args.command == "generate" else None

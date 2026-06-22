@@ -67,6 +67,9 @@ class ReceiptExcelRow:
     organization_name: str
     organization_short_name: str
     nc_done_status: str
+    # 手续费:NC 原币金额=raw_amount+fee。默认 0 不破坏既有构造方;
+    # dry-run 匹配须按 raw+fee 与 NC 对齐(见 receipt_amounts.receipt_nc_amount)
+    fee: Decimal = Decimal("0.00")
 
 
 @dataclass(frozen=True)

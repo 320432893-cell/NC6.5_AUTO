@@ -54,6 +54,42 @@ def test_receipt_matcher_matches_amount_and_name_even_when_dates_differ():
     assert issues == []
 
 
+def test_receipt_matcher_uses_nc_caliber_raw_plus_fee():
+    # 有手续费的收款:NC 原币金额=raw+fee。匹配须按 raw+fee 对齐,否则只用
+    # raw_amount 会把这笔系统性判成未匹配(回归 dry-run 金额口径 bug)
+    excel_row = ReceiptExcelRow(
+        row=10,
+        receipt_date=date(2026, 1, 16),
+        payer_name="AZUGA INC",
+        raw_amount=Decimal("68700.00"),
+        bank="大陆花旗",
+        organization_code="A001",
+        organization_name="上海移为通信技术股份有限公司",
+        organization_short_name="移为",
+        nc_done_status="",
+        fee=Decimal("300.00"),
+    )
+    nc_row_with_fee = ReceiptNCRow(
+        row_index=3,
+        document_date=date(2026, 1, 17),
+        customer="AZUGA INC",
+        original_amount=Decimal("69000.00"),  # raw+fee
+    )
+    matched, issues = ReceiptEntryMatcher().match([excel_row], [nc_row_with_fee])
+    assert matched == {10: nc_row_with_fee}
+    assert issues == []
+
+    # 反向:NC 行只含 raw(68700)时不应匹配,证明确实按 raw+fee 而非 raw
+    nc_row_raw_only = ReceiptNCRow(
+        row_index=4,
+        document_date=date(2026, 1, 17),
+        customer="AZUGA INC",
+        original_amount=Decimal("68700.00"),
+    )
+    matched_raw_only, _ = ReceiptEntryMatcher().match([excel_row], [nc_row_raw_only])
+    assert matched_raw_only == {}
+
+
 def test_receipt_matcher_reports_duplicate_as_exception_issue():
     excel_row = ReceiptExcelRow(
         row=10,

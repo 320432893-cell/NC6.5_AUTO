@@ -5,6 +5,7 @@
 
 import ctypes
 
+from core.jab_context_tree import release_contexts
 from core.utils import check_abort
 from tools.jab_probe import AccessibleTableCellInfo, AccessibleTableInfo
 
@@ -137,6 +138,9 @@ def get_table_cell_text(jab, vm_id, table_context, row, col):
         return ""
 
     info = jab.get_context_info(vm_id, cell_info.accessibleContext)
+    # 读完即释放该单元格 JAB 句柄,否则整批制单(50-100 单不重启 NC)会在
+    # NC 客户端侧累积数十万未回收句柄拖垮读控件;释放门面见 jab_context_tree
+    release_contexts(jab, vm_id, [cell_info.accessibleContext])
     if not info:
         return ""
 
@@ -159,6 +163,8 @@ def get_table_cell_text_and_selection(jab, vm_id, table_context, row, col):
         return "", bool(cell_info.isSelected)
 
     info = jab.get_context_info(vm_id, cell_info.accessibleContext)
+    # 读完即释放该单元格 JAB 句柄(同 get_table_cell_text)
+    release_contexts(jab, vm_id, [cell_info.accessibleContext])
     if not info:
         return "", bool(cell_info.isSelected)
 

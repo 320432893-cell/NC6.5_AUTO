@@ -166,15 +166,21 @@ def activate_window_by_title(title, class_name=None, timeout=None, search_timeou
     if os.name != "nt":
         return False
 
+    user32 = ctypes.windll.user32
+    # 设 restype 防 64 位 HWND 被默认 int 截断,否则前台校验恒不相等
+    user32.GetForegroundWindow.restype = wintypes.HWND
     deadline = time.time() + (timeout or search_timeout)
     while time.time() < deadline:
         hwnd = find_window_handle(title, class_name=class_name, visible_only=False)
         if hwnd:
-            user32 = ctypes.windll.user32
             user32.ShowWindow(hwnd, 9)
             user32.SetForegroundWindow(hwnd)
             time.sleep(0.2)
-            return True
+            # SetForegroundWindow 受 Windows 前台抢占限制可能静默失败(只闪任务栏、
+            # 不真正切焦点),MUST 校验窗口确实到了前台才算激活成功,否则下游
+            # Ctrl+S/F3 等全局键入会打到当时真正聚焦的窗口(串台)
+            if user32.GetForegroundWindow() == hwnd:
+                return True
         time.sleep(0.2)
     return False
 

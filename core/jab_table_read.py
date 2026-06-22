@@ -3,8 +3,6 @@
 # 允许依赖层：标准库 ctypes/os/time、JABOperator 暴露能力、tools.jab_probe、core.jab_table_* 同层
 # 谁不应该 import：Excel/Sheet 读写、收款匹配、配置解析模块不应 import
 
-import time
-
 from core.logger import log
 from core.utils import check_abort
 
@@ -194,89 +192,6 @@ def read_all_table_selected_columns(
         f"count={len(result)} columns={selected_columns} max_rows={max_rows}"
     )
     return result
-
-
-
-def wait_for_record_visible(
-    jab,
-    amount,
-    partner_name,
-    timeout=None,
-    selected_first=True,
-    max_rows=200,
-    max_cols=50,
-    window_title=None,
-):
-    deadline = time.time() + (timeout or jab.search_timeout)
-    while time.time() < deadline:
-        check_abort()
-        found = find_record_in_visible_tables(
-            jab,
-            amount,
-            partner_name,
-            selected_first=selected_first,
-            max_rows=max_rows,
-            max_cols=max_cols,
-            window_title=window_title,
-        )
-        if found:
-            return found
-        time.sleep(0.2)
-    return None
-
-
-
-def find_record_in_visible_tables(
-    jab,
-    amount,
-    partner_name,
-    selected_first=True,
-    max_rows=200,
-    max_cols=50,
-    window_title=None,
-):
-    target_amount = jab.normalize_amount(amount)
-    target_partner = jab.normalize_text(partner_name)
-    if target_amount is None or not target_partner:
-        return None
-
-    tables = read_all_table_cells(jab, max_rows=max_rows, max_cols=max_cols)
-    candidates = []
-    fallback = []
-
-    for table in tables:
-        if window_title is not None and table.get("window_title") != window_title:
-            continue
-        for row in table["rows"]:
-            normalized_cells = [jab.normalize_text(cell) for cell in row["cells"]]
-            row_text = "".join(normalized_cells)
-            amount_match = any(
-                jab.normalize_amount(cell) == target_amount for cell in row["cells"]
-            )
-            partner_match = target_partner in row_text
-            if amount_match and partner_match:
-                item = {
-                    "table_index": table["table_index"],
-                    "window_title": table.get("window_title"),
-                    "window_class": table.get("window_class"),
-                    "table_rows": table["row_count"],
-                    "table_cols": table["col_count"],
-                    "row_index": row["row_index"],
-                    "selected": row["selected"],
-                    "cells": row["cells"],
-                }
-                if row["selected"]:
-                    candidates.append(item)
-                else:
-                    fallback.append(item)
-
-    if selected_first and candidates:
-        log.debug(f"JAB 找到选中当前记录: {candidates[0]}")
-        return candidates[0]
-    if fallback:
-        log.debug(f"JAB 找到可见记录: {fallback[0]}")
-        return fallback[0]
-    return None
 
 
 

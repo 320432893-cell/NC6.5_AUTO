@@ -84,6 +84,44 @@ def test_window_helpers_return_safe_defaults_on_non_windows():
     assert jab_window.find_window_handle("不存在") is None
 
 
+def test_activate_window_verifies_foreground_not_just_setforeground(monkeypatch):
+    # SetForegroundWindow 受 Windows 前台抢占限制可能静默失败:即使它"报成功",
+    # 若前台窗口仍不是目标,activate 必须返回 False(否则下游 Ctrl+S 会串台)
+    import types
+
+    monkeypatch.setattr(jab_window.os, "name", "nt")
+    monkeypatch.setattr(jab_window, "find_window_handle", lambda *a, **k: 4242)
+
+    class FakeFn:
+        def __init__(self, fn):
+            self._fn = fn
+            self.restype = None
+
+        def __call__(self, *args):
+            return self._fn(*args)
+
+    def make_user32(foreground):
+        u = types.SimpleNamespace()
+        u.ShowWindow = FakeFn(lambda *a: True)
+        u.SetForegroundWindow = FakeFn(lambda *a: True)  # 恒"报成功"
+        u.GetForegroundWindow = FakeFn(lambda *a: foreground)  # 真实前台
+        return u
+
+    # 前台不是目标 → 不可假成功
+    monkeypatch.setattr(
+        jab_window.ctypes, "windll",
+        types.SimpleNamespace(user32=make_user32(9999)), raising=False,
+    )
+    assert jab_window.activate_window_by_title("制单", timeout=0.05) is False
+
+    # 前台确为目标 → 成功
+    monkeypatch.setattr(
+        jab_window.ctypes, "windll",
+        types.SimpleNamespace(user32=make_user32(4242)), raising=False,
+    )
+    assert jab_window.activate_window_by_title("制单", timeout=0.05) is True
+
+
 def test_operator_window_methods_delegate_to_window_helpers(monkeypatch):
     operator = JABOperator({"jab": {"menu_wait": 0.3, "search_timeout": 0.4}})
     calls = []

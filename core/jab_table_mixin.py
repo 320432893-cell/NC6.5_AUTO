@@ -202,46 +202,6 @@ class JABTableMixin:
             selection_col=selection_col,
         )
 
-    def wait_for_record_visible(
-        self,
-        amount,
-        partner_name,
-        timeout=None,
-        selected_first=True,
-        max_rows=200,
-        max_cols=50,
-        window_title=None,
-    ):
-        return jab_table_ops.wait_for_record_visible(
-            self,
-            amount,
-            partner_name,
-            timeout=timeout,
-            selected_first=selected_first,
-            max_rows=max_rows,
-            max_cols=max_cols,
-            window_title=window_title,
-        )
-
-    def find_record_in_visible_tables(
-        self,
-        amount,
-        partner_name,
-        selected_first=True,
-        max_rows=200,
-        max_cols=50,
-        window_title=None,
-    ):
-        return jab_table_ops.find_record_in_visible_tables(
-            self,
-            amount,
-            partner_name,
-            selected_first=selected_first,
-            max_rows=max_rows,
-            max_cols=max_cols,
-            window_title=window_title,
-        )
-
     def resolve_amount_col(self, amount_col):
         return jab_table_ops.resolve_amount_col(self, amount_col)
 

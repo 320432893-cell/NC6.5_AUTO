@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 import openpyxl
 
 from core.errors import ExcelLockedError, WorkflowStateError
@@ -236,6 +238,19 @@ class ReceiptEntryWorkbook:
             if not payer_text:
                 issues.append(ReceiptMatchIssue(row_index, "银行来款名为空", []))
                 continue
+            # 读手续费,使 dry-run 匹配按 NC 口径(raw+fee)对齐;空/异常按 0 兜底
+            # (严格的费用校验是录入计划 build_plan_rows 的职责,此处仅供匹配口径)
+            fee_raw = read_optional_cell(
+                ws, row_index, columns.get(self.config.fee_column)
+            )
+            try:
+                fee = (
+                    parse_amount(fee_raw)
+                    if fee_raw not in (None, "")
+                    else Decimal("0.00")
+                )
+            except ValueError:
+                fee = Decimal("0.00")
             rows.append(
                 ReceiptExcelRow(
                     row=row_index,
@@ -247,6 +262,7 @@ class ReceiptEntryWorkbook:
                     organization_name=organization.name,
                     organization_short_name=organization.short_name,
                     nc_done_status=nc_done_status,
+                    fee=fee,
                 )
             )
         return rows, issues

@@ -52,6 +52,12 @@ class RunStateRecorder:
         self.data["counts"].update(counts)
         self.write()
 
+    def add_count(self, name, delta):
+        # 累加计数(跨窗口/批次安全),供异常收尾读取真实"已落库"数,
+        # 不受 events 上限 200 截断影响
+        self.data["counts"][name] = self.data["counts"].get(name, 0) + delta
+        self.write()
+
     def event(self, name, **fields):
         events = self.data["events"]
         events.append(

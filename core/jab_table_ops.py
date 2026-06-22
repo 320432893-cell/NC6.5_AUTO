@@ -10,14 +10,12 @@ from core.jab_table_find import (  # noqa: F401
     window_descendant_hwnds,
 )
 from core.jab_table_read import (  # noqa: F401
-    find_record_in_visible_tables,
     read_all_table_cells,
     read_all_table_selected_columns,
     read_table_snapshot,
     read_table_summaries,
     resolve_amount_col,
     resolve_partner_col,
-    wait_for_record_visible,
 )
 from core.jab_table_cache import (  # noqa: F401
     clear_table_cache,

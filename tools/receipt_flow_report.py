@@ -35,9 +35,35 @@ def write_last_report(report):
     return path
 
 
+# stdout JSON 信封被 GUI 机器解析(finance nc_engine._from_receipt_report),
+# 但每行的 steps/timings/header_steps/detail_steps/modal_recovery 是逐 JAB 原语的
+# 开发诊断(单行可达数百条,50-100 单批量 → 几万行),机器一概不读。
+# stdout 只保留结果判定 + 失败定位字段,完整诊断仍由 write_last_report 落盘。
+_ROW_HEAVY_KEYS = ("steps", "timings", "header_steps", "detail_steps", "modal_recovery")
+
+
+def slim_report_for_stdout(report):
+    slim = dict(report)
+    rows = slim.get("rows")
+    if isinstance(rows, list):
+        slim["rows"] = [
+            {key: value for key, value in row.items() if key not in _ROW_HEAVY_KEYS}
+            if isinstance(row, dict)
+            else row
+            for row in rows
+        ]
+    return slim
+
+
 def print_report(report, args):
     if args.json:
-        text = json.dumps(report, ensure_ascii=False, indent=2, default=str)
+        # 单行紧凑输出:dev 日志逐行转发,避免 indent 多行刷屏;完整报告见磁盘
+        text = json.dumps(
+            slim_report_for_stdout(report),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            default=str,
+        )
         print(text)
         return
     report_path = logs_dir() / "last_receipt_full_flow_report.json"
