@@ -15,7 +15,7 @@
 - **SSOT 收敛(业务口径单一来源)**:制单表「13 列」判定散 5 处 → `core/voucher_constants.is_voucher_table()` + `VOUCHER_TABLE_COL_COUNT`;收款业务常量 1002/货款/660305/手续费/网银 散 5 处 → `core/receipt_business_constants`;`save_strategy/save_trigger/hotkey` 枚举 SSOT 放 core(`validate_config`/`jab_batch` 从 core import,不反依赖);候选列、`first_non_empty_cell_at`/`TimingRecorder` 各去一份重复副本。
 - **取代残留清除**:删 `receipt_self_made_flow` 的 `--fill-detail` 旧后台写明细整条死链(生产明细只走前台主线 `tools/receipt_detail_*`,探针止于读 body 表)。
 - **坏味道去重(行为保持)**:删行循环两处真同构慢路径抽 `_delete_one_extra_row_step`(不同构的 fast 路径保守未合);`receipt_detail_screen_writer` 前台守卫复用 `receipt_keyboard_utils.same_window_root`。
-- **测试治理**:4 个千行测试按业务场景拆为 20 个场景文件 + 4 个 `_*_helpers` 共享模块;脆性断言(整条 UI 路径串/整字典全等/对象身份)降级为子集断言、保住业务 oracle;核实并合并 1 组真重复用例(另两组核实为各测独立分支、保留)。用例数 224 → 231(新增引擎模式测试)→ 230(合并重复)。
+- **测试治理**:4 个千行测试按业务场景拆为 20 个场景文件 + 4 个 `_*_helpers` 共享模块;脆性断言(整条 UI 路径串/整字典全等/对象身份)降级为子集断言、保住业务 oracle;核实并合并 1 组真重复用例(另两组核实为各测独立分支、保留)。本次净变化:用例数 224 → 231(新增引擎模式测试)→ 230(合并重复);此后随功能迭代继续增长,当前为 232(`pytest tests/ --co` 实测,2026-06-22)。
 
 ## 2026-06-15 - 收款后验查询正式化和结果页缓存
 
@@ -26,7 +26,7 @@
 
 ## 2026-06-12 - 收款单明细写入正式模块沉淀
 
-- 文档口径修正：明确当前无正式 GUI/前端，测试入口是 Python 脚本；凭证生成会保存凭证、收款完整流程 `--save` 会保存收款单；`tools/receipt_full_flow_entry.py --query-after-save` 当前只是 deferred 占位；`core/receipt_sheet.py::rewrite_plan_sheet()` 当前会重写 Sheet2 当前计划结果区，不是历史追加表。
+- 文档口径修正：明确当前无正式 GUI/前端，测试入口是 Python 脚本；凭证生成会保存凭证、收款完整流程 `--save` 会保存收款单；`tools/receipt_full_flow_entry.py --query-after-save` 当前只是 deferred 占位（已于后续实现，见 `tools/receipt_post_save_query.py::run_post_save_batch_query`）；`core/receipt_sheet.py::rewrite_plan_sheet()` 当前会重写 Sheet2 当前计划结果区，不是历史追加表。
 - 明细主行/手续费行能力已从早期临时脚本拆到正式 `tools/receipt_detail_*` 模块：字段映射和读回校验、明细表读取、JAB 选中+前台守卫键盘写入、整行重试、手续费流程、清账户和删多余行分别落到独立文件。
 - 新增收款单完整流程测试入口 `tools/receipt_full_flow_entry.py`：消费 `ReceiptPlanRow`，默认跑 `新增 -> 自制 -> 表头 -> 明细主行 -> 手续费分支` 后停在保存前；显式 `--save` 才调用 JAB 保存按钮真实保存。入口默认只取 1 行，支持指定 `--excel-row` 和运行前 `--write-plan-sheet`。
 - 当前仍未完成的是“保存后按主体统一后验查询 -> 保存/查询结果结构化落 Sheet2”。明细正式模块的脚本化入口是 `tools/receipt_detail_entry.py`，可写主行、写手续费、只清理多余行。

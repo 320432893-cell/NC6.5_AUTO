@@ -39,7 +39,7 @@ H:\python脚本\.venv\nc_auto_v2
 
 真实保存必须显式传 `--save` 或使用上述现场测试 wrapper；两种方式都需要交互确认 `SAVE`，除非自动化调用方明确传 `--yes-i-understand`。
 
-禁止把 `tools/tmp_*`、`tools/archive/*` 或历史真实保存 T0 脚本当正式入口。明细单独测试入口是 `tools/receipt_detail_entry.py`，但它只测当前自制录入页明细，不负责开单、表头、保存和后验查询。
+禁止把 `tools/tmp_*` 或历史真实保存 T0 脚本当正式入口；废弃探针/归档脚本已整文件删除（commit ec3bfa7），需要复盘时从 git 历史恢复。明细单独测试入口是 `tools/receipt_detail_entry.py`，但它只测当前自制录入页明细，不负责开单、表头、保存和后验查询。
 
 ## 2. 整体流程
 

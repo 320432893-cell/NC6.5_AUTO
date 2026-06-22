@@ -15,7 +15,7 @@
 - 配置编辑：`config.json` 的 `receipt_entry.schema_version=2`，尤其是 `finance_organizations`、`banks`、`accounts`、账户候选值、录入策略和明细/手续费策略。
 - 本地预检：`core/receipt_entry.py`、`core/receipt_plan.py`、`core/receipt_plan_issue.py`、`core/receipt_sheet.py` 和 `tools/receipt_entry_check.py`。
 - 完整录入测试：`tools/receipt_full_flow_entry.py` 是正式业务入口；现场测试只直接用 `tools/receipt_full_flow_save_query_write_test.py`，在同一个文件内选择保存、不保存、故障恢复或 verify 审查。
-- 查询与后验：`tools/receipt_query_fill.py` 及拆分出的 `tools/receipt_query_*` 模块。
+- 查询与后验：命令行入口是 `tools/receipt_query_cli.py`（带 `--json` 结构化结果信封）；`tools/receipt_query_fill.py` 提供查询流程函数（其 `main()` 已转发到 CLI），结构化 JSON 调用请优先用 `receipt_query_cli.py`。另有拆分出的 `tools/receipt_query_*` 模块。
 - JAB 底层边界：`core/jab_operator.py`、`core/jab_window.py`、`core/jab_*` mixin/helper；全局键盘、前台窗口和 pyautogui 只能留在这里。
 - 工程检查：`tools/check.py`、`tools/validate_config.py`、`tools/check_architecture.py` 和对应测试。
 
@@ -83,9 +83,9 @@
 - `tools/query_jab.bat`
 - `tools/run_jab_probe.bat`
 
-现场探测、复盘或窄场景诊断用的临时脚本已清理，不再保留为入口；明细主行/手续费行能力已沉淀到正式入口 `tools/receipt_detail_entry.py`。旧表头账户参照探针已移入 `tools/archive/`，已删除的真实保存 T0 脚本只能从 git 历史恢复。
+现场探测、复盘或窄场景诊断用的临时脚本已清理，不再保留为入口；明细主行/手续费行能力已沉淀到正式入口 `tools/receipt_detail_entry.py`。旧表头账户参照探针、历史真实保存 T0 脚本等废弃脚本均已整文件删除（commit ec3bfa7），需要复盘时只能从 git 历史恢复。
 
-历史探针和人工现场测试入口已收口到 `tools/archive/`。这些文件只作复盘证据，不是测试人员默认入口，也不能被正式流程 import；需要重新启用时先移回合适目录并补检查闭包。
+历史探针和人工现场测试入口已整文件删除，不再保留为正式入口或复盘证据目录；需要重新启用时从 git 历史恢复到合适目录并补检查闭包。
 
 ## WSL 开发流程
 
@@ -207,7 +207,7 @@ cd /mnt/h/python脚本/.venv/nc_auto_v2
 /mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_entry_check.py --legacy-candidates
 ```
 
-收款单查询窗口只填条件、不点确定；默认会先在收款单录入页按 F3 打开查询条件窗口。正式入口用 `pyautogui.press("f3")` 重试，直到 Win32 检测到可见 `title=查询条件`、`class=SunAwtDialog`；现场不要改回只发裸 SendInput F3：
+收款单查询窗口只填条件、不点确定；默认会先在收款单录入页按 F3 打开查询条件窗口。正式入口用 `pyautogui.press("f3")` 重试，直到 Win32 检测到可见 `title=查询条件`、`class=SunAwtDialog`；现场不要改回只发裸 SendInput F3。下方示例沿用 `receipt_query_fill.py`（其 `main()` 已转发到 CLI，等价可跑）；需要结构化 JSON 结果时改用 `tools/receipt_query_cli.py --json`，参数相同：
 
 ```bash
 /mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_query_fill.py --org-code A001 --date-from 2026-05-01 --date-to 2026-06-02
