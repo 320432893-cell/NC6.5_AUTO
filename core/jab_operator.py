@@ -4,6 +4,7 @@ import time
 
 from core import jab_window
 from core import jab_popup
+from core.clipboard_utils import get_clipboard_text, set_clipboard_text
 from core.jab_control_mixin import JABControlMixin
 from core.jab_near_label_mixin import JABNearLabelMixin
 from core.jab_path_mixin import JABPathMixin
@@ -187,17 +188,13 @@ class JABOperator(JABControlMixin, JABNearLabelMixin, JABPathMixin, JABTableMixi
         time.sleep(0 if wait is None else wait)
 
     def clipboard_copy(self, text):
-        import pyperclip
-
-        pyperclip.copy(str(text))
+        set_clipboard_text(str(text))
 
     def clipboard_paste(self, wait=None):
         self.press_hotkey("ctrl", "v", wait=wait)
 
     def clipboard_read(self):
-        import pyperclip
-
-        return pyperclip.paste()
+        return get_clipboard_text()
 
     def take_screenshot(self):
         return take_desktop_screenshot()

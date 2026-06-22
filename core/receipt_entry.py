@@ -119,7 +119,13 @@ class ReceiptEntryWorkbook:
                 self.config.header_row,
                 results,
             )
-            writable.save(self.excel_path)
+            try:
+                writable.save(self.excel_path)
+            except PermissionError as exc:
+                raise ExcelLockedError(
+                    f"Excel 文件无法写入，可能正被 WPS/Excel 打开: "
+                    f"operation=写入收款单执行结果 path={self.excel_path}"
+                ) from exc
         finally:
             writable.close()
 
@@ -218,7 +224,13 @@ class ReceiptEntryWorkbook:
             rows,
             issues,
         )
-        wb.save(self.excel_path)
+        try:
+            wb.save(self.excel_path)
+        except PermissionError as exc:
+            raise ExcelLockedError(
+                f"Excel 文件无法写入，可能正被 WPS/Excel 打开: "
+                f"operation=写入收款单计划结果 path={self.excel_path}"
+            ) from exc
 
     def _read_header(self, ws):
         columns = {}

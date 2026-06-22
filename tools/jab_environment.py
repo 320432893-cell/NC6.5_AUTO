@@ -9,6 +9,35 @@ import platform
 import subprocess
 
 
+def access_bridge_dll_name() -> str:
+    return (
+        "WindowsAccessBridge-64.dll"
+        if platform.architecture()[0] == "64bit"
+        else "WindowsAccessBridge-32.dll"
+    )
+
+
+def uclient_jre_bin_dirs() -> list[Path]:
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if not local_app_data:
+        return []
+    root = Path(local_app_data) / "UClient" / "share"
+    if not root.exists():
+        return []
+    dll_name = access_bridge_dll_name()
+    bins = [path for path in root.glob("*/bin") if path.is_dir()]
+    return sorted(
+        bins,
+        key=lambda path: (
+            not (path / dll_name).exists(),
+            "x64" not in str(path).lower()
+            if platform.architecture()[0] == "64bit"
+            else "x64" in str(path).lower(),
+            str(path).lower(),
+        ),
+    )
+
+
 def prepare_java_access_bridge() -> dict:
     if os.name != "nt":
         return {
@@ -54,11 +83,7 @@ def find_jabswitch() -> Path | None:
 
 def candidate_jre_bin_dirs() -> list[Path]:
     candidates: list[Path] = []
-    local_app_data = os.environ.get("LOCALAPPDATA")
-    if local_app_data:
-        candidates.append(
-            Path(local_app_data) / "UClient" / "share" / "java1.7.0_51-x64" / "bin"
-        )
+    candidates.extend(uclient_jre_bin_dirs())
     java_home = os.environ.get("JAVA_HOME")
     if java_home:
         candidates.append(Path(java_home) / "bin")
@@ -72,9 +97,5 @@ def uclient_access_bridge_dll_patterns() -> list[str]:
     local_app_data = os.environ.get("LOCALAPPDATA")
     if not local_app_data:
         return []
-    dll_name = (
-        "WindowsAccessBridge-64.dll"
-        if platform.architecture()[0] == "64bit"
-        else "WindowsAccessBridge-32.dll"
-    )
+    dll_name = access_bridge_dll_name()
     return [str(Path(local_app_data) / "UClient" / "share" / "*" / "bin" / dll_name)]

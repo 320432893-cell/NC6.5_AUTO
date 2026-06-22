@@ -1,6 +1,6 @@
 # 职责: 提供收款单正式明细输入需要的停止键、剪贴板、受保护按键和金额比较工具
 # 不做什么: 不打开/操作参照窗口，不执行 NC 业务流程，不读取 Excel/配置
-# 允许依赖层: 标准库 ctypes/decimal/sys/time
+# 允许依赖层: 标准库 ctypes/decimal/sys/time，core.clipboard_utils
 # 谁不应该 import: core 层模块不应 import；查询/Sheet 写入模块不应 import
 
 import ctypes
@@ -9,11 +9,15 @@ from decimal import Decimal, InvalidOperation
 import sys
 import time
 
+from core.clipboard_utils import (
+    configure_clipboard_api,
+    get_clipboard_text,
+    restore_clipboard_text,
+    set_clipboard_text,
+)
+
 STOP_HOTKEY = "Space"
 VK_SPACE = 0x20
-GMEM_MOVEABLE = 0x0002
-CF_UNICODETEXT = 13
-_CLIPBOARD_API_CONFIGURED = False
 VK_CONTROL = 0x11
 VK_A = 0x41
 VK_D = 0x44
@@ -22,7 +26,6 @@ VK_C = 0x43
 VK_S = 0x53
 VK_V = 0x56
 VK_MENU = 0x12
-VK_DELETE = 0x2E
 
 
 class KEYBDINPUT(ctypes.Structure):
@@ -69,93 +72,11 @@ class INPUT(ctypes.Structure):
     def mi(self, value):
         self.union.mi = value
 
-
-def configure_clipboard_api():
-    global _CLIPBOARD_API_CONFIGURED
-    if _CLIPBOARD_API_CONFIGURED:
-        return
-    user32 = ctypes.windll.user32
-    kernel32 = ctypes.windll.kernel32
-    user32.OpenClipboard.argtypes = [ctypes.c_void_p]
-    user32.OpenClipboard.restype = wintypes.BOOL
-    user32.CloseClipboard.argtypes = []
-    user32.CloseClipboard.restype = wintypes.BOOL
-    user32.EmptyClipboard.argtypes = []
-    user32.EmptyClipboard.restype = wintypes.BOOL
-    user32.GetClipboardData.argtypes = [wintypes.UINT]
-    user32.GetClipboardData.restype = wintypes.HANDLE
-    user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
-    user32.SetClipboardData.restype = wintypes.HANDLE
-    kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
-    kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
-    kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
-    kernel32.GlobalLock.restype = ctypes.c_void_p
-    kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
-    kernel32.GlobalUnlock.restype = wintypes.BOOL
-    _CLIPBOARD_API_CONFIGURED = True
-
-
 def is_stop_hotkey_pressed():
     if not hasattr(ctypes, "windll"):
         return False
     user32 = ctypes.windll.user32
     return bool(user32.GetAsyncKeyState(VK_SPACE) & 0x8000)
-
-
-def get_clipboard_text():
-    configure_clipboard_api()
-    user32 = ctypes.windll.user32
-    kernel32 = ctypes.windll.kernel32
-    if not user32.OpenClipboard(None):
-        return None
-    try:
-        handle = user32.GetClipboardData(CF_UNICODETEXT)
-        if not handle:
-            return None
-        ptr = kernel32.GlobalLock(handle)
-        if not ptr:
-            return None
-        try:
-            return ctypes.wstring_at(ptr)
-        finally:
-            kernel32.GlobalUnlock(handle)
-    finally:
-        user32.CloseClipboard()
-
-
-def set_clipboard_text(text):
-    configure_clipboard_api()
-    user32 = ctypes.windll.user32
-    kernel32 = ctypes.windll.kernel32
-    encoded = str(text) + "\0"
-    size = len(encoded) * ctypes.sizeof(ctypes.c_wchar)
-    if not user32.OpenClipboard(None):
-        raise RuntimeError("OpenClipboard failed")
-    try:
-        if not user32.EmptyClipboard():
-            raise RuntimeError("EmptyClipboard failed")
-        handle = kernel32.GlobalAlloc(GMEM_MOVEABLE, size)
-        if not handle:
-            raise RuntimeError("GlobalAlloc failed")
-        ptr = kernel32.GlobalLock(handle)
-        if not ptr:
-            raise RuntimeError("GlobalLock failed")
-        try:
-            ctypes.memmove(ptr, ctypes.create_unicode_buffer(encoded), size)
-        finally:
-            kernel32.GlobalUnlock(handle)
-        if not user32.SetClipboardData(CF_UNICODETEXT, handle):
-            raise RuntimeError("SetClipboardData failed")
-    finally:
-        user32.CloseClipboard()
-
-
-def restore_clipboard_text(text):
-    if text is None:
-        return False
-    set_clipboard_text(text)
-    return True
-
 
 def normalize_amount(value):
     if value is None:
@@ -353,12 +274,4 @@ def guarded_send_ctrl_d(table_window):
         "Ctrl+D",
         send_hotkey_ctrl_d,
         settle_seconds=0.0,
-    )
-
-
-def guarded_send_delete(table_window):
-    return guarded_send_table_hotkey(
-        table_window,
-        "Delete",
-        lambda: send_virtual_key(VK_DELETE),
     )

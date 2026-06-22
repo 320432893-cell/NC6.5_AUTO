@@ -136,11 +136,11 @@ def test_read_customer_name_after_header_uses_customer_description(monkeypatch):
                 "ok": True,
                 "label": "客户",
                 "value": "YW00178",
-                "dynamic_index": 4,
+                "dynamic_index": 6,
                 "path": "customer.path",
             }
         ],
-        4,
+        6,
         197550,
     )
 
@@ -182,11 +182,11 @@ def test_read_customer_name_after_header_polls_until_customer_description(monkey
                 "ok": True,
                 "label": "客户",
                 "value": "YW00178",
-                "dynamic_index": 4,
+                "dynamic_index": 6,
                 "path": "customer.path",
             }
         ],
-        4,
+        6,
         197550,
         timeout=0.2,
         poll_interval=0.01,
@@ -227,11 +227,11 @@ def test_read_customer_name_after_header_failure_reports_readback(monkeypatch):
                 "ok": True,
                 "label": "客户",
                 "value": "YW00178",
-                "dynamic_index": 4,
+                "dynamic_index": 6,
                 "path": "customer.path",
             }
         ],
-        4,
+        6,
         197550,
         timeout=0,
     )
@@ -546,14 +546,6 @@ def test_save_receipt_uses_sendinput_ctrl_s_not_jab_button(monkeypatch):
             return True
 
     monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.probe_receipt_entry_page",
-        lambda _jab: {
-            "ok": True,
-            "scope": {"scope_hwnd": 12345},
-            "method": "header-scope",
-        },
-    )
-    monkeypatch.setattr(
         "tools.receipt_full_flow_entry.foreground_matches_window",
         lambda window: {"ok": True, "target_window": window, "foreground": {}},
     )
@@ -587,7 +579,7 @@ def test_save_receipt_uses_sendinput_ctrl_s_not_jab_button(monkeypatch):
         lambda: calls.__setitem__("hotkey", calls["hotkey"] + 1),
     )
 
-    result = save_receipt_by_ctrl_s(FakeJAB(), timeout=0.5)
+    result = save_receipt_by_ctrl_s(FakeJAB(), scope_hwnd=12345, timeout=0.5)
 
     assert result["ok"] is True
     assert result["triggered"] is True
@@ -607,10 +599,6 @@ def test_save_receipt_stops_before_oracle_when_foreground_guard_fails(monkeypatc
         def maximize_window_by_handle(self, hwnd):
             return True
 
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.probe_receipt_entry_page",
-        lambda _jab: {"ok": True, "scope": {"scope_hwnd": 12345}},
-    )
     monkeypatch.setattr(
         "tools.receipt_full_flow_entry.foreground_matches_window",
         lambda _window: {"ok": False, "reason": "当前前台窗口不是目标 NC 窗口"},
@@ -632,67 +620,11 @@ def test_save_receipt_stops_before_oracle_when_foreground_guard_fails(monkeypatc
         ),
     )
 
-    result = save_receipt_by_ctrl_s(FakeJAB(), timeout=0.5)
+    result = save_receipt_by_ctrl_s(FakeJAB(), scope_hwnd=12345, timeout=0.5)
 
     assert result["ok"] is False
     assert result["triggered"] is False
     assert "当前前台窗口不是目标 NC 窗口" in result["reason"]
-
-
-def test_save_receipt_uses_entry_state_hwnd_without_header_scope_probe(monkeypatch):
-    calls = {"guard": [], "hotkey": 0, "maximize": []}
-
-    class FakeJAB:
-        def press_hotkey(self, *keys, wait=None):
-            raise AssertionError("收款单保存应使用 SendInput Ctrl+S")
-
-        def maximize_window_by_handle(self, hwnd):
-            calls["maximize"].append(hwnd)
-            return True
-
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.collect_receipt_new_windows",
-        lambda _jab: [{"hwnd": 24680, "controls": []}],
-    )
-
-    state_calls = {"count": 0}
-
-    def fake_detect(_windows):
-        state_calls["count"] += 1
-        if state_calls["count"] == 1:
-            return {
-                "ok": True,
-                "hits": [{"window": {"hwnd": 24680, "class_name": "SunAwtCanvas"}}],
-            }
-        return {"ok": False, "reason": "已回到新增态"}
-
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.detect_self_made_entry_state",
-        fake_detect,
-    )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.foreground_matches_window",
-        lambda window: calls["guard"].append(window) or {"ok": True},
-    )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.detect_receipt_parent_new_ready",
-        lambda _windows: {"ok": True, "usable_new_button_count": 1},
-    )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.root_hwnd",
-        lambda hwnd: hwnd,
-    )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.send_hotkey_ctrl_s",
-        lambda: calls.__setitem__("hotkey", calls["hotkey"] + 1),
-    )
-
-    result = save_receipt_by_ctrl_s(FakeJAB(), timeout=0.5)
-
-    assert result["ok"] is True
-    assert calls["guard"] == [{"hwnd": 24680}]
-    assert calls["maximize"] == [24680]
-    assert calls["hotkey"] == 1
 
 
 def test_save_receipt_promotes_scope_hwnd_to_root_before_hotkey(monkeypatch):
@@ -703,10 +635,6 @@ def test_save_receipt_promotes_scope_hwnd_to_root_before_hotkey(monkeypatch):
             calls["maximize"].append(hwnd)
             return True
 
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.probe_receipt_entry_page",
-        lambda _jab: {"ok": True, "scope": {"scope_hwnd": 24680}},
-    )
     monkeypatch.setattr(
         "tools.receipt_full_flow_entry.root_hwnd",
         lambda hwnd: 13579 if hwnd == 24680 else hwnd,
@@ -732,7 +660,7 @@ def test_save_receipt_promotes_scope_hwnd_to_root_before_hotkey(monkeypatch):
         lambda _windows: {"ok": True, "usable_new_button_count": 1},
     )
 
-    result = save_receipt_by_ctrl_s(FakeJAB(), timeout=0.5)
+    result = save_receipt_by_ctrl_s(FakeJAB(), scope_hwnd=24680, timeout=0.5)
 
     assert result["ok"] is True
     assert calls["maximize"] == [13579]
@@ -752,10 +680,6 @@ def test_save_receipt_does_not_treat_missing_entry_buttons_as_success_without_ne
         def maximize_window_by_handle(self, hwnd):
             return True
 
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.probe_receipt_entry_page",
-        lambda _jab: {"ok": True, "scope": {"scope_hwnd": 12345}},
-    )
     monkeypatch.setattr(
         "tools.receipt_full_flow_entry.foreground_matches_window",
         lambda _window: {"ok": True},
@@ -781,7 +705,7 @@ def test_save_receipt_does_not_treat_missing_entry_buttons_as_success_without_ne
         lambda: None,
     )
 
-    result = save_receipt_by_ctrl_s(FakeJAB(), timeout=0.01)
+    result = save_receipt_by_ctrl_s(FakeJAB(), scope_hwnd=12345, timeout=0.01)
 
     assert result["ok"] is False
     assert result["oracle"]["ok"] is False
@@ -799,6 +723,7 @@ def test_run_one_row_uses_detail_pipeline_verifier(monkeypatch):
         "fill_header_kwargs": [],
         "body_locate_kwargs": [],
         "account_scope": [],
+        "delete_extra_kwargs": [],
     }
 
     class FakeJAB:
@@ -916,7 +841,9 @@ def test_run_one_row_uses_detail_pipeline_verifier(monkeypatch):
     )
     monkeypatch.setattr(
         "tools.receipt_full_flow_entry.delete_extra_row_if_present",
-        lambda *_args, **_kwargs: {"ok": True},
+        lambda *_args, **kwargs: (
+            calls["delete_extra_kwargs"].append(kwargs) or {"ok": True}
+        ),
     )
     monkeypatch.setattr(
         "tools.receipt_full_flow_entry.wait_header_account_description",
@@ -947,6 +874,8 @@ def test_run_one_row_uses_detail_pipeline_verifier(monkeypatch):
     assert calls["field"] == [(0, "收款银行账户", "FTE1219165931831")]
     assert calls["snapshot"] == [("after-main-line", 3, 1)]
     assert calls["rows"] == [1]
+    assert calls["delete_extra_kwargs"][0]["scope_hwnd"] == 2002
+    assert calls["delete_extra_kwargs"][0]["defer_wait"] is True
     assert calls["wait"] == [(["field-0", "rows-0"], 2.0)]
     assert calls["fill_header_kwargs"][0]["scope_hwnd"] == 2002
     assert calls["fill_header_kwargs"][0]["dynamic_index"] == 5

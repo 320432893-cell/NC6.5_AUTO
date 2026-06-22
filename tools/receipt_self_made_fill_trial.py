@@ -1,8 +1,5 @@
-import argparse
 import ctypes
 from ctypes import wintypes
-from datetime import datetime
-from decimal import Decimal
 import json
 import os
 import re
@@ -15,15 +12,6 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from core.jab_operator import JABOperator  # noqa: E402
-from core.receipt_config import ReceiptEntryConfig  # noqa: E402
-from core.utils import load_config  # noqa: E402
-from tools.read_receipt_excel_row import DEFAULT_FIELDS  # noqa: E402
-from tools.receipt_body_table_locator import locate_receipt_body_table  # noqa: E402
-from tools.receipt_new_probe import (  # noqa: E402
-    collect_receipt_new_windows,
-    detect_self_made_entry_state,
-)
 from tools.receipt_keyboard_utils import (  # noqa: E402
     foreground_matches_window,
     get_clipboard_text,
@@ -32,10 +20,9 @@ from tools.receipt_keyboard_utils import (  # noqa: E402
     send_hotkey_ctrl_v,
     set_clipboard_text,
 )
-from tools.receipt_table_cell_probe import select_cell  # noqa: E402
 
 
-CURRENCY_NAMES = {"USD": "美元", "RMB": "人民币", "CNY": "人民币"}
+CURRENCY_NAMES = {"USD": "美元", "CNY": "人民币"}
 HEADER_DYNAMIC_PREFIX_BASE = "0.0.1.0.0.0.0"
 HEADER_COMMON_SUFFIX_TEMPLATE = "0.0.0.1.1.0.0.0.0.1.0.2.0.0.0.0.0.0.0.{index}.0"
 HEADER_COMMON_LABEL_SUFFIX_TEMPLATE = "0.0.0.1.1.0.0.0.0.1.0.2.0.0.0.0.0.0.0.{index}"
@@ -56,208 +43,9 @@ HEADER_LABEL_ALIASES = {
     "币种": ("币种",),
     "结算方式": ("结算方式",),
 }
-HEADER_PROBE_LABEL_KEYS = {
-    "finance": "财务组织",
-    "finance_org": "财务组织",
-    "customer": "客户",
-    "client": "客户",
-    "date": "单据日期",
-    "document_date": "单据日期",
-    "currency": "币种",
-    "settlement": "结算方式",
-    "settlement_method": "结算方式",
-}
 HEADER_SCOPE_ANCHOR_LABEL = "财务组织"
 HEADER_SCOPE_ANCHOR_TEXT = "财务组织(O)"
 FINANCE_ORG_ACCEPTED_TEXT = "上海移为通信技术股份有限公司"
-
-
-def print_json(data):
-    text = json.dumps(data, ensure_ascii=False, indent=2, default=str)
-    try:
-        sys.stdout.write(text + "\n")
-    except UnicodeEncodeError:
-        sys.stdout.buffer.write((text + "\n").encode("utf-8"))
-
-
-def main():
-    parser = argparse.ArgumentParser(
-        description="Trial-fill NC receipt self-made entry from one Excel row."
-    )
-    parser.add_argument("row", type=int, nargs="?")
-    parser.add_argument("--config", default="config.json")
-    parser.add_argument("--open-self-made", action="store_true")
-    parser.add_argument(
-        "--probe-header-path-transitions",
-        action="store_true",
-        help=(
-            "只读探测表头 path：当前状态一次，回车后一次，再回车后一次；"
-            "用于人工在两次回车之间写财务组织、加窗口"
-        ),
-    )
-    parser.add_argument(
-        "--probe-header-semantic-field",
-        default=None,
-        help="只读测速单个表头字段语义定位，例如 客户、单据日期、币种、结算方式。",
-    )
-    parser.add_argument(
-        "--probe-customer-name-readback",
-        action="store_true",
-        help="只读探测客户回车后的 NC 客户名称候选来源；不输入、不保存。",
-    )
-    parser.add_argument(
-        "--probe-timeout",
-        type=float,
-        default=HEADER_LIVE_SEMANTIC_FALLBACK_TIMEOUT,
-        help="单次语义定位超时秒数，默认使用正式兜底超时。",
-    )
-    parser.add_argument(
-        "--probe-repeat",
-        type=int,
-        default=1,
-        help="重复测速次数，默认 1。",
-    )
-    parser.add_argument(
-        "--fill-detail",
-        action="store_true",
-        help="fill receipt detail cells after header verification",
-    )
-    parser.add_argument("--json", action="store_true")
-    args = parser.parse_args()
-
-    config = load_config(args.config)
-    if args.probe_header_path_transitions:
-        report = probe_header_path_transitions(config)
-        print_json(report)
-        return 0 if report.get("ok") else 1
-    if args.probe_header_semantic_field:
-        report = probe_header_semantic_field_speed(
-            config,
-            normalize_header_probe_label(args.probe_header_semantic_field),
-            timeout=args.probe_timeout,
-            repeat=args.probe_repeat,
-        )
-        print_json(report)
-        return 0 if report.get("ok") else 1
-    if args.probe_customer_name_readback:
-        report = probe_customer_name_readback(config, timeout=args.probe_timeout)
-        print_json(report)
-        return 0 if report.get("ok") else 1
-    if args.row is None:
-        parser.error(
-            "row is required unless --probe-header-path-transitions "
-            "or --probe-header-semantic-field or --probe-customer-name-readback is used"
-        )
-    row_data = read_excel_row(config, args.row)
-    business = build_business_values(config, row_data)
-    report = {"row": args.row, "excel": row_data, "business": business, "steps": []}
-
-    if args.open_self_made:
-        open_step = detect_existing_self_made_entry(config)
-        if not open_step.get("ok"):
-            open_step = run_receipt_new_probe()
-        report["steps"].append(open_step)
-        if not open_step.get("ok"):
-            report["stopped"] = "open_self_made"
-            print_json(report)
-            return 1
-
-    jab = JABOperator(config)
-    try:
-        jab.ensure_started()
-        header_steps = fill_header(jab, business)
-        report["steps"].extend(header_steps)
-        if any(step.get("step") == "blocked" for step in header_steps):
-            report["stopped"] = "header"
-            print_json(report)
-            return 1
-        report["steps"].append(read_body_table(jab, "before_detail_fill"))
-        if args.fill_detail:
-            report["steps"].extend(fill_detail_line(jab, business))
-            report["steps"].append(read_body_table(jab, "after_detail_fill"))
-        else:
-            report["steps"].append(
-                {
-                    "step": "detail_fill",
-                    "ok": False,
-                    "blocked": True,
-                    "reason": "detail fill requires explicit --fill-detail",
-                }
-            )
-    finally:
-        jab.close()
-
-    print_json(report)
-    return 0
-
-
-def read_excel_row(config, row):
-    import openpyxl
-
-    excel_cfg = config["receipt_entry"]["excel"]
-    workbook = openpyxl.load_workbook(excel_cfg["path"], data_only=True, read_only=True)
-    try:
-        sheet = workbook[excel_cfg["sheet_name"]]
-        header_row = excel_cfg.get("header_row", 1)
-        headers = [
-            sheet.cell(header_row, col).value for col in range(1, sheet.max_column + 1)
-        ]
-        data = {
-            headers[col - 1]: sheet.cell(row, col).value
-            for col in range(1, sheet.max_column + 1)
-            if headers[col - 1]
-        }
-    finally:
-        workbook.close()
-    return {field: data.get(field) for field in DEFAULT_FIELDS}
-
-
-def build_business_values(config, row_data):
-    receipt_config = ReceiptEntryConfig(config)
-    bank = str(row_data.get("银行") or "").strip()
-    account = receipt_config.accounts_by_label.get(
-        bank.upper()
-    ) or receipt_config.accounts_by_label.get(bank)
-    if not account:
-        normalized_bank = "".join(
-            ch for ch in bank.upper() if ch.isalnum() or "\u4e00" <= ch <= "\u9fff"
-        )
-        account = receipt_config.accounts_by_label.get(normalized_bank)
-    if not account:
-        raise SystemExit(f"bank account config not found: {bank!r}")
-    organization = receipt_config.organizations[account.organization_code]
-    currency_code = str(row_data.get("币种") or "").strip().upper()
-    receipt_date = row_data.get("到款日期")
-    if isinstance(receipt_date, datetime):
-        receipt_date_text = receipt_date.strftime("%Y-%m-%d")
-    else:
-        receipt_date_text = str(receipt_date)[:10]
-    amount = Decimal(str(row_data.get("🟪到账金额") or "0"))
-    fee_raw = row_data.get("手续费")
-    fee = Decimal(str(fee_raw or "0"))
-    return {
-        "finance_org_code": organization.code,
-        "finance_org_name": organization.name,
-        "document_date": receipt_date_text,
-        "customer_code": str(row_data.get("客户编码") or "").strip(),
-        "currency": CURRENCY_NAMES.get(currency_code, currency_code),
-        "header_currency_code": account.header_currency_code,
-        "bank_label": bank,
-        "bank_account": account.account_no,
-        "amount": str(amount),
-        "fee": str(fee),
-        "has_fee": fee != 0,
-        "settlement": "网银",
-        "main_subject": "1002",
-        "main_business_type": "货款",
-        "fee_subject": "660305",
-        "fee_business_type": "手续费",
-    }
-
-
-def normalize_header_probe_label(label):
-    text = str(label or "").strip()
-    return HEADER_PROBE_LABEL_KEYS.get(text.lower(), text)
 
 
 def run_receipt_new_probe():
@@ -272,8 +60,6 @@ def run_receipt_new_probe_with_jab(jab=None):
         args = Namespace(
             config="config.json",
             method="button",
-            path=None,
-            title=None,
             class_name="SunAwtFrame",
             name="新增",
             role=None,
@@ -281,7 +67,6 @@ def run_receipt_new_probe_with_jab(jab=None):
             return_timeout=0.2,
             wait=0.8,
             choose_self_made=True,
-            self_made_index=0,
             json=False,
             summary=True,
         )
@@ -290,6 +75,7 @@ def run_receipt_new_probe_with_jab(jab=None):
         ok = bool(
             (report.get("open") or {}).get("ok")
             and (report.get("choose_self_made") or {}).get("ok")
+            and entry_state.get("ok")
         )
         return {
             "step": "open_self_made",
@@ -303,6 +89,7 @@ def run_receipt_new_probe_with_jab(jab=None):
             else (
                 ((report.get("open") or {}).get("reason"))
                 or ((report.get("choose_self_made") or {}).get("reason"))
+                or entry_state.get("reason")
                 or "未能完成新增->自制"
             ),
         }
@@ -335,6 +122,7 @@ def run_receipt_new_probe_with_jab(jab=None):
             proc.returncode == 0
             and bool((parsed.get("open") or {}).get("ok"))
             and bool((parsed.get("choose_self_made") or {}).get("ok"))
+            and bool(entry_state.get("ok"))
         )
     except json.JSONDecodeError:
         ok = False
@@ -346,509 +134,6 @@ def run_receipt_new_probe_with_jab(jab=None):
         "stdout": proc.stdout,
         "stderr": proc.stderr,
     }
-
-
-def detect_existing_self_made_entry(config):
-    jab = JABOperator(config)
-    jab.hide_blank_awt_windows_enabled = False
-    try:
-        jab.ensure_started()
-        windows = collect_receipt_new_windows(jab)
-        entry_state = detect_self_made_entry_state(windows)
-        java_windows = [window for window in windows if window.get("is_java")]
-        return {
-            "step": "open_self_made",
-            "ok": bool(entry_state.get("ok")),
-            "method": "existing_entry_state_probe",
-            "entry_state": entry_state,
-            "java_window_count": len(java_windows),
-            "reason": (
-                "already in self-made entry state"
-                if entry_state.get("ok")
-                else "self-made entry state not detected before opening"
-            ),
-        }
-    finally:
-        jab.hide_blank_awt_windows_enabled = False
-        jab.close()
-
-
-def probe_header_path_transitions(config):
-    jab = JABOperator(config)
-    jab.hide_blank_awt_windows_enabled = False
-    stages = []
-    try:
-        jab.ensure_started()
-        stages.append(probe_current_header_paths(jab, "before_change"))
-        input("已完成第 1 次只读探测。请人工写入/确认财务组织后按回车继续第 2 次探测: ")
-        stages.append(probe_current_header_paths(jab, "after_finance"))
-        input("已完成第 2 次只读探测。请人工新增/切换窗口后按回车继续第 3 次探测: ")
-        stages.append(probe_current_header_paths(jab, "after_window_change"))
-        return {
-            "ok": any(stage.get("ok") for stage in stages),
-            "mode": "header-path-transition-probe",
-            "readonly": True,
-            "stages": stages,
-        }
-    finally:
-        jab.hide_blank_awt_windows_enabled = False
-        jab.close()
-
-
-def probe_header_semantic_field_speed(config, label, timeout=None, repeat=1):
-    jab = JABOperator(config)
-    jab.hide_blank_awt_windows_enabled = False
-    attempts = []
-    timeout = HEADER_LIVE_SEMANTIC_FALLBACK_TIMEOUT if timeout is None else timeout
-    repeat = max(int(repeat or 1), 1)
-    try:
-        jab.ensure_started()
-        for index in range(repeat):
-            started_at = time.perf_counter()
-            found = find_receipt_header_field_by_semantic_label(
-                jab,
-                label,
-                timeout=timeout,
-            )
-            seconds = round(time.perf_counter() - started_at, 3)
-            attempt = {
-                "ok": bool(found.get("ok")),
-                "index": index + 1,
-                "label": label,
-                "timeout": timeout,
-                "seconds": seconds,
-                "source": found.get("source") or "semantic-label-path",
-                "path": found.get("path"),
-                "label_path": found.get("label_path"),
-                "window": found.get("window"),
-                "reason": found.get("reason"),
-            }
-            attempts.append(attempt)
-            if found.get("ok"):
-                jab.release_contexts(found["vm_id"], found["owned_contexts"])
-        successful = [item for item in attempts if item.get("ok")]
-        return {
-            "ok": bool(successful),
-            "mode": "header-semantic-field-speed",
-            "readonly": True,
-            "label": label,
-            "timeout": timeout,
-            "repeat": repeat,
-            "success_count": len(successful),
-            "min_seconds": min((item["seconds"] for item in successful), default=None),
-            "max_seconds": max((item["seconds"] for item in successful), default=None),
-            "attempts": attempts,
-        }
-    finally:
-        jab.hide_blank_awt_windows_enabled = False
-        jab.close()
-
-
-def probe_customer_name_readback(config, timeout=None):
-    jab = JABOperator(config)
-    jab.hide_blank_awt_windows_enabled = False
-    timeout = HEADER_LIVE_SEMANTIC_FALLBACK_TIMEOUT if timeout is None else timeout
-    try:
-        jab.ensure_started()
-        scope = resolve_current_header_scope_for_probe(jab, timeout=timeout)
-        candidates = []
-        if scope.get("ok"):
-            candidates.extend(
-                collect_customer_field_candidates_for_scope(
-                    jab,
-                    scope.get("scope_hwnd"),
-                    scope.get("dynamic_index"),
-                    timeout=timeout,
-                )
-            )
-        best = first_valid_customer_name(candidates)
-        return {
-            "ok": bool(best),
-            "mode": "customer-name-readback-probe",
-            "readonly": True,
-            "scope": scope,
-            "best": best,
-            "field_candidates": candidates,
-            "reason": None if best else "未读到有效 NC 客户名称候选",
-        }
-    finally:
-        jab.hide_blank_awt_windows_enabled = False
-        jab.close()
-
-
-def resolve_current_header_scope_for_probe(jab, timeout=None):
-    windows = collect_receipt_new_windows(jab)
-    state = detect_self_made_entry_state(windows)
-    scope_hwnd = None
-    for hit in state.get("hits") or []:
-        window = hit.get("window") or {}
-        if window.get("class_name") == "SunAwtCanvas" and window.get("hwnd"):
-            scope_hwnd = int(window["hwnd"])
-            break
-    if scope_hwnd:
-        anchor = resolve_receipt_header_anchor_in_canvas(
-            jab,
-            scope_hwnd,
-            timeout=timeout or 0.6,
-        )
-        if anchor.get("ok"):
-            return anchor
-    semantic = infer_receipt_header_scope_by_semantic(jab, scope_hwnd=scope_hwnd)
-    if semantic.get("ok"):
-        semantic["entry_state"] = state
-        return semantic
-    return {
-        "ok": False,
-        "reason": "当前页面未解析到收款单表头 scope",
-        "scope_hwnd": scope_hwnd,
-        "entry_state": state,
-        "semantic_attempt": semantic,
-    }
-
-
-def collect_customer_field_candidates_for_scope(
-    jab, scope_hwnd, dynamic_index, timeout
-):
-    candidates = []
-    path_found = find_receipt_header_field_by_dynamic_path(
-        jab,
-        "客户",
-        dynamic_index,
-        scope_hwnd=scope_hwnd,
-        require_showing=False,
-        require_valid_bounds=False,
-    )
-    candidates.extend(snapshot_header_field_candidate(jab, path_found, "path"))
-    semantic_found = find_receipt_header_field_by_semantic_label(
-        jab,
-        "客户",
-        scope_hwnd=scope_hwnd,
-        timeout=timeout,
-    )
-    candidates.extend(
-        snapshot_header_field_candidate(jab, semantic_found, "semantic-label-path")
-    )
-    return dedupe_customer_candidates(candidates)
-
-
-def snapshot_header_field_candidate(jab, found, source):
-    if not found.get("ok"):
-        return [
-            {
-                "ok": False,
-                "source": source,
-                "reason": found.get("reason"),
-                "path": found.get("path"),
-                "label_path": found.get("label_path"),
-            }
-        ]
-    context = found["context"]
-    vm_id = found["vm_id"]
-    owned_contexts = found["owned_contexts"]
-    try:
-        info = jab.get_context_info(vm_id, context)
-        text = jab.get_text_context_value(vm_id, context)
-        snapshot = context_text_snapshot(info, text)
-        return [
-            {
-                "ok": True,
-                "source": source,
-                "path": found.get("path"),
-                "label_path": found.get("label_path"),
-                "window": found.get("window"),
-                "role": snapshot.get("role"),
-                "states": snapshot.get("states"),
-                "text": snapshot.get("text"),
-                "name": snapshot.get("name"),
-                "description": snapshot.get("description"),
-                "valid_values": valid_customer_values_from_snapshot(snapshot),
-            }
-        ]
-    finally:
-        jab.release_contexts(vm_id, owned_contexts)
-
-
-def collect_customer_nearby_candidates(jab, label_path, scope_hwnd, source):
-    if not label_path:
-        return []
-    parent_path = ".".join(str(label_path).split(".")[:-1])
-    if not parent_path:
-        return []
-    context, vm_id, owned_contexts, window_info = jab.find_context_by_path_once(
-        parent_path,
-        class_name="SunAwtCanvas",
-        scope_hwnd=scope_hwnd,
-        require_showing=False,
-        require_valid_bounds=False,
-    )
-    if not context:
-        return [
-            {
-                "ok": False,
-                "source": source,
-                "reason": "label parent path not found",
-                "parent_path": parent_path,
-                "label_path": label_path,
-            }
-        ]
-    try:
-        rows = []
-        collect_context_text_rows(
-            jab,
-            vm_id,
-            context,
-            parent_path,
-            depth=0,
-            max_depth=4,
-            rows=rows,
-        )
-        candidates = []
-        for row in rows:
-            values = valid_customer_values_from_snapshot(row)
-            if values or row.get("path") == label_path:
-                candidates.append(
-                    {
-                        "ok": True,
-                        "source": source,
-                        "parent_path": parent_path,
-                        "label_path": label_path,
-                        "window": window_info,
-                        **row,
-                        "valid_values": values,
-                    }
-                )
-        return candidates
-    finally:
-        jab.release_contexts(vm_id, owned_contexts)
-
-
-def collect_context_text_rows(jab, vm_id, context, path, depth, max_depth, rows):
-    info = jab.get_context_info(vm_id, context)
-    if not info:
-        return
-    text = jab.get_text_context_value(vm_id, context)
-    snapshot = context_text_snapshot(info, text)
-    if any(snapshot.get(key) for key in ("text", "name", "description")):
-        rows.append({"path": path, "depth": depth, **snapshot})
-    if depth >= max_depth:
-        return
-    role = (info.role_en_US.strip() or info.role.strip()).lower()
-    if role == "table":
-        return
-    for index in range(min(info.childrenCount, jab.max_children)):
-        child = jab.dll.getAccessibleChildFromContext(vm_id, context, index)
-        if not child:
-            continue
-        try:
-            collect_context_text_rows(
-                jab,
-                vm_id,
-                child,
-                f"{path}.{index}",
-                depth + 1,
-                max_depth,
-                rows,
-            )
-        finally:
-            jab.release_contexts(vm_id, [child])
-
-
-def context_text_snapshot(info, text):
-    return {
-        "role": (info.role_en_US.strip() or info.role.strip()) if info else "",
-        "states": (info.states_en_US.strip() or info.states.strip()) if info else "",
-        "text": str(text or "").strip(),
-        "name": info.name.strip() if info else "",
-        "description": info.description.strip() if info else "",
-    }
-
-
-def valid_customer_values_from_snapshot(snapshot):
-    values = []
-    for key in ("description", "text", "name"):
-        value = str((snapshot or {}).get(key) or "").strip()
-        if is_valid_customer_name_candidate(value) and value not in values:
-            values.append(value)
-    return values
-
-
-def is_valid_customer_name_candidate(value):
-    text = str(value or "").strip()
-    if not text:
-        return False
-    if re.match(r"^\[L?java(\.|x\.)", text) or re.match(
-        r"^\[L[^;]+;@[0-9a-fA-F]+$", text
-    ):
-        return False
-    if re.match(r"^[A-Z]{1,5}\d{3,}$", text):
-        return False
-    if text in {"客户", "客户编码"}:
-        return False
-    return bool(re.search(r"[\u4e00-\u9fffA-Za-z]", text))
-
-
-def first_valid_customer_name(candidates):
-    for candidate in candidates:
-        values = candidate.get("valid_values") or []
-        if values:
-            return {
-                "value": values[0],
-                "source": candidate.get("source"),
-                "path": candidate.get("path"),
-                "parent_path": candidate.get("parent_path"),
-                "field": next(
-                    (
-                        key
-                        for key in ("description", "text", "name")
-                        if candidate.get(key) == values[0]
-                    ),
-                    None,
-                ),
-            }
-    return None
-
-
-def dedupe_customer_candidates(candidates):
-    seen = set()
-    unique = []
-    for item in candidates:
-        key = (
-            item.get("source"),
-            item.get("path"),
-            item.get("parent_path"),
-            item.get("text"),
-            item.get("name"),
-            item.get("description"),
-            item.get("reason"),
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(item)
-    return unique
-
-
-def probe_current_header_paths(jab, stage):
-    started_at = time.perf_counter()
-    windows = collect_receipt_new_windows(jab)
-    candidates = []
-    for window in windows:
-        if not window.get("visible") or window.get("class_name") != "SunAwtCanvas":
-            continue
-        hwnd = window.get("hwnd")
-        if not hwnd:
-            continue
-        anchor = resolve_receipt_header_anchor_in_canvas(jab, int(hwnd), timeout=0.15)
-        if not anchor.get("ok"):
-            continue
-        dynamic_index = anchor.get("dynamic_index")
-        samples = probe_header_field_paths_for_scope(
-            jab,
-            int(hwnd),
-            dynamic_index,
-        )
-        candidates.append(
-            {
-                "scope_hwnd": int(hwnd),
-                "dynamic_index": dynamic_index,
-                "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
-                "anchor": anchor,
-                "fields": samples,
-            }
-        )
-    return {
-        "ok": bool(candidates),
-        "stage": stage,
-        "seconds": round(time.perf_counter() - started_at, 3),
-        "candidate_count": len(candidates),
-        "candidates": candidates,
-    }
-
-
-def probe_header_field_paths_for_scope(jab, scope_hwnd, dynamic_index):
-    fields = {}
-    for label in HEADER_REQUIRED_LABELS:
-        fields[label] = {
-            "default_path": summarize_header_path_attempt(
-                jab,
-                label,
-                dynamic_index,
-                scope_hwnd,
-                template=receipt_header_default_path_template(),
-            ),
-            "semantic_path": summarize_semantic_header_attempt(
-                jab,
-                label,
-                scope_hwnd,
-            ),
-        }
-    return fields
-
-
-def summarize_header_path_attempt(jab, label, dynamic_index, scope_hwnd, template):
-    if label == HEADER_SCOPE_ANCHOR_LABEL:
-        path = build_receipt_header_dynamic_path(dynamic_index, label)
-        label_path = build_receipt_header_dynamic_label_path(dynamic_index, label)
-        template_source = "finance-anchor"
-    else:
-        path = build_receipt_header_path_from_template(
-            dynamic_index,
-            label,
-            template,
-        )
-        label_path = build_receipt_header_label_path_from_template(
-            dynamic_index,
-            label,
-            template,
-        )
-        template_source = (template or {}).get("source")
-    if not path:
-        return {
-            "ok": False,
-            "label": label,
-            "reason": "path not configured",
-            "template_source": template_source,
-        }
-    found = find_context_by_path_readonly(
-        jab,
-        path,
-        scope_hwnd=scope_hwnd,
-        role="text",
-    )
-    return {
-        "label": label,
-        "ok": bool(found.get("ok")),
-        "path": path,
-        "label_path": label_path,
-        "template_source": template_source,
-        **found,
-    }
-
-
-def summarize_semantic_header_attempt(jab, label, scope_hwnd):
-    found = find_receipt_header_field_by_semantic_label(
-        jab,
-        label,
-        scope_hwnd=scope_hwnd,
-    )
-    summary = {
-        "label": label,
-        "ok": bool(found.get("ok")),
-        "source": found.get("source") or "semantic-label-path",
-        "path": found.get("path"),
-        "label_path": found.get("label_path"),
-        "window": found.get("window"),
-        "reason": found.get("reason"),
-    }
-    if found.get("ok"):
-        inferred = infer_header_path_template_from_field(
-            found.get("path"),
-            extract_receipt_header_dynamic_index(found.get("path")),
-            label,
-        )
-        summary["inferred_template"] = inferred
-        jab.release_contexts(found["vm_id"], found["owned_contexts"])
-    return summary
 
 
 def find_context_by_path_readonly(jab, path, scope_hwnd=None, role=None):
@@ -878,6 +163,21 @@ def find_context_by_path_readonly(jab, path, scope_hwnd=None, role=None):
         }
     finally:
         jab.release_contexts(vm_id, owned)
+
+
+def is_valid_customer_name_candidate(value):
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if re.match(r"^\[L?java(\.|x\.)", text) or re.match(
+        r"^\[L[^;]+;@[0-9a-fA-F]+$", text
+    ):
+        return False
+    if re.match(r"^[A-Z]{1,5}\d{3,}$", text):
+        return False
+    if text in {"客户", "客户编码"}:
+        return False
+    return bool(re.search(r"[\u4e00-\u9fffA-Za-z]", text))
 
 
 def fill_header(
@@ -915,10 +215,15 @@ def fill_header(
         ]
     dynamic_index = scope.get("dynamic_index")
     scope_hwnd = scope.get("scope_hwnd")
-    learned_header_template = None
-    if dynamic_index is not None:
-        clear_receipt_header_path_template_cache()
-    for field in [
+    learned_header_template = get_receipt_header_path_template(
+        dynamic_index
+    ) or receipt_header_default_path_template()
+    header_currency = business.get("header_currency_code") or business.get("currency")
+    header_currency_accepts = currency_acceptance_texts(
+        header_currency,
+        business.get("currency"),
+    )
+    fields = [
         {
             "label": "财务组织",
             "value": business["finance_org_code"],
@@ -937,8 +242,8 @@ def fill_header(
         },
         {
             "label": "币种",
-            "value": business.get("currency"),
-            "accepted_text": business.get("currency"),
+            "value": header_currency,
+            "accepted_text": header_currency_accepts,
             "dynamic_path": True,
         },
         {
@@ -946,7 +251,8 @@ def fill_header(
             "value": business.get("settlement") or "网银",
             "dynamic_path": True,
         },
-    ]:
+    ]
+    for field in fields:
         label = field["label"]
         value = field["value"]
         if field.get("dynamic_path"):
@@ -968,7 +274,7 @@ def fill_header(
                     dynamic_index,
                     label,
                 )
-                if inferred_template and learned_header_template is None:
+                if inferred_template and not get_receipt_header_path_template(dynamic_index):
                     learned_header_template = inferred_template
                     set_receipt_header_path_template(dynamic_index, inferred_template)
                     result["header_path_template_learned"] = learned_header_template
@@ -1331,6 +637,7 @@ def set_receipt_header_dynamic_field(
     recover_after_failure=None,
     path_template=None,
 ):
+    total_started_at = time.perf_counter()
     legacy_control_name_attempt = None
     if label == HEADER_SCOPE_ANCHOR_LABEL:
         legacy_control_name_attempt = set_finance_org_by_legacy_control_name(
@@ -1343,6 +650,10 @@ def set_receipt_header_dynamic_field(
             **legacy_control_name_attempt,
             "dynamic_index": dynamic_index,
             "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
+            "timing": {
+                **(legacy_control_name_attempt.get("timing") or {}),
+                "total_seconds": round(time.perf_counter() - total_started_at, 3),
+            },
         }
 
     def find_by_path():
@@ -1374,6 +685,7 @@ def set_receipt_header_dynamic_field(
         }
 
     recovery_after_find = None
+    resolve_started_at = time.perf_counter()
     try:
         found = find_by_path()
     except Exception as exc:
@@ -1411,16 +723,19 @@ def set_receipt_header_dynamic_field(
             "modal_recovery": recovery_after_find,
             "legacy_control_name_attempt": legacy_control_name_attempt,
         }
+    resolve_seconds = round(time.perf_counter() - resolve_started_at, 3)
     context = found["context"]
     vm_id = found["vm_id"]
     owned_contexts = found["owned_contexts"]
     window_info = found["window"]
 
     def write_current_context(initial_recovery=None):
+        write_started_at = time.perf_counter()
         info_before = jab.get_context_info(vm_id, context)
         before = jab.get_text_context_value(vm_id, context)
         set_text_ok = False
         modal_recovery = initial_recovery
+        paste_started_at = time.perf_counter()
         guarded_paste = guarded_paste_header_value(
             jab,
             vm_id,
@@ -1428,6 +743,7 @@ def set_receipt_header_dynamic_field(
             window_info,
             value,
         )
+        paste_seconds = round(time.perf_counter() - paste_started_at, 3)
         set_ok = bool(guarded_paste.get("ok"))
         if not set_ok and recover_after_failure is not None:
             recovery_after_set = recover_after_failure()
@@ -1459,6 +775,7 @@ def set_receipt_header_dynamic_field(
         )
         acceptance_probe = None
         accepted = bool(backend_state.get("accepted"))
+        accept_started_at = time.perf_counter()
         if set_ok and accepted_text and not accepted:
             acceptance_probe = confirm_header_field_accepted(
                 jab,
@@ -1468,6 +785,7 @@ def set_receipt_header_dynamic_field(
                 value=value,
             )
             accepted = bool(acceptance_probe.get("accepted"))
+        accept_seconds = round(time.perf_counter() - accept_started_at, 3)
         return {
             "ok": bool(set_ok and (not accepted_text or accepted)),
             "path": found.get("path"),
@@ -1499,6 +817,13 @@ def set_receipt_header_dynamic_field(
             "description_after": (
                 info_after.description.strip() if info_after else None
             ),
+            "timing": {
+                "resolve_seconds": resolve_seconds,
+                "paste_seconds": paste_seconds,
+                "accept_seconds": accept_seconds,
+                "write_seconds": round(time.perf_counter() - write_started_at, 3),
+                "total_seconds": round(time.perf_counter() - total_started_at, 3),
+            },
         }
 
     try:
@@ -1631,7 +956,9 @@ def set_finance_org_by_legacy_control_name(
     scope_hwnd=None,
     accepted_text=None,
 ):
+    total_started_at = time.perf_counter()
     accepted_text = accepted_text or FINANCE_ORG_ACCEPTED_TEXT
+    resolve_started_at = time.perf_counter()
     context, vm_id, owned_contexts, owned_indexes, window_info = (
         find_context_with_window(
             jab,
@@ -1644,6 +971,7 @@ def set_finance_org_by_legacy_control_name(
             scope_hwnd=scope_hwnd,
         )
     )
+    resolve_seconds = round(time.perf_counter() - resolve_started_at, 3)
     if not context:
         return {
             "ok": False,
@@ -1651,11 +979,17 @@ def set_finance_org_by_legacy_control_name(
             "reason": "control not found",
             "control_name": HEADER_SCOPE_ANCHOR_TEXT,
             "scope_hwnd": scope_hwnd,
+            "timing": {
+                "resolve_seconds": resolve_seconds,
+                "total_seconds": round(time.perf_counter() - total_started_at, 3),
+            },
         }
     path = "0" + "".join(f".{index}" for index in owned_indexes)
     try:
+        write_started_at = time.perf_counter()
         info_before = jab.get_context_info(vm_id, context)
         before = jab.get_text_context_value(vm_id, context)
+        paste_started_at = time.perf_counter()
         paste_result = guarded_paste_header_value(
             jab,
             vm_id,
@@ -1663,10 +997,16 @@ def set_finance_org_by_legacy_control_name(
             window_info,
             value,
         )
+        paste_seconds = round(time.perf_counter() - paste_started_at, 3)
         set_text_result = None
         if not paste_result.get("ok"):
+            set_text_started_at = time.perf_counter()
             set_ok = bool(jab.set_text_context(vm_id, context, value))
-            set_text_result = {"ok": set_ok, "method": "setTextContents"}
+            set_text_result = {
+                "ok": set_ok,
+                "method": "setTextContents",
+                "seconds": round(time.perf_counter() - set_text_started_at, 3),
+            }
         info_after = jab.get_context_info(vm_id, context)
         after = jab.get_text_context_value(vm_id, context)
         backend_state = describe_backend_field_state(
@@ -1675,6 +1015,7 @@ def set_finance_org_by_legacy_control_name(
             value=value,
             accepted_text=accepted_text,
         )
+        accept_started_at = time.perf_counter()
         acceptance_probe = confirm_finance_org_accepted(
             jab,
             vm_id,
@@ -1683,6 +1024,7 @@ def set_finance_org_by_legacy_control_name(
             value=value,
             scope_hwnd=scope_hwnd,
         )
+        accept_seconds = round(time.perf_counter() - accept_started_at, 3)
         accepted = bool(acceptance_probe.get("accepted"))
         write_ok = bool(paste_result.get("ok") or (set_text_result or {}).get("ok"))
         return {
@@ -1713,6 +1055,13 @@ def set_finance_org_by_legacy_control_name(
             "description_after": (
                 info_after.description.strip() if info_after else None
             ),
+            "timing": {
+                "resolve_seconds": resolve_seconds,
+                "paste_seconds": paste_seconds,
+                "accept_seconds": accept_seconds,
+                "write_seconds": round(time.perf_counter() - write_started_at, 3),
+                "total_seconds": round(time.perf_counter() - total_started_at, 3),
+            },
         }
     finally:
         jab.release_contexts(vm_id, owned_contexts)
@@ -2091,7 +1440,8 @@ def split_header_path(path):
 
 def accepted_text_from_backend(backend_state, raw_value=None, preferred=None):
     if preferred:
-        return str(preferred).strip()
+        values = accepted_text_values(preferred)
+        return "/".join(values)
     for key in ("description", "text", "name"):
         text = str((backend_state or {}).get(key) or "").strip()
         if text and text != str(raw_value or "").strip():
@@ -2576,45 +1926,6 @@ def find_context_with_window(
     return None, None, [], [], {}
 
 
-def post_key_to_hwnd(hwnd, key):
-    if os.name != "nt" or not hwnd:
-        return False
-    key_map = {
-        "enter": 0x0D,
-        "tab": 0x09,
-    }
-    vk = key_map.get(str(key).lower())
-    if not vk:
-        return False
-    user32 = ctypes.windll.user32
-    hwnd = wintypes.HWND(int(hwnd))
-    WM_KEYDOWN = 0x0100
-    WM_KEYUP = 0x0101
-    down_ok = bool(user32.PostMessageW(hwnd, WM_KEYDOWN, vk, 0))
-    up_ok = bool(user32.PostMessageW(hwnd, WM_KEYUP, vk, 0))
-    return down_ok and up_ok
-
-
-def do_context_commit_action(jab, vm_id, context):
-    actions = jab.get_action_names(vm_id, context)
-    preferred = ("确认", "确定", "提交", "单击", "click", "press")
-    for action_name in preferred:
-        if action_name not in actions:
-            continue
-        try:
-            ok = bool(jab.do_action(vm_id, context, action_name=action_name))
-        except Exception as exc:
-            return {
-                "ok": False,
-                "action": action_name,
-                "exception": repr(exc),
-                "actions": actions,
-            }
-        if ok:
-            return {"ok": True, "action": action_name, "actions": actions}
-    return {"ok": False, "reason": "no commit action", "actions": actions}
-
-
 def describe_backend_field_state(info, text, value=None, accepted_text=None):
     name = info.name.strip() if info else ""
     description = info.description.strip() if info else ""
@@ -2630,6 +1941,29 @@ def describe_backend_field_state(info, text, value=None, accepted_text=None):
     }
 
 
+def currency_acceptance_texts(*values):
+    result = []
+    for value in values:
+        text = str(value or "").strip()
+        if not text:
+            continue
+        upper = text.upper()
+        candidates = [text]
+        if upper == "CNY":
+            candidates.extend(["人民币", "CNY"])
+        elif upper in CURRENCY_NAMES:
+            candidates.append(CURRENCY_NAMES[upper])
+        elif text in {"美元", "人民币"}:
+            if text == "美元":
+                candidates.append("USD")
+            if text == "人民币":
+                candidates.append("CNY")
+        for candidate in candidates:
+            if candidate and candidate not in result:
+                result.append(candidate)
+    return result
+
+
 def backend_field_has_written_value(info, text, value=None):
     expected = str(value).strip() if value is not None else ""
     if not info or not expected:
@@ -2643,13 +1977,20 @@ def backend_field_accepts(info, text, value=None, accepted_text=None):
     if not info:
         return False
     if accepted_text:
-        return context_contains(info, accepted_text)
+        return any(context_contains(info, item) for item in accepted_text_values(accepted_text))
     expected = str(value).strip() if value is not None else ""
     actual_text = str(text or "").strip()
     description = info.description.strip()
     if expected and (actual_text == expected or description == expected):
         return True
     return bool(description)
+
+
+def accepted_text_values(accepted_text):
+    if isinstance(accepted_text, (list, tuple, set)):
+        return [str(item).strip() for item in accepted_text if str(item or "").strip()]
+    text = str(accepted_text or "").strip()
+    return [text] if text else []
 
 
 def context_contains(info, expected_text):
@@ -2669,115 +2010,3 @@ def context_contains(info, expected_text):
         if part
     )
     return expected in haystack
-
-
-def fill_detail_line(jab, business):
-    steps = []
-    for col, name, value in [
-        (1, "收款业务类型", business["main_business_type"]),
-        (4, "收款银行账户", business["bank_account"]),
-        (5, "科目", business["main_subject"]),
-        (7, "贷方原币金额", business["amount"]),
-        (11, "结算方式", business["settlement"]),
-    ]:
-        steps.append(fill_cell(jab, 0, col, name, value))
-    return steps
-
-
-def fill_cell(jab, row, col, name, value):
-    attempts = []
-    for mode, kwargs in [
-        (
-            "direct",
-            {"set_cell_text": value, "commit_key": "none", "focus_target": "cell"},
-        ),
-    ]:
-        try:
-            result = select_cell(
-                jab,
-                table_index=0,
-                row=row,
-                col=col,
-                window_title=None,
-                locate_body_table=True,
-                wait=0.35,
-                **kwargs,
-            )
-        except Exception as exc:
-            result = {"ok": False, "exception": repr(exc)}
-        attempts.append({"mode": mode, "result": compact_selection_result(result)})
-        if cell_changed(result, value):
-            break
-        time.sleep(0.2)
-    ok = any(cell_changed(attempt["result"], value) for attempt in attempts)
-    return {
-        "step": "detail_cell",
-        "ok": ok,
-        "blocked": not ok,
-        "reason": (
-            None
-            if ok
-            else "backend cell input failed; global keyboard input is disabled"
-        ),
-        "row": row,
-        "col": col,
-        "name": name,
-        "value": value,
-        "attempts": attempts,
-    }
-
-
-def compact_selection_result(result):
-    if not isinstance(result, dict):
-        return result
-    keep = {
-        key: result.get(key)
-        for key in (
-            "ok",
-            "reason",
-            "row_count",
-            "col_count",
-            "child_index",
-            "selected_before",
-            "selected_after",
-            "cell_text_before",
-            "cell_text_after",
-            "edit",
-            "exception",
-        )
-        if key in result
-    }
-    return keep
-
-
-def cell_changed(result, value):
-    after = str((result or {}).get("cell_text_after") or "")
-    return (
-        after
-        and after != str((result or {}).get("cell_text_before") or "")
-        and str(value) in after
-    )
-
-
-def read_body_table(jab, step, scope_hwnd=None):
-    located = locate_receipt_body_table(jab, max_rows=3, scope_hwnd=scope_hwnd)
-    best = located.get("best")
-    if not best:
-        return {
-            "step": step,
-            "ok": False,
-            "reason": "body table not found",
-            "candidates": located.get("candidates", [])[:3],
-        }
-    return {
-        "step": step,
-        "ok": True,
-        "path": best.get("path"),
-        "row_count": best.get("row_count"),
-        "col_count": best.get("col_count"),
-        "rows": best.get("rows"),
-    }
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

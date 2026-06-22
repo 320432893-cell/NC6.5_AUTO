@@ -8,17 +8,14 @@ import time
 from tools.receipt_body_table_locator import locate_receipt_body_table_cached
 from tools.receipt_detail_fields import (
     ACCOUNT_COL,
-    BUSINESS_TYPE_COL,
     FEE_FIELDS,
     SUBJECT_COL,
     build_fee_business,
     cells_from_steps,
-    field_matches,
     normalize_text,
 )
 from tools.receipt_detail_reader import (
     read_located_body_table,
-    read_row_cells,
     wait_body_row_count,
 )
 from tools.receipt_detail_row_cleanup import (
@@ -101,41 +98,6 @@ def located_with_row_count(located, row_count):
     if row_count:
         best["row_count"] = int(row_count)
     return {**located, "best": best}
-
-
-def read_fee_row_overwrite_guard(jab, located, row_index, fee_business):
-    snapshot, cells = read_row_cells(jab, row_index, located)
-    if not snapshot.get("ok"):
-        return {
-            "ok": False,
-            "changed": False,
-            "reason": f"覆盖手续费行前无法读取第 {row_index + 1} 行：{snapshot.get('reason')}",
-            "snapshot": snapshot,
-        }
-    business_type = normalize_text(cells.get(str(BUSINESS_TYPE_COL)))
-    subject = normalize_text(cells.get(str(SUBJECT_COL)))
-    empty = not business_type and not subject
-    already_fee = business_type == fee_business["fee_business_type"] and field_matches(
-        subject,
-        fee_business["fee_subject"],
-        "code_prefix",
-    )
-    ok = empty or already_fee
-    return {
-        "ok": ok,
-        "changed": False,
-        "empty": empty,
-        "already_fee": already_fee,
-        "cells": cells,
-        "snapshot": snapshot,
-        "reason": None
-        if ok
-        else (
-            f"第 {row_index + 1} 行已有非手续费业务，拒绝覆盖："
-            f"业务类型={business_type!r}，科目={subject!r}，"
-            f"期望空行或手续费/{fee_business['fee_subject']}"
-        ),
-    }
 
 
 def run_fee_only(

@@ -43,12 +43,10 @@ def build_parser():
     parser.add_argument("--config", default="config.json")
     parser.add_argument(
         "--method",
-        choices=("probe-button", "button", "action-path"),
+        choices=("probe-button", "button"),
         default="probe-button",
         help="How to open the New menu.",
     )
-    parser.add_argument("--path", default=None)
-    parser.add_argument("--title", default=None)
     parser.add_argument("--class-name", default=None)
     parser.add_argument("--name", default="新增")
     parser.add_argument("--role", default=None)
@@ -56,12 +54,6 @@ def build_parser():
     parser.add_argument("--return-timeout", type=float, default=0.2)
     parser.add_argument("--wait", type=float, default=0.8)
     parser.add_argument("--choose-self-made", action="store_true")
-    parser.add_argument(
-        "--self-made-index",
-        type=int,
-        default=None,
-        help="Fallback menu item index when the menu item has no readable name.",
-    )
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--summary", action="store_true")
     return parser
@@ -69,10 +61,6 @@ def build_parser():
 
 def main():
     args = build_parser().parse_args()
-    if args.method == "action-path" and not args.path:
-        raise SystemExit("--path is required with --method action-path")
-    if args.choose_self_made and args.self_made_index is None:
-        args.self_made_index = 0
 
     report = run(args)
     if args.summary:
@@ -86,6 +74,7 @@ def main():
             0
             if report.get("open", {}).get("ok")
             and report.get("choose_self_made", {}).get("ok")
+            and report.get("entry_state", {}).get("ok")
             else 1
         )
     return 0 if report.get("open", {}).get("ok") else 1
@@ -135,7 +124,7 @@ def run(args, jab=None, before=None, buttons=None):
             }
         if before is None:
             before = measure(
-                timings, "new-probe.collect-before", collect_receipt_new_windows, jab
+                timings, "new-probe.collect-before", collect_receipt_new_baseline, jab
             )
         else:
             timings.append({"name": "new-probe.collect-before", "seconds": 0.0})
@@ -230,29 +219,25 @@ def run(args, jab=None, before=None, buttons=None):
                 choose_self_made_menu_item,
                 jab,
                 after_open,
-                args.self_made_index,
                 popup_hwnd=tracked_popup.get("hwnd") if tracked_popup else None,
             )
-            if choose_report.get("ok"):
-                if entry_wait is None:
-                    entry_wait = measure(
-                        timings,
-                        "new-probe.entry-context-snapshot",
-                        collect_entry_context_snapshot,
-                        jab,
-                    )
-                    after_choose = entry_wait.get("windows") or []
-            if (
-                tracked_popup
-                and choose_report.get("ok")
-                and (entry_wait or {}).get("ok")
-            ):
+            if tracked_popup and choose_report.get("ok"):
                 popup_cleanup = measure(
                     timings,
                     "new-probe.popup-cleanup",
                     close_popup_hwnd,
                     tracked_popup["hwnd"],
                 )
+            if choose_report.get("ok"):
+                entry_wait = measure(
+                    timings,
+                    "new-probe.wait-entry-ready",
+                    wait_self_made_entry_ready,
+                    jab,
+                    popup_hwnd=tracked_popup.get("hwnd") if tracked_popup else None,
+                    timeout=max(float(args.wait or 0), 0.8),
+                )
+                after_choose = entry_wait.get("windows") or []
         elif args.choose_self_made:
             choose_report = {
                 "ok": False,
@@ -285,11 +270,31 @@ def run(args, jab=None, before=None, buttons=None):
         "windows_after_open": after_open,
         "choose_self_made": choose_report,
         "windows_after_choose": after_choose,
+        "entry_context_snapshot": summarize_entry_context_snapshot(entry_wait),
         "entry_state": entry_state,
         "receipt_parent_guard": parent_guard,
         "timings": timings,
     }
     return report
+
+
+def summarize_entry_context_snapshot(entry_wait):
+    if not entry_wait:
+        return None
+    anchor = entry_wait.get("anchor") or {}
+    quick_anchor = entry_wait.get("quick_anchor") or {}
+    return {
+        "ok": bool(entry_wait.get("ok")),
+        "confirmed": bool(entry_wait.get("confirmed")),
+        "method": entry_wait.get("method"),
+        "anchor_ok": bool(anchor.get("ok")),
+        "anchor_reason": anchor.get("reason"),
+        "scope_hwnd": anchor.get("scope_hwnd"),
+        "dynamic_index": anchor.get("dynamic_index"),
+        "quick_anchor_ok": bool(quick_anchor.get("ok")),
+        "quick_anchor_reason": quick_anchor.get("reason"),
+        "quick_anchor_candidate_count": len(quick_anchor.get("candidates") or []),
+    }
 
 
 def guard_receipt_new_parent_page(jab, config):
@@ -350,31 +355,6 @@ def open_new_menu_with_known_buttons(
     return open_new_menu(jab, args)
 
 
-def open_new_menu_with_ctrl_n(foreground):
-    guard = foreground_nc_guard(foreground)
-    if not guard.get("ok"):
-        return {
-            "ok": False,
-            "method": "ctrl+n-fallback",
-            "reason": "foreground is not NC; Ctrl+N not sent",
-            "foreground_guard": guard,
-        }
-    try:
-        send_ctrl_n()
-    except Exception as exc:
-        return {
-            "ok": False,
-            "method": "ctrl+n-fallback",
-            "reason": f"Ctrl+N send failed: {exc!r}",
-            "foreground_guard": guard,
-        }
-    return {
-        "ok": True,
-        "method": "ctrl+n-fallback",
-        "foreground_guard": guard,
-    }
-
-
 def foreground_nc_guard(foreground):
     if os.name != "nt":
         return {"ok": False, "reason": "Windows only", "foreground": foreground}
@@ -395,20 +375,6 @@ def foreground_nc_guard(foreground):
     }
 
 
-def send_ctrl_n():
-    user32 = ctypes.windll.user32
-    vk_control = 0x11
-    vk_n = 0x4E
-    try:
-        user32.keybd_event(vk_control, 0, 0, 0)
-        time.sleep(0.02)
-        user32.keybd_event(vk_n, 0, 0, 0)
-        time.sleep(0.03)
-        user32.keybd_event(vk_n, 0, 2, 0)
-    finally:
-        user32.keybd_event(vk_control, 0, 2, 0)
-
-
 def open_new_menu(jab, args):
     if args.method == "probe-button":
         return {"ok": True, "method": "probe-button"}
@@ -416,27 +382,21 @@ def open_new_menu(jab, args):
         foreground = foreground_info()
         buttons = find_new_buttons(jab, args.name, args.role, args.class_name)
         if not buttons:
-            fallback = open_new_menu_with_ctrl_n(foreground)
-            fallback.update({"button_reason": "new button not found"})
-            return fallback
+            return {
+                "ok": False,
+                "method": "button",
+                "reason": "未找到新增按钮；正式收款流程不回退 Ctrl+N",
+                "button_reason": "new button not found",
+                "foreground_guard": foreground_nc_guard(foreground),
+            }
         return open_new_menu_with_known_buttons(
             jab, args, buttons, all_buttons=buttons, foreground=foreground
         )
-
-    ok = jab.do_action_by_path(
-        args.path,
-        title=args.title,
-        class_name=args.class_name,
-        name=args.name,
-        role=args.role,
-        action_name=args.action,
-        wait=0,
-        timeout=2.0,
-        require_showing=False,
-        require_valid_bounds=False,
-        cleanup_blank_awt=False,
-    )
-    return {"ok": bool(ok), "method": "action-path", "path": args.path}
+    return {
+        "ok": False,
+        "method": args.method,
+        "reason": "unsupported new-menu method",
+    }
 
 
 def wait_for_self_made_popup(jab, before, timeout=0.8, interval=0.08):
@@ -471,18 +431,142 @@ def wait_for_self_made_popup(jab, before, timeout=0.8, interval=0.08):
     }
 
 
-def collect_entry_context_snapshot(jab):
-    windows = collect_receipt_new_windows_compat(jab, max_depth=0, max_children=0)
-    anchor = resolve_current_canvas_header_anchor(jab, windows)
+def wait_self_made_entry_ready(jab, popup_hwnd=None, timeout=0.8, interval=0.08):
+    start = time.perf_counter()
+    deadline = start + max(float(timeout or 0), 0.0)
+    interval = max(float(interval or 0.08), 0.02)
+    attempts = []
+    last = None
+    while True:
+        last = collect_entry_context_snapshot(jab, popup_hwnd=popup_hwnd)
+        attempts.append(summarize_entry_context_snapshot(last))
+        state = last.get("state") or {}
+        if last.get("confirmed") and state.get("ok") and not last.get("popup_visible"):
+            return {
+                **last,
+                "ok": True,
+                "wait_seconds": elapsed(start),
+                "attempts": attempts,
+            }
+        remaining = deadline - time.perf_counter()
+        if remaining <= 0:
+            return {
+                **(last or {}),
+                "ok": False,
+                "wait_seconds": elapsed(start),
+                "attempts": attempts,
+                "reason": (
+                    "自制菜单已点击，但未确认 popup 关闭且进入新建编辑态"
+                ),
+            }
+        time.sleep(min(interval, remaining))
+
+
+def collect_entry_context_snapshot(jab, popup_hwnd=None):
+    foreground = foreground_info()
+    quick_anchor = resolve_foreground_canvas_header_anchor(jab, foreground)
+    if quick_anchor.get("ok"):
+        popup_state = describe_popup_visibility(popup_hwnd)
+        popup_visible = bool(popup_state.get("visible")) if popup_hwnd else False
+        parent_new_state = detect_parent_new_ready_light(jab, foreground)
+        parent_new_visible = bool(parent_new_state.get("ok"))
+        entry_ready = bool(
+            quick_anchor.get("ok") and not popup_visible and not parent_new_visible
+        )
+        state_reason = build_entry_state_reason(
+            anchor_ok=quick_anchor.get("ok"),
+            popup_visible=popup_visible,
+            parent_new_visible=parent_new_visible,
+            edit_buttons_ok=False,
+        )
+        state = {
+            "ok": entry_ready,
+            "edit_buttons_ok": False,
+            "partial_ok": bool(quick_anchor.get("ok")),
+            "names": [],
+            "hits": [
+                {
+                    "window": quick_anchor.get("window") or {},
+                    "control": {
+                        "path": quick_anchor.get("label_path"),
+                        "role": "label",
+                        "name": (
+                            (quick_anchor.get("anchor_text") or {}).get("name") or ""
+                        ),
+                        "description": (
+                            (quick_anchor.get("anchor_text") or {}).get("description")
+                            or ""
+                        ),
+                        "dynamic_index": quick_anchor.get("dynamic_index"),
+                        "dynamic_prefix": quick_anchor.get("dynamic_prefix"),
+                    },
+                }
+            ],
+            "reason": state_reason,
+            "parent_new_state": parent_new_state,
+        }
+        anchor_hit = state["hits"][0]["control"]
+        windows = [
+            {
+                "hwnd": (quick_anchor.get("window") or {}).get("hwnd"),
+                "title": (quick_anchor.get("window") or {}).get("title"),
+                "class_name": (quick_anchor.get("window") or {}).get("class_name"),
+                "visible": (quick_anchor.get("window") or {}).get("visible"),
+                "root_hwnd": (quick_anchor.get("window") or {}).get("root_hwnd"),
+                "is_foreground_root": (
+                    (quick_anchor.get("window") or {}).get("is_foreground_root")
+                ),
+                "is_java": True,
+                "controls": [anchor_hit],
+                "all_controls": [anchor_hit],
+            }
+        ]
+        anchor = quick_anchor
+        method = "foreground-canvas-anchor"
+        return {
+            "ok": True,
+            "confirmed": entry_ready,
+            "method": method,
+            "state": state,
+            "windows": windows,
+            "anchor": anchor,
+            "quick_anchor": quick_anchor,
+            "foreground": foreground,
+            "popup": popup_state,
+            "popup_visible": popup_visible,
+        }
+    else:
+        windows = collect_receipt_new_windows_compat(jab, max_depth=8, max_children=200)
+        annotate_foreground_root(windows, foreground)
+        anchor = resolve_current_canvas_header_anchor(jab, windows, foreground)
+        method = "window-snapshot-anchor"
+    state = detect_self_made_entry_state(windows)
+    parent_new_state = detect_parent_new_ready_in_windows(windows, foreground)
+    popup_state = describe_popup_visibility(popup_hwnd)
+    popup_visible = bool(popup_state.get("visible")) if popup_hwnd else False
+    parent_new_visible = bool(parent_new_state.get("ok"))
+    entry_ready = bool(anchor.get("ok") and not popup_visible and not parent_new_visible)
+    if entry_ready and state.get("ok"):
+        state_reason = "编辑态按钮和财务组织(O)锚点均已确认，popup 已关闭，父页新增不可用"
+    elif entry_ready:
+        state_reason = "财务组织(O)锚点已确认，popup 已关闭，父页新增不可用"
+    elif popup_visible:
+        state_reason = "自制菜单 popup 仍可见，暂不写入"
+    elif parent_new_visible:
+        state_reason = "父页新增按钮仍可用，暂不认为已进入新建录入态"
+    elif not state.get("ok"):
+        state_reason = "未确认保存/暂存/取消编辑态按钮齐全"
+    else:
+        state_reason = "未确认财务组织(O)锚点"
     state = {
-        "ok": False,
+        **state,
+        "ok": entry_ready,
+        "edit_buttons_ok": bool(state.get("ok")),
         "partial_ok": bool(anchor.get("ok")),
-        "names": [],
-        "hits": [],
-        "reason": "self-made action succeeded; header 财务组织(O) anchor will confirm entry scope",
+        "reason": state_reason,
+        "parent_new_state": parent_new_state,
     }
     if anchor.get("ok"):
-        state["reason"] = "财务组织(O) anchor resolved in current canvas"
         state["hits"].append(
             {
                 "window": anchor.get("window") or {},
@@ -500,16 +584,166 @@ def collect_entry_context_snapshot(jab):
         )
     return {
         "ok": True,
-        "confirmed": bool(anchor.get("ok")),
+        "confirmed": entry_ready,
+        "method": method,
         "state": state,
         "windows": windows,
         "anchor": anchor,
+        "quick_anchor": quick_anchor,
+        "foreground": foreground,
+        "popup": popup_state,
+        "popup_visible": popup_visible,
     }
 
 
-def resolve_current_canvas_header_anchor(jab, windows):
+def build_entry_state_reason(
+    anchor_ok=False,
+    popup_visible=False,
+    parent_new_visible=False,
+    edit_buttons_ok=False,
+):
+    if anchor_ok and not popup_visible and not parent_new_visible:
+        if edit_buttons_ok:
+            return "编辑态按钮和财务组织(O)锚点均已确认，popup 已关闭，父页新增不可用"
+        return "财务组织(O)锚点已确认，popup 已关闭，父页新增不可用"
+    if popup_visible:
+        return "自制菜单 popup 仍可见，暂不写入"
+    if parent_new_visible:
+        return "父页新增按钮仍可用，暂不认为已进入新建录入态"
+    if not edit_buttons_ok:
+        return "未确认保存/暂存/取消编辑态按钮齐全"
+    return "未确认财务组织(O)锚点"
+
+
+def detect_parent_new_ready_light(jab, foreground=None):
+    foreground = foreground or foreground_info()
+    windows = []
+    fg_root = (foreground or {}).get("root")
+    if os.name == "nt" and hasattr(ctypes, "WinDLL") and fg_root:
+        for hwnd, title, class_name, pid, visible in enum_windows(include_children=True):
+            if class_name != "SunAwtFrame" or not visible:
+                continue
+            if root_hwnd(hwnd) != fg_root:
+                continue
+            if not jab.dll.isJavaWindow(hwnd):
+                continue
+            window = {
+                "hwnd": int(hwnd),
+                "title": title,
+                "class_name": class_name,
+                "pid": pid,
+                "visible": visible,
+                "is_java": True,
+                "root_hwnd": int(fg_root),
+                "is_foreground_root": True,
+                "root": None,
+                "controls": [],
+                "all_controls": [],
+            }
+            collect_window_controls_limited(
+                jab, window, max_depth=25, max_children=1000
+            )
+            windows.append(window)
+    buttons = find_named_controls_in_windows(
+        windows,
+        "新增",
+        role=None,
+        class_name="SunAwtFrame",
+        require_action=True,
+    )
+    annotate_foreground_root_for_targets(buttons, foreground)
+    usable = filter_usable_new_buttons(buttons, foreground)
+    return {
+        "ok": bool(usable),
+        "usable_new_button_count": len(usable),
+        "candidate_count": len(buttons),
+        "method": "light-foreground-scan",
+        "usable_new_buttons": [
+            {
+                "window": item.get("window"),
+                "control": {
+                    key: (item.get("control") or {}).get(key)
+                    for key in ("name", "description", "role", "states", "path")
+                },
+            }
+            for item in usable[:3]
+        ],
+    }
+
+
+def detect_parent_new_ready_in_windows(windows, foreground=None):
+    buttons = find_named_controls_in_windows(
+        windows,
+        "新增",
+        role=None,
+        class_name="SunAwtFrame",
+        require_action=True,
+    )
+    annotate_foreground_root_for_targets(buttons, foreground or foreground_info())
+    usable = filter_usable_new_buttons(buttons, foreground or foreground_info())
+    return {
+        "ok": bool(usable),
+        "usable_new_button_count": len(usable),
+        "candidate_count": len(buttons),
+        "usable_new_buttons": [
+            {
+                "window": item.get("window"),
+                "control": {
+                    key: (item.get("control") or {}).get(key)
+                    for key in ("name", "description", "role", "states", "path")
+                },
+            }
+            for item in usable[:3]
+        ],
+    }
+
+
+def describe_popup_visibility(hwnd):
+    if os.name != "nt" or not hasattr(ctypes, "windll") or not hwnd:
+        return {"ok": False, "reason": "missing hwnd", "hwnd": hwnd}
+    return describe_hwnd(ctypes.windll.user32, wintypes.HWND(int(hwnd)))
+
+
+def resolve_foreground_canvas_header_anchor(jab, foreground):
+    fg_root = (foreground or {}).get("root")
+    candidates = []
+    if os.name != "nt" or not hasattr(ctypes, "WinDLL") or not fg_root:
+        return {"ok": False, "reason": "foreground root not available"}
+    for hwnd, title, class_name, pid, visible in enum_windows(include_children=True):
+        if class_name != "SunAwtCanvas" or not visible:
+            continue
+        if root_hwnd(hwnd) != fg_root:
+            continue
+        if not jab.dll.isJavaWindow(hwnd):
+            continue
+        window = {
+            "hwnd": int(hwnd),
+            "title": title,
+            "class_name": class_name,
+            "pid": pid,
+            "visible": visible,
+            "is_java": True,
+            "root_hwnd": fg_root,
+            "is_foreground_root": True,
+            "root": None,
+            "controls": [],
+            "all_controls": [],
+        }
+        candidates.append(window)
+        attempt = resolve_canvas_header_anchor(jab, int(hwnd), window, timeout=0.12)
+        if attempt.get("ok"):
+            return {**attempt, "candidates": candidates}
+    return {
+        "ok": False,
+        "reason": "foreground SunAwtCanvas 财务组织(O) anchor not resolved",
+        "foreground": foreground,
+        "candidates": candidates,
+    }
+
+
+def resolve_current_canvas_header_anchor(jab, windows, foreground=None):
     canvas_hwnds = [
-        int(window["hwnd"])
+        (int(window["hwnd"]), window)
         for window in windows or []
         if window.get("is_java")
         and window.get("visible")
@@ -518,13 +752,18 @@ def resolve_current_canvas_header_anchor(jab, windows):
     ]
     if not canvas_hwnds:
         return {"ok": False, "reason": "current SunAwtCanvas not found"}
-    from tools.receipt_self_made_fill_trial import (
-        resolve_receipt_header_anchor_in_canvas,
+    fg_root = (foreground or {}).get("root")
+    canvas_hwnds.sort(
+        key=lambda item: (
+            0
+            if fg_root
+            and (item[1].get("root_hwnd") or root_hwnd(item[0])) == fg_root
+            else 1
+        )
     )
-
     attempts = []
-    for hwnd in canvas_hwnds:
-        attempt = resolve_receipt_header_anchor_in_canvas(jab, hwnd, timeout=0.4)
+    for hwnd, window in canvas_hwnds:
+        attempt = resolve_canvas_header_anchor(jab, hwnd, window, timeout=0.2)
         attempts.append(attempt)
         if attempt.get("ok"):
             return attempt
@@ -533,6 +772,27 @@ def resolve_current_canvas_header_anchor(jab, windows):
         "reason": "财务组织(O) anchor not resolved in current canvas",
         "attempts": attempts,
     }
+
+
+def resolve_canvas_header_anchor(jab, hwnd, window=None, timeout=0.2):
+    from tools.receipt_self_made_fill_trial import (
+        resolve_receipt_header_anchor_in_canvas,
+    )
+
+    attempt = resolve_receipt_header_anchor_in_canvas(jab, hwnd, timeout=timeout)
+    if window is not None:
+        attempt["window"] = {
+            key: window.get(key)
+            for key in (
+                "hwnd",
+                "title",
+                "class_name",
+                "visible",
+                "root_hwnd",
+                "is_foreground_root",
+            )
+        }
+    return attempt
 
 
 def collect_new_visible_popup_windows(jab, before, max_depth=8, max_children=120):
@@ -587,6 +847,67 @@ def collect_new_visible_popup_windows(jab, before, max_depth=8, max_children=120
             continue
         windows.append(window)
     return windows
+
+
+def collect_receipt_new_baseline(jab):
+    """Collect enough state for New-button lookup and later popup diffing."""
+    foreground = foreground_info()
+    windows = []
+    for hwnd, title, class_name, pid, visible in enum_windows(include_children=True):
+        if not class_name.startswith(("SunAwt", "Yonyou")):
+            continue
+        is_java = bool(jab.dll.isJavaWindow(hwnd))
+        root = root_hwnd(hwnd)
+        window = {
+            "hwnd": int(hwnd),
+            "title": title,
+            "class_name": class_name,
+            "pid": pid,
+            "visible": visible,
+            "is_java": is_java,
+            "root_hwnd": root,
+            "is_foreground_root": bool(foreground and root == foreground.get("root")),
+            "root": None,
+            "controls": [],
+            "all_controls": [],
+        }
+        windows.append(window)
+        if not is_java or not visible:
+            continue
+        if class_name == "SunAwtFrame" and window["is_foreground_root"]:
+            collect_window_controls_limited(
+                jab, window, max_depth=25, max_children=1000
+            )
+        elif class_name == "SunAwtWindow":
+            collect_window_controls_limited(jab, window, max_depth=8, max_children=120)
+    return windows
+
+
+def collect_window_controls_limited(jab, window, max_depth=8, max_children=120):
+    hwnd = window.get("hwnd")
+    if not hwnd:
+        return window
+    vm_id = ctypes.c_long()
+    root_context = JOBJECT()
+    if not jab.dll.getAccessibleContextFromHWND(
+        int(hwnd),
+        ctypes.byref(vm_id),
+        ctypes.byref(root_context),
+    ):
+        return window
+    window["root"] = summarize_context(jab, vm_id.value, root_context.value, "0")
+    collect_controls(
+        jab,
+        vm_id.value,
+        root_context.value,
+        path="0",
+        controls=window["controls"],
+        all_controls=window["all_controls"],
+        depth=0,
+        max_depth=max_depth,
+        max_children=max_children,
+    )
+    return window
 
 
 def collect_receipt_new_windows_compat(jab, **kwargs):
@@ -756,13 +1077,23 @@ def find_named_controls(
     role=None,
     class_name=None,
     require_action=True,
+    max_depth=25,
+    max_children=1000,
+    foreground_only=False,
+    foreground=None,
 ):
     results = []
     name_query = str(name_query or "").lower()
     role = role.lower() if role else None
-    for window in collect_receipt_new_windows(jab, max_depth=25, max_children=1000):
+    foreground = foreground if foreground is not None else foreground_info()
+    for window in collect_receipt_new_windows(
+        jab, max_depth=max_depth, max_children=max_children
+    ):
         if class_name and window.get("class_name") != class_name:
             continue
+        if foreground_only and foreground and foreground.get("root"):
+            if root_hwnd(window.get("hwnd")) != foreground.get("root"):
+                continue
         if not window.get("is_java"):
             continue
         for control in window.get("all_controls", []):
@@ -972,7 +1303,11 @@ def get_action_names(jab, vm_id, context):
     ]
 
 
-def choose_self_made_menu_item(jab, windows, fallback_index, popup_hwnd=None):
+def choose_self_made_menu_item(jab, windows, popup_hwnd=None):
+    direct = choose_self_made_menu_item_direct(jab, popup_hwnd)
+    if direct.get("ok"):
+        return direct
+
     candidates = []
     for window in windows:
         if not window.get("is_java"):
@@ -997,12 +1332,10 @@ def choose_self_made_menu_item(jab, windows, fallback_index, popup_hwnd=None):
     ]
     if named:
         target = named[0]
-    elif fallback_index is not None and 0 <= fallback_index < len(candidates):
-        target = candidates[fallback_index]
     else:
         return {
             "ok": False,
-            "reason": "self-made menu item not found",
+            "reason": "未找到可见命名为【自制】的菜单项；正式收款流程不按序号兜底",
             "candidate_count": len(candidates),
             "candidates": summarize_candidates(candidates),
         }
@@ -1015,6 +1348,7 @@ def choose_self_made_menu_item(jab, windows, fallback_index, popup_hwnd=None):
     )
     return {
         "ok": bool(ok),
+        "method": "menu-scan",
         "target": {
             "window": {
                 key: target["window"].get(key)
@@ -1024,6 +1358,76 @@ def choose_self_made_menu_item(jab, windows, fallback_index, popup_hwnd=None):
         },
         "candidate_count": len(candidates),
         "candidates": summarize_candidates(candidates),
+    }
+
+
+def choose_self_made_menu_item_direct(jab, popup_hwnd=None):
+    if not popup_hwnd:
+        return {"ok": False, "reason": "missing popup hwnd"}
+    popup_state = describe_popup_visibility(popup_hwnd)
+    if not popup_state.get("exists") or not popup_state.get("visible"):
+        return {"ok": False, "reason": "popup not visible", "popup": popup_state}
+    path = "0.0.1.0.0.0"
+    result = jab.find_context_by_path_once(
+        path,
+        scope_hwnd=popup_hwnd,
+        require_showing=True,
+        require_valid_bounds=True,
+    )
+    context, vm_id, owned, _window_info = result
+    if not context:
+        return {
+            "ok": False,
+            "method": "tracked-popup-direct",
+            "reason": "tracked popup self-made path not found",
+            "path": path,
+            "popup": popup_state,
+        }
+    try:
+        info = jab.get_context_info(vm_id, context)
+        control = summarize_info(jab, vm_id, context, info, path) if info else {}
+        if control.get("name") not in SELF_MADE_NAMES:
+            return {
+                "ok": False,
+                "method": "tracked-popup-direct",
+                "reason": "tracked popup direct path is not 自制",
+                "path": path,
+                "control": control,
+                "popup": popup_state,
+            }
+        ok = jab.do_action(
+            vm_id,
+            context,
+            action_name=choose_click_action(control.get("actions", [])),
+            cleanup_blank_awt=False,
+        )
+    finally:
+        jab.release_contexts(vm_id, owned)
+    return {
+        "ok": bool(ok),
+        "method": "tracked-popup-direct",
+        "path": path,
+        "target": {
+            "window": {
+                "hwnd": int(popup_hwnd),
+                "class_name": popup_state.get("class_name"),
+                "title": popup_state.get("title"),
+                "visible": popup_state.get("visible"),
+            },
+            "control": control,
+        },
+        "candidate_count": 1,
+        "candidates": [
+            {
+                "window": {
+                    "hwnd": int(popup_hwnd),
+                    "class_name": popup_state.get("class_name"),
+                    "title": popup_state.get("title"),
+                    "visible": popup_state.get("visible"),
+                },
+                "control": control,
+            }
+        ],
     }
 
 
@@ -1231,6 +1635,7 @@ def summarize_report(report):
             for item in report.get("new_or_changed_after_open", [])[:10]
         ],
         "choose_self_made": summarize_action_report(report.get("choose_self_made")),
+        "entry_context_snapshot": report.get("entry_context_snapshot"),
         "entry_state": report.get("entry_state"),
         "timings": report.get("timings") or [],
     }

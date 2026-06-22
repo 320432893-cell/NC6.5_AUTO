@@ -1,7 +1,10 @@
 import argparse
+import ctypes
 import json
+import os
 import sys
 import time
+from ctypes import wintypes
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -10,9 +13,27 @@ if str(ROOT) not in sys.path:
 
 from core.jab_operator import JABOperator  # noqa: E402
 from core.utils import load_config  # noqa: E402
-from tools.receipt_self_made_fill_trial import post_key_to_hwnd  # noqa: E402
 
 HEADER_FORM_BASE_PATH = "0.0.1.0.0.0.0.2.0.0.0.1.1.0.0.0.0.1.0.2.0.0.0.0.0.0.0"
+
+
+def post_key_to_hwnd(hwnd, key):
+    if os.name != "nt" or not hwnd:
+        return False
+    key_map = {
+        "enter": 0x0D,
+        "tab": 0x09,
+    }
+    vk = key_map.get(str(key).lower())
+    if not vk:
+        return False
+    user32 = ctypes.windll.user32
+    hwnd = wintypes.HWND(int(hwnd))
+    WM_KEYDOWN = 0x0100
+    WM_KEYUP = 0x0101
+    down_ok = bool(user32.PostMessageW(hwnd, WM_KEYDOWN, vk, 0))
+    up_ok = bool(user32.PostMessageW(hwnd, WM_KEYUP, vk, 0))
+    return down_ok and up_ok
 
 
 def main():

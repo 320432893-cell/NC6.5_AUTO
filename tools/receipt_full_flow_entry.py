@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from core.errors import ExcelLockedError  # noqa: E402
 from core.jab_operator import JABOperator  # noqa: E402
 from core.receipt_entry import ReceiptEntryWorkbook  # noqa: E402
 from core.receipt_models import ReceiptBatchResultRow  # noqa: E402
@@ -57,6 +58,7 @@ from tools.receipt_self_made_fill_trial import (  # noqa: E402
 )
 
 BODY_TABLE_SUFFIX = "0.0.0.1.1.0.0.0.0.1.0.2.1.0.0.0.0.0"
+SLOW_STEP_THRESHOLD_SECONDS = 0.5
 
 
 def parse_args(argv=None):
@@ -191,13 +193,29 @@ def main(argv=None):
         print_report(report, args)
         return 2
     recorder.update_counts(total=len(selected_rows), succeeded=0, failed=0, skipped=0)
-    if args.write_plan_sheet:
-        workbook.write_plan_sheet(plan_rows, issues)
-    elif args.write_selected_plan_sheet:
-        workbook.write_plan_sheet(
-            selected_rows,
-            filter_issues_for_rows(issues, selected_rows),
+    try:
+        if args.write_plan_sheet:
+            workbook.write_plan_sheet(plan_rows, issues)
+        elif args.write_selected_plan_sheet:
+            workbook.write_plan_sheet(
+                selected_rows,
+                filter_issues_for_rows(issues, selected_rows),
+            )
+    except ExcelLockedError as exc:
+        reason = user_excel_locked_message(exc)
+        report.update(
+            {
+                "ok": False,
+                "reason": reason,
+                "error_category": "excel_locked",
+                "total_seconds": round(time.perf_counter() - started, 3),
+            }
         )
+        recorder.event("excel-write-failed", reason=reason)
+        recorder.finish("failed", error=reason)
+        write_last_report(report)
+        print_report(report, args)
+        return 1
 
     if not args.json:
         print("收款单完整流程测试入口")
@@ -294,7 +312,10 @@ def main(argv=None):
                 exit_code=exit_code,
             )
         if args.write_selected_plan_sheet:
-            workbook.write_batch_result_sheet(batch_results)
+            try:
+                workbook.write_batch_result_sheet(batch_results)
+            except ExcelLockedError as exc:
+                report["excel_result_write_error"] = user_excel_locked_message(exc)
 
         report["ok"] = exit_code == 0
         report["total_seconds"] = round(time.perf_counter() - started, 3)
@@ -315,6 +336,14 @@ def confirm_save(args):
     answer = input("确认保存请输入 SAVE: ").strip()
     if answer != "SAVE":
         raise SystemExit("用户取消保存")
+
+
+def user_excel_locked_message(exc):
+    return (
+        "Excel 文件无法写入。请先关闭正在打开的 Excel/WPS 文件、关闭资源管理器预览窗格，"
+        "或取消“写入选中计划 Sheet2”后重试；原始错误："
+        f"{exc}"
+    )
 
 
 def select_plan_rows(plan_rows, issues, args):
@@ -401,6 +430,9 @@ def run_one_row(
         entry_scope_hwnd = extract_entry_scope_hwnd(open_step)
         entry_dynamic_index = extract_entry_dynamic_index(open_step)
         entry_anchor_path = extract_entry_anchor_path(open_step)
+        entry_dynamic_index_source = (
+            "entry-state" if entry_dynamic_index is not None else None
+        )
         if entry_scope_hwnd and entry_dynamic_index is None:
             anchor_retry = timings.measure(
                 "header.anchor-retry-current-canvas",
@@ -412,12 +444,20 @@ def run_one_row(
                 timeout=1.2,
                 interval=0.2,
             )
-            row_report["entry_header_anchor_retry"] = anchor_retry
+            row_report["entry_header_anchor_retry"] = {
+                **anchor_retry,
+                "purpose": (
+                    "开单快速确认只提供当前 Canvas；表头 dynamic_index 必须由"
+                    "财务组织(O) 锚点实时解析"
+                )
+            }
             if anchor_retry.get("ok"):
                 entry_dynamic_index = anchor_retry.get("dynamic_index")
+                entry_dynamic_index_source = "header-anchor-retry"
                 entry_anchor_path = anchor_retry.get("label_path") or entry_anchor_path
         row_report["entry_scope_hwnd"] = entry_scope_hwnd
         row_report["entry_dynamic_index"] = entry_dynamic_index
+        row_report["entry_dynamic_index_source"] = entry_dynamic_index_source
         row_report["entry_anchor_path"] = entry_anchor_path
         row_report["locator_policy"] = {
             "header": (
@@ -645,6 +685,8 @@ def run_one_row(
                 jab,
                 located,
                 1,
+                scope_hwnd=entry_scope_hwnd,
+                defer_wait=True,
             )
             if not row_report["extra_row_delete"].get("ok"):
                 _event(
@@ -817,7 +859,7 @@ def run_one_row(
                 "reason": "no-save 模式：已停在保存前，未触发 Ctrl+S",
             }
         row_report["ok"] = True
-        row_report["timings"] = timings.items
+        attach_slow_step_summary(row_report, timings)
         return row_report
     except Exception as exc:
         row_report["exception"] = {
@@ -1088,19 +1130,6 @@ def build_header_scope_for_followup(scope_hwnd, dynamic_index):
         "scope_hwnd": scope_hwnd,
         "dynamic_index": dynamic_index,
         "mode": "provided-canvas-anchor",
-    }
-
-
-def probe_receipt_entry_page(jab):
-    windows = collect_receipt_new_windows(jab)
-    state = detect_self_made_entry_state(windows)
-    scope_hwnd = extract_entry_scope_hwnd({"entry_state": state, "windows": windows})
-    return {
-        "ok": bool(state.get("ok")),
-        "method": "entry-state",
-        "scope_hwnd": scope_hwnd,
-        "windows": windows,
-        "entry_state": state,
     }
 
 
@@ -1457,19 +1486,16 @@ def format_row_failure_reason(report):
     return reason or "录入失败"
 
 
-def save_receipt_by_ctrl_s(jab, scope_hwnd=None, timeout=1.0):
+def save_receipt_by_ctrl_s(
+    jab,
+    scope_hwnd=None,
+    timeout=3.0,
+    min_samples=3,
+    interval=0.1,
+    success_samples=2,
+    min_observe_seconds=0.0,
+):
     page = None
-    if not scope_hwnd:
-        page = probe_receipt_entry_page(jab)
-        if not page.get("ok"):
-            return {
-                "ok": False,
-                "triggered": False,
-                "reason": "Ctrl+S 保存前未确认当前是收款单自制录入页",
-                "page": page,
-            }
-        scope = page.get("scope") or {}
-        scope_hwnd = scope.get("scope_hwnd") or page.get("scope_hwnd")
     if not scope_hwnd:
         return {
             "ok": False,
@@ -1505,12 +1531,31 @@ def save_receipt_by_ctrl_s(jab, scope_hwnd=None, timeout=1.0):
         }
     started = time.perf_counter()
     last_state = None
-    while time.perf_counter() - started < timeout:
+    last_parent_new_state = None
+    samples = []
+    strong_success_streak = 0
+    while True:
+        sample_started = time.perf_counter()
         windows = collect_receipt_new_windows(jab)
         state = detect_self_made_entry_state(windows)
         last_state = state
         parent_new_state = detect_receipt_parent_new_ready(windows)
-        if parent_new_state.get("ok") and not state.get("ok"):
+        last_parent_new_state = parent_new_state
+        strong_success = bool(parent_new_state.get("ok")) and not state.get("ok")
+        strong_success_streak = strong_success_streak + 1 if strong_success else 0
+        sample = {
+            "sample_index": len(samples) + 1,
+            "t": round(time.perf_counter() - started, 3),
+            "collect_seconds": round(time.perf_counter() - sample_started, 3),
+            "new_candidate_count": parent_new_state.get("candidate_count"),
+            "new_usable_count": parent_new_state.get("usable_new_button_count"),
+            "entry_ok": bool(state.get("ok")),
+            "entry_partial_ok": bool(state.get("partial_ok")),
+            "strong_success": strong_success,
+            "strong_success_streak": strong_success_streak,
+        }
+        samples.append(sample)
+        if strong_success_streak >= int(success_samples or 1):
             return {
                 "ok": True,
                 "triggered": True,
@@ -1523,19 +1568,28 @@ def save_receipt_by_ctrl_s(jab, scope_hwnd=None, timeout=1.0):
                     "target_hwnd": target_hwnd,
                 },
                 "seconds": round(time.perf_counter() - started, 3),
+                "samples": samples,
+                "min_samples": int(min_samples),
+                "success_samples": int(success_samples),
+                "timeout": float(timeout),
+                "min_observe_seconds": float(min_observe_seconds),
                 "oracle": {
                     "name": "receipt_parent_new_ready_after_save",
                     "ok": True,
-                    "evidence": "保存后重新检测到收款单录入父页前台【新增】按钮，且保存/暂存/取消三按钮不再同时存在",
+                    "evidence": "保存后连续检测到收款单录入父页前台【新增】按钮可用，且保存/暂存/取消三按钮不再同时存在",
                     "parent_new_state": parent_new_state,
                     "self_made_entry_state": state,
                 },
                 "entry_state": state,
                 "parent_new_state": parent_new_state,
             }
-        time.sleep(0.2)
-    final_windows = collect_receipt_new_windows(jab)
-    parent_new_state = detect_receipt_parent_new_ready(final_windows)
+        elapsed = time.perf_counter() - started
+        enough_samples = len(samples) >= int(min_samples or 0)
+        enough_observe = elapsed >= float(min_observe_seconds or 0)
+        timed_out = elapsed >= float(timeout or 0)
+        if (enough_samples and enough_observe) or timed_out:
+            break
+        time.sleep(float(interval or 0))
     return {
         "ok": False,
         "triggered": True,
@@ -1548,16 +1602,21 @@ def save_receipt_by_ctrl_s(jab, scope_hwnd=None, timeout=1.0):
             "target_hwnd": target_hwnd,
         },
         "seconds": round(time.perf_counter() - started, 3),
+        "samples": samples,
+        "min_samples": int(min_samples),
+        "success_samples": int(success_samples),
+        "timeout": float(timeout),
+        "min_observe_seconds": float(min_observe_seconds),
         "reason": "保存后未确认收款单父页【新增】已恢复，不能证明保存成功",
         "oracle": {
             "name": "receipt_parent_new_ready_after_save",
             "ok": False,
             "evidence": "需要同时满足：前台收款单父页【新增】按钮可用，且保存/暂存/取消三按钮不再同时存在",
-            "parent_new_state": parent_new_state,
+            "parent_new_state": last_parent_new_state,
             "self_made_entry_state": last_state,
         },
         "entry_state": last_state,
-        "parent_new_state": parent_new_state,
+        "parent_new_state": last_parent_new_state,
     }
 
 
@@ -1651,10 +1710,62 @@ def fail(row_report, failed_step, timings, reason):
             "ok": False,
             "failed_step": failed_step,
             "reason": reason,
-            "timings": timings.items,
         }
     )
+    attach_slow_step_summary(row_report, timings)
     return row_report
+
+
+def attach_slow_step_summary(
+    row_report,
+    timings,
+    threshold_seconds=SLOW_STEP_THRESHOLD_SECONDS,
+):
+    timing_items = list(getattr(timings, "items", []) or [])
+    row_report["timings"] = timing_items
+    row_report["slow_step_threshold_seconds"] = float(threshold_seconds)
+    slow_steps = []
+
+    def add_step(name, seconds, source, details=None):
+        try:
+            value = float(seconds)
+        except (TypeError, ValueError):
+            return
+        if value < float(threshold_seconds):
+            return
+        item = {
+            "name": name,
+            "seconds": round(value, 3),
+            "source": source,
+        }
+        if details:
+            item["details"] = details
+        slow_steps.append(item)
+
+    for item in timing_items:
+        add_step(item.get("name"), item.get("seconds"), "row")
+
+    open_step = find_report_step(row_report, "open-self-made")
+    parsed = (open_step or {}).get("parsed") or {}
+    entry_context = parsed.get("entry_context_snapshot")
+    if entry_context:
+        row_report["open_self_made_entry_context"] = entry_context
+    for item in parsed.get("timings") or []:
+        add_step(
+            f"open.self-made/{item.get('name')}",
+            item.get("seconds"),
+            "open.self-made",
+        )
+
+    slow_steps.sort(key=lambda item: item["seconds"], reverse=True)
+    row_report["slow_steps"] = slow_steps[:30]
+
+
+def find_report_step(row_report, name):
+    for step in (row_report or {}).get("steps") or []:
+        if step.get("name") == name:
+            return step
+    return None
 
 
 def summarize_header_failure(header_steps):

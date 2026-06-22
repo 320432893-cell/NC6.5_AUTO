@@ -10,7 +10,7 @@ from tools.receipt_new_probe import (
 )
 
 
-def test_open_self_made_trusts_successful_self_made_action(monkeypatch):
+def test_open_self_made_requires_confirmed_entry_state(monkeypatch):
     payload = {
         "open": {"ok": True},
         "choose_self_made": {"ok": True},
@@ -29,7 +29,7 @@ def test_open_self_made_trusts_successful_self_made_action(monkeypatch):
 
     result = trial.run_receipt_new_probe()
 
-    assert result["ok"] is True
+    assert result["ok"] is False
 
 
 def test_open_self_made_accepts_three_entry_buttons(monkeypatch):
@@ -98,8 +98,8 @@ def test_new_button_priority_prefers_showing_valid_button():
     assert buttons[0] is real
 
 
-def test_self_made_choose_does_not_run_residue_cleanup(monkeypatch):
-    snapshots = {"called": False}
+def test_self_made_choose_cleans_popup_before_entry_wait(monkeypatch):
+    calls = []
     monkeypatch.setattr(receipt_new_probe.os, "name", "nt")
     monkeypatch.setattr(
         receipt_new_probe.ctypes,
@@ -110,7 +110,7 @@ def test_self_made_choose_does_not_run_residue_cleanup(monkeypatch):
     monkeypatch.setattr(
         receipt_new_probe,
         "close_popup_hwnd",
-        lambda hwnd: {"ok": True, "hwnd": hwnd},
+        lambda hwnd: calls.append(("cleanup", hwnd)) or {"ok": True, "hwnd": hwnd},
     )
 
     class FakeJAB:
@@ -128,8 +128,6 @@ def test_self_made_choose_does_not_run_residue_cleanup(monkeypatch):
         {
             "config": "config.json",
             "method": "button",
-            "path": None,
-            "title": None,
             "class_name": None,
             "name": "新增",
             "role": None,
@@ -137,7 +135,6 @@ def test_self_made_choose_does_not_run_residue_cleanup(monkeypatch):
             "return_timeout": 0.2,
             "wait": 0,
             "choose_self_made": True,
-            "self_made_index": 0,
             "json": False,
             "summary": True,
         },
@@ -183,10 +180,10 @@ def test_self_made_choose_does_not_run_residue_cleanup(monkeypatch):
     )
     monkeypatch.setattr(
         receipt_new_probe,
-        "collect_entry_context_snapshot",
-        lambda jab: (
-            snapshots.update(called=True)
-            or {"ok": True, "state": {"ok": False}, "windows": [{"hwnd": 2}]}
+        "wait_self_made_entry_ready",
+        lambda jab, **kwargs: (
+            calls.append(("entry_wait", kwargs.get("popup_hwnd")))
+            or {"ok": True, "state": {"ok": True}, "windows": [{"hwnd": 2}]}
         ),
     )
     monkeypatch.setattr(
@@ -198,7 +195,7 @@ def test_self_made_choose_does_not_run_residue_cleanup(monkeypatch):
     report = receipt_new_probe.run(args)
 
     assert "residue_cleanup" not in report
-    assert snapshots["called"] is True
+    assert calls == [("cleanup", 456), ("entry_wait", 456)]
 
 
 def test_entry_context_snapshot_resolves_header_anchor(monkeypatch):
@@ -262,8 +259,6 @@ def test_new_probe_stops_before_new_when_parent_guard_fails(monkeypatch):
         {
             "config": "config.json",
             "method": "button",
-            "path": None,
-            "title": None,
             "class_name": "SunAwtFrame",
             "name": "新增",
             "role": None,
@@ -271,7 +266,6 @@ def test_new_probe_stops_before_new_when_parent_guard_fails(monkeypatch):
             "return_timeout": 0.2,
             "wait": 0,
             "choose_self_made": True,
-            "self_made_index": 0,
             "json": False,
             "summary": True,
         },
@@ -307,13 +301,7 @@ def test_new_probe_stops_before_new_when_parent_guard_fails(monkeypatch):
 
 
 def test_new_button_path_does_not_fallback_to_ctrl_n(monkeypatch):
-    monkeypatch.setattr(
-        receipt_new_probe,
-        "open_new_menu_with_ctrl_n",
-        lambda _foreground: (_ for _ in ()).throw(
-            AssertionError("正式收款开单不能回退 Ctrl+N")
-        ),
-    )
+    assert not hasattr(receipt_new_probe, "open_new_menu_with_ctrl_n")
 
     report = receipt_new_probe.open_new_menu_with_known_buttons(
         jab=object(),
@@ -388,7 +376,13 @@ def test_header_fill_writes_customer_before_date(monkeypatch):
     )
 
     assert [item[0] for item in calls] == ["财务组织", "客户", "单据日期", "币种", "结算方式"]
-    assert calls[3] == ("币种", "美元", "美元")
+    assert calls[3] == ("币种", "USD", ["USD", "美元"])
+
+
+def test_currency_acceptance_texts_accepts_code_and_chinese_name():
+    assert trial.currency_acceptance_texts("USD", "美元") == ["USD", "美元"]
+    assert trial.currency_acceptance_texts("CNY", "人民币") == ["CNY", "人民币"]
+    assert trial.currency_acceptance_texts("人民币") == ["人民币", "CNY"]
 
 
 def test_header_fill_uses_path_flow_without_background_semantic(monkeypatch):
@@ -446,174 +440,11 @@ def test_header_fill_uses_path_flow_without_background_semantic(monkeypatch):
     assert calls == ["财务组织", "客户", "单据日期", "币种", "结算方式"]
 
 
-def test_probe_header_semantic_field_speed_releases_context(monkeypatch):
-    calls = []
-
-    class FakeJAB:
-        hide_blank_awt_windows_enabled = True
-
-        def __init__(self, config):
-            self.config = config
-
-        def ensure_started(self):
-            calls.append(("ensure",))
-
-        def release_contexts(self, vm_id, contexts):
-            calls.append(("release", vm_id, tuple(contexts)))
-
-        def close(self):
-            calls.append(("close",))
-
-    monkeypatch.setattr(trial, "JABOperator", FakeJAB)
-    monkeypatch.setattr(
-        trial,
-        "find_receipt_header_field_by_semantic_label",
-        lambda _jab, label, timeout=1.5, **_kwargs: {
-            "ok": True,
-            "label": label,
-            "context": object(),
-            "vm_id": 7,
-            "owned_contexts": ["ctx"],
-            "path": "semantic.customer.path",
-            "label_path": "semantic.customer.label",
-            "window": {"hwnd": 123},
-        },
-    )
-
-    result = trial.probe_header_semantic_field_speed(
-        {},
-        "客户",
-        timeout=0.35,
-        repeat=1,
-    )
-
-    assert result["ok"] is True
-    assert result["readonly"] is True
-    assert result["attempts"][0]["path"] == "semantic.customer.path"
-    assert calls == [("ensure",), ("release", 7, ("ctx",)), ("close",)]
-
-
-def test_normalize_header_probe_label_accepts_ascii_keys():
-    assert trial.normalize_header_probe_label("customer") == "客户"
-    assert trial.normalize_header_probe_label("date") == "单据日期"
-    assert trial.normalize_header_probe_label("currency") == "币种"
-    assert trial.normalize_header_probe_label("settlement") == "结算方式"
-    assert trial.normalize_header_probe_label("finance") == "财务组织"
-
-
 def test_customer_name_candidate_rejects_java_object_string():
     assert not trial.is_valid_customer_name_candidate("[Ljava.lang.String;@75acf5a0")
     assert not trial.is_valid_customer_name_candidate("YW00178")
     assert trial.is_valid_customer_name_candidate("SERDIA ELETRONICA INDL LTDA")
     assert trial.is_valid_customer_name_candidate("上海移为通信技术股份有限公司")
-
-
-def test_first_valid_customer_name_prefers_description():
-    result = trial.first_valid_customer_name(
-        [
-            {
-                "source": "path",
-                "path": "customer.path",
-                "description": "[Ljava.lang.String;@75acf5a0",
-                "valid_values": [],
-            },
-            {
-                "source": "path-nearby",
-                "path": "customer.name.path",
-                "description": "SERDIA ELETRONICA INDL LTDA",
-                "valid_values": ["SERDIA ELETRONICA INDL LTDA"],
-            },
-        ]
-    )
-
-    assert result == {
-        "value": "SERDIA ELETRONICA INDL LTDA",
-        "source": "path-nearby",
-        "path": "customer.name.path",
-        "parent_path": None,
-        "field": "description",
-    }
-
-
-def test_resolve_current_header_scope_probe_passes_jab_to_window_collector(
-    monkeypatch,
-):
-    class FakeJAB:
-        pass
-
-    jab = FakeJAB()
-    calls = []
-
-    monkeypatch.setattr(
-        trial,
-        "collect_receipt_new_windows",
-        lambda received_jab: calls.append(received_jab) or [],
-    )
-    monkeypatch.setattr(
-        trial,
-        "detect_self_made_entry_state",
-        lambda _windows: {"ok": False, "hits": []},
-    )
-    monkeypatch.setattr(
-        trial,
-        "infer_receipt_header_scope_by_semantic",
-        lambda _jab, scope_hwnd=None: {
-            "ok": False,
-            "reason": "not found",
-            "scope_hwnd": scope_hwnd,
-        },
-    )
-
-    result = trial.resolve_current_header_scope_for_probe(jab)
-
-    assert calls == [jab]
-    assert result["ok"] is False
-    assert result["semantic_attempt"]["reason"] == "not found"
-
-
-def test_customer_name_readback_report_only_exposes_field_candidates(monkeypatch):
-    class FakeJAB:
-        hide_blank_awt_windows_enabled = True
-
-        def __init__(self, _config):
-            pass
-
-        def ensure_started(self):
-            pass
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(trial, "JABOperator", FakeJAB)
-    monkeypatch.setattr(
-        trial,
-        "resolve_current_header_scope_for_probe",
-        lambda _jab, timeout=None: {
-            "ok": True,
-            "scope_hwnd": 123,
-            "dynamic_index": 5,
-        },
-    )
-    monkeypatch.setattr(
-        trial,
-        "collect_customer_field_candidates_for_scope",
-        lambda *_args, **_kwargs: [
-            {
-                "ok": True,
-                "source": "path",
-                "path": "customer.path",
-                "description": "SERDIA ELETRONICA INDL LTDA",
-                "valid_values": ["SERDIA ELETRONICA INDL LTDA"],
-            }
-        ],
-    )
-
-    report = trial.probe_customer_name_readback({}, timeout=0.35)
-
-    assert report["ok"] is True
-    assert report["best"]["value"] == "SERDIA ELETRONICA INDL LTDA"
-    assert "candidates" not in report
-    assert report["field_candidates"][0]["source"] == "path"
 
 
 def test_header_fill_uses_provided_canvas_scope_when_anchor_matches(monkeypatch):
@@ -1385,24 +1216,6 @@ def test_visible_control_does_not_require_positive_coordinates():
     }
 
     assert is_current_visible_control(control) is True
-
-
-def test_context_commit_action_uses_jab_action():
-    class FakeJAB:
-        def get_action_names(self, vm_id, context):
-            return ["单击"]
-
-        def do_action(self, vm_id, context, action_name=None):
-            self.called = (vm_id, context, action_name)
-            return True
-
-    jab = FakeJAB()
-
-    result = trial.do_context_commit_action(jab, 1, 2)
-
-    assert result["ok"] is True
-    assert result["action"] == "单击"
-    assert jab.called == (1, 2, "单击")
 
 
 def test_header_dynamic_field_records_snapshot_without_blocking_after_guarded_paste(

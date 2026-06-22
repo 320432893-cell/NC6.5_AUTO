@@ -7,7 +7,12 @@ import threading
 import time
 from ctypes import wintypes
 
-from tools.jab_environment import uclient_access_bridge_dll_patterns
+from tools.jab_environment import (
+    access_bridge_dll_name,
+    find_jabswitch,
+    uclient_jre_bin_dirs,
+    uclient_access_bridge_dll_patterns,
+)
 
 
 JOBJECT64 = ctypes.c_longlong
@@ -89,13 +94,45 @@ class AccessibleActionsToDo(ctypes.Structure):
 
 
 def iter_candidate_dlls():
-    dll_name = (
-        "WindowsAccessBridge-64.dll"
-        if platform.architecture()[0] == "64bit"
-        else "WindowsAccessBridge-32.dll"
-    )
+    dll_name = access_bridge_dll_name()
 
     seen = set()
+
+    # UClient's own JRE must win over system-wide Access Bridge DLLs. A stale
+    # C:\Windows\System32 DLL can load successfully while failing to attach to
+    # the running NC Java process.
+    jabswitch = find_jabswitch()
+    preferred_dirs = []
+    if jabswitch:
+        preferred_dirs.append(jabswitch.parent)
+    preferred_dirs.extend(uclient_jre_bin_dirs())
+    java_home = os.environ.get("JAVA_HOME")
+    if java_home:
+        preferred_dirs.append(os.path.join(java_home, "bin"))
+
+    for directory in preferred_dirs:
+        path = os.path.join(str(directory), dll_name)
+        if path not in seen:
+            seen.add(path)
+            yield path
+
+    for pattern in uclient_access_bridge_dll_patterns():
+        for path in glob.glob(pattern):
+            if path not in seen:
+                seen.add(path)
+                yield path
+
+    patterns = [
+        rf"C:\Program Files\Java\*\bin\{dll_name}",
+        rf"C:\Program Files\Eclipse Adoptium\*\bin\{dll_name}",
+        rf"C:\Program Files\Microsoft\jdk-*\bin\{dll_name}",
+        rf"C:\Program Files (x86)\Java\*\bin\{dll_name}",
+    ]
+    for pattern in patterns:
+        for path in glob.glob(pattern):
+            if path not in seen:
+                seen.add(path)
+                yield path
 
     for item in os.environ.get("PATH", "").split(os.pathsep):
         if not item:
@@ -105,27 +142,13 @@ def iter_candidate_dlls():
             seen.add(path)
             yield path
 
-    java_home = os.environ.get("JAVA_HOME")
-    if java_home:
-        path = os.path.join(java_home, "bin", dll_name)
+    for path in (
+        rf"C:\Windows\System32\{dll_name}",
+        rf"C:\Windows\SysWOW64\{dll_name}",
+    ):
         if path not in seen:
             seen.add(path)
             yield path
-
-    patterns = [
-        *uclient_access_bridge_dll_patterns(),
-        rf"C:\Program Files\Java\*\bin\{dll_name}",
-        rf"C:\Program Files\Eclipse Adoptium\*\bin\{dll_name}",
-        rf"C:\Program Files\Microsoft\jdk-*\bin\{dll_name}",
-        rf"C:\Program Files (x86)\Java\*\bin\{dll_name}",
-        rf"C:\Windows\System32\{dll_name}",
-        rf"C:\Windows\SysWOW64\{dll_name}",
-    ]
-    for pattern in patterns:
-        for path in glob.glob(pattern):
-            if path not in seen:
-                seen.add(path)
-                yield path
 
 
 def load_access_bridge(dll_path=None):
