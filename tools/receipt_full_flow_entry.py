@@ -46,6 +46,7 @@ from tools.receipt_new_probe import (  # noqa: E402
 )
 from tools.receipt_post_save_query import run_post_save_batch_query  # noqa: E402
 from tools.receipt_self_made_fill_trial import (  # noqa: E402
+    HEADER_SCOPE_ANCHOR_LABEL,
     fill_header,
     find_receipt_header_field_by_dynamic_path,
     is_valid_customer_name_candidate,
@@ -479,6 +480,24 @@ def run_one_row(
                     entry_anchor_path = (
                         anchor_retry.get("label_path") or entry_anchor_path
                     )
+                    if entry_dynamic_index is not None:
+                        try:
+                            setattr(
+                                jab,
+                                "_receipt_header_scope_cache",
+                                {
+                                    "ok": True,
+                                    "scope_hwnd": entry_scope_hwnd,
+                                    "mode": "header-anchor-retry-current-canvas",
+                                    "dynamic_index": entry_dynamic_index,
+                                    "dynamic_prefix": anchor_retry.get("dynamic_prefix"),
+                                    "matched_labels": [HEADER_SCOPE_ANCHOR_LABEL],
+                                    "semantic_label_path": entry_anchor_path,
+                                    "label_path": entry_anchor_path,
+                                },
+                            )
+                        except AttributeError:
+                            pass
         row_report["entry_scope_hwnd"] = entry_scope_hwnd
         row_report["entry_dynamic_index"] = entry_dynamic_index
         row_report["entry_dynamic_index_source"] = entry_dynamic_index_source
