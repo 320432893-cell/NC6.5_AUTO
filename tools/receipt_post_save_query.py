@@ -12,9 +12,6 @@ from core.jab_operator import JABOperator
 from core.receipt_amounts import receipt_nc_amount
 from core.receipt_models import ReceiptBatchResultRow, ReceiptPlanRow
 from core.receipt_nc_extract import ReceiptNCResultExtractor
-from tools.receipt_query_fill import (
-    ensure_query_window,
-)
 from tools.receipt_query_dynamic_fields import (
     find_query_condition_scope,
     set_query_dynamic_text,
@@ -26,6 +23,7 @@ from tools.receipt_query_guard import (
 from tools.receipt_query_match_reader import read_receipt_result_pages_incremental
 from tools.receipt_query_pagination import wait_after_query_confirm
 from tools.receipt_query_result_tables import receipt_result_read_columns
+from tools.receipt_query_window import ensure_query_window
 
 
 @dataclass(frozen=True)

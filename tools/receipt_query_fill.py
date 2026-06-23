@@ -45,6 +45,7 @@ from tools.receipt_query_dynamic_fields import (  # noqa: E402
     find_query_condition_scope,
     set_query_dynamic_text,
 )
+from tools.receipt_query_window import ensure_query_window as ensure_query_window  # noqa: E402
 from tools.receipt_query_reader import (  # noqa: E402
     dedupe_page_tables as dedupe_page_tables,
     evaluate_paging_match_stop as evaluate_paging_match_stop,
@@ -110,58 +111,6 @@ def set_finance_org_text(jab, jab_cfg, field_cfg, value, dynamic_scope=None):
     scope = dynamic_scope or find_query_condition_scope(jab, jab_cfg)
     result = set_query_dynamic_text(jab, jab_cfg, scope, "finance_org", value)
     return bool(result.get("ok"))
-
-
-def ensure_query_window(jab, config, query_cfg, jab_cfg, skip_open=False):
-    title = jab_cfg["dialog_title"]
-    class_name = jab_cfg["dialog_class"]
-    timeout = float(query_cfg.get("open_timeout", query_cfg.get("timeout", 5)))
-    existing_timeout = float(query_cfg.get("existing_dialog_timeout", 0.1))
-    existing = jab.wait_window_by_title(
-        title,
-        class_name=class_name,
-        timeout=existing_timeout,
-        include_children=bool(query_cfg.get("dialog_include_children", True)),
-        visible_only=bool(query_cfg.get("dialog_visible_only", True)),
-        interval=float(query_cfg.get("window_poll_interval", 0.05)),
-    )
-    if existing or skip_open:
-        return bool(existing)
-
-    batch_open_query = (config.get("jab_batch") or {}).get("open_query") or {}
-    main_title = query_cfg.get("main_title", batch_open_query.get("main_title", ""))
-    main_class = query_cfg.get("main_class", batch_open_query.get("main_class"))
-    if main_title:
-        maximize = bool(query_cfg.get("maximize_main_window", True))
-        activate = (
-            jab.maximize_window_by_title if maximize else jab.activate_window_by_title
-        )
-        activate(
-            main_title,
-            class_name=main_class,
-            timeout=float(query_cfg.get("activate_timeout", 5)),
-        )
-    open_key = query_cfg.get("open_key", batch_open_query.get("key", "f3"))
-    deadline = time.perf_counter() + timeout
-    interval = float(query_cfg.get("window_poll_interval", 0.05))
-    press_interval = float(query_cfg.get("open_key_retry_interval", 0.2))
-    next_press_at = 0.0
-    while time.perf_counter() < deadline:
-        now = time.perf_counter()
-        if now >= next_press_at:
-            jab.press_key(open_key, wait=0.0)
-            next_press_at = now + press_interval
-        opened = jab.wait_window_by_title(
-            title,
-            class_name=class_name,
-            timeout=interval,
-            include_children=bool(query_cfg.get("dialog_include_children", True)),
-            visible_only=bool(query_cfg.get("dialog_visible_only", True)),
-            interval=interval,
-        )
-        if opened:
-            return True
-    return False
 
 
 def fill_receipt_query(
