@@ -20,6 +20,7 @@ from tools.receipt_keyboard_utils import (  # noqa: E402
     send_hotkey_ctrl_v,
     set_clipboard_text,
 )
+from tools.receipt_body_table_locator import locate_receipt_body_table  # noqa: E402
 
 
 CURRENCY_NAMES = {"USD": "美元", "CNY": "人民币"}
@@ -2010,3 +2011,24 @@ def context_contains(info, expected_text):
         if part
     )
     return expected in haystack
+
+
+def read_body_table(jab, step, scope_hwnd=None):
+    """Compatibility reader for callers that need a semantic body-table snapshot."""
+    located = locate_receipt_body_table(jab, max_rows=3, scope_hwnd=scope_hwnd)
+    best = located.get("best")
+    if not best:
+        return {
+            "step": step,
+            "ok": False,
+            "reason": "body table not found",
+            "candidates": located.get("candidates", [])[:3],
+        }
+    return {
+        "step": step,
+        "ok": True,
+        "path": best.get("path"),
+        "row_count": best.get("row_count"),
+        "col_count": best.get("col_count"),
+        "rows": best.get("rows"),
+    }
