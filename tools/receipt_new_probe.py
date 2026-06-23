@@ -236,6 +236,7 @@ def run(args, jab=None, before=None, buttons=None):
                     jab,
                     popup_hwnd=tracked_popup.get("hwnd") if tracked_popup else None,
                     timeout=max(float(args.wait or 0), 0.8),
+                    entry_button_target=open_report.get("target"),
                 )
                 after_choose = entry_wait.get("windows") or []
         elif args.choose_self_made:
@@ -433,14 +434,24 @@ def wait_for_self_made_popup(jab, before, timeout=0.8, interval=0.08):
     }
 
 
-def wait_self_made_entry_ready(jab, popup_hwnd=None, timeout=0.8, interval=0.08):
+def wait_self_made_entry_ready(
+    jab,
+    popup_hwnd=None,
+    timeout=0.8,
+    interval=0.08,
+    entry_button_target=None,
+):
     start = time.perf_counter()
     deadline = start + max(float(timeout or 0), 0.0)
     interval = max(float(interval or 0.08), 0.02)
     attempts = []
     last = None
     while True:
-        last = collect_entry_context_snapshot(jab, popup_hwnd=popup_hwnd)
+        last = collect_entry_context_snapshot(
+            jab,
+            popup_hwnd=popup_hwnd,
+            entry_button_target=entry_button_target,
+        )
         attempts.append(summarize_entry_context_snapshot(last))
         state = last.get("state") or {}
         if last.get("confirmed") and state.get("ok") and not last.get("popup_visible"):
@@ -464,13 +475,17 @@ def wait_self_made_entry_ready(jab, popup_hwnd=None, timeout=0.8, interval=0.08)
         time.sleep(min(interval, remaining))
 
 
-def collect_entry_context_snapshot(jab, popup_hwnd=None):
+def collect_entry_context_snapshot(jab, popup_hwnd=None, entry_button_target=None):
     foreground = foreground_info()
     quick_anchor = resolve_foreground_canvas_header_anchor(jab, foreground)
     if quick_anchor.get("ok"):
         popup_state = describe_popup_visibility(popup_hwnd)
         popup_visible = bool(popup_state.get("visible")) if popup_hwnd else False
-        edit_state = detect_entry_state_ready_light(jab, foreground)
+        edit_state = detect_entry_state_ready_light(
+            jab,
+            foreground,
+            entry_button_target=entry_button_target,
+        )
         parent_new_state = {
             "ok": False,
             "skipped": True,
@@ -688,8 +703,11 @@ def detect_parent_new_ready_in_windows(windows, foreground=None):
     }
 
 
-def detect_entry_state_ready_light(jab, foreground=None):
+def detect_entry_state_ready_light(jab, foreground=None, entry_button_target=None):
     foreground = foreground or foreground_info()
+    direct = detect_entry_state_from_button_target(jab, entry_button_target, foreground)
+    if direct.get("ok"):
+        return direct
     fg_root = (foreground or {}).get("root")
     if os.name != "nt" or not hasattr(ctypes, "WinDLL") or not fg_root:
         return {
@@ -721,8 +739,82 @@ def detect_entry_state_ready_light(jab, foreground=None):
         "ok": False,
         "method": "light-entry-button-scan",
         "reason": "保存/暂存/取消编辑态按钮未出现",
+        "direct_button_state": direct,
         "names": [],
         "hits": [],
+    }
+
+
+def detect_entry_state_from_button_target(jab, target, foreground=None):
+    target = target or {}
+    window = target.get("window") or {}
+    control = target.get("control") or {}
+    hwnd = window.get("hwnd")
+    path = control.get("path")
+    if not hwnd or not path:
+        return {
+            "ok": False,
+            "method": "direct-entry-button-path",
+            "reason": "missing original new-button hwnd/path",
+            "names": [],
+            "hits": [],
+        }
+    context, vm_id, owned_contexts, window_info = jab.find_context_by_path_once(
+        str(path),
+        scope_hwnd=int(hwnd),
+        require_showing=True,
+        require_valid_bounds=True,
+    )
+    if not context:
+        return {
+            "ok": False,
+            "method": "direct-entry-button-path",
+            "reason": "original new-button path not found",
+            "path": str(path),
+            "window": window,
+            "names": [],
+            "hits": [],
+        }
+    try:
+        info = jab.get_context_info(vm_id, context)
+        current = summarize_info(jab, vm_id, context, info, str(path)) if info else {}
+    finally:
+        jab.release_contexts(vm_id, owned_contexts)
+    names = sorted(normalize_entry_state_names(current))
+    if not names or not is_current_visible_control(current):
+        return {
+            "ok": False,
+            "method": "direct-entry-button-path",
+            "reason": "original new-button path is not an edit-state button",
+            "path": str(path),
+            "window": window_info or window,
+            "control": current,
+            "names": names,
+            "hits": [],
+        }
+    annotate_foreground_root_for_targets([{"window": window_info or window}], foreground)
+    return {
+        "ok": True,
+        "partial_ok": True,
+        "method": "direct-entry-button-path",
+        "names": names,
+        "hits": [
+            {
+                "window": {
+                    key: (window_info or window).get(key)
+                    for key in (
+                        "hwnd",
+                        "title",
+                        "class_name",
+                        "class",
+                        "visible",
+                        "root_hwnd",
+                        "is_foreground_root",
+                    )
+                },
+                "control": current,
+            }
+        ],
     }
 
 
