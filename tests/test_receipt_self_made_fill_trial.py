@@ -534,9 +534,9 @@ def test_header_scope_uses_provided_canvas_anchor_before_semantic(monkeypatch):
 
     monkeypatch.setattr(
         trial,
-        "find_receipt_header_field_by_dynamic_path",
+        "validate_receipt_header_scope_anchor",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("表头 scope 不应再用提供的 dynamic_index 验证 path")
+            AssertionError("财务组织 path 命中后不应再用旧锚点验证")
         ),
     )
 
@@ -548,19 +548,23 @@ def test_header_scope_uses_provided_canvas_anchor_before_semantic(monkeypatch):
         ),
     )
 
-    def fake_anchor(_jab, scope_hwnd, dynamic_index, **_kwargs):
-        calls.append(("anchor", scope_hwnd, dynamic_index))
+    def fake_finance_scope(_jab, scope_hwnd, **kwargs):
+        calls.append(("finance-path", scope_hwnd, kwargs))
         return {
             "ok": True,
             "scope_hwnd": scope_hwnd,
-            "mode": "provided-canvas-anchor",
-            "dynamic_index": dynamic_index,
-            "dynamic_prefix": f"0.0.1.0.0.0.0.{dynamic_index}",
+            "mode": "finance-org-dynamic-path-scan",
+            "dynamic_index": kwargs["preferred_dynamic_index"],
+            "dynamic_prefix": f"0.0.1.0.0.0.0.{kwargs['preferred_dynamic_index']}",
             "matched_labels": ["财务组织"],
             "anchor_text": {"name": "财务组织(O)", "description": ""},
         }
 
-    monkeypatch.setattr(trial, "validate_receipt_header_scope_anchor", fake_anchor)
+    monkeypatch.setattr(
+        trial,
+        "find_finance_org_header_scope_by_paths",
+        fake_finance_scope,
+    )
 
     scope = trial.resolve_receipt_header_scope(
         object(), scope_hwnd=123, dynamic_index=2
@@ -568,8 +572,14 @@ def test_header_scope_uses_provided_canvas_anchor_before_semantic(monkeypatch):
 
     assert scope["ok"] is True
     assert scope["dynamic_index"] == 2
-    assert scope["mode"] == "provided-canvas-anchor"
-    assert calls == [("anchor", 123, 2)]
+    assert scope["mode"] == "finance-org-dynamic-path-scan"
+    assert calls == [
+        (
+            "finance-path",
+            123,
+            {"preferred_dynamic_index": 2, "min_index": 2, "max_index": 2},
+        )
+    ]
 
 
 def test_header_scope_can_trust_open_step_scope_without_revalidating(monkeypatch):
@@ -621,6 +631,14 @@ def test_header_scope_validates_with_provided_anchor_path(monkeypatch):
             AssertionError("已有当前 canvas 锚点失败/成功都不应掉语义")
         ),
     )
+    monkeypatch.setattr(
+        trial,
+        "find_finance_org_header_scope_by_paths",
+        lambda *_args, **_kwargs: {
+            "ok": False,
+            "reason": "fast path miss",
+        },
+    )
 
     scope = trial.resolve_receipt_header_scope(
         FakeJAB(),
@@ -665,7 +683,7 @@ def test_finance_org_anchor_label_path_matches_observed_current_canvas_path():
     trial.clear_receipt_header_path_template_cache()
     assert (
         trial.build_receipt_header_dynamic_label_path(2, "财务组织")
-        == "0.0.1.0.0.0.0.2.0.0.0.1.1.0.0.0.1.1.1.0"
+        == "0.0.1.0.0.0.0.2.0.0.0.1.1.0.0.0.0.1.1.0"
     )
 
 
@@ -811,7 +829,7 @@ def test_finance_org_text_path_matches_observed_current_canvas_path():
     trial.clear_receipt_header_path_template_cache()
     assert (
         trial.build_receipt_header_dynamic_path(2, "财务组织")
-        == "0.0.1.0.0.0.0.2.0.0.0.1.1.0.0.0.1.1.1.2.1.0"
+        == "0.0.1.0.0.0.0.2.0.0.0.1.1.0.0.0.0.1.1.2.1.0"
     )
 
 
@@ -851,7 +869,7 @@ def test_find_finance_org_field_uses_observed_text_path_with_text_role():
     )
 
     assert result["ok"] is True
-    assert calls[0][0] == "0.0.1.0.0.0.0.2.0.0.0.1.1.0.0.0.1.1.1.2.1.0"
+    assert calls[0][0] == "0.0.1.0.0.0.0.2.0.0.0.1.1.0.0.0.0.1.1.2.1.0"
     assert calls[0][1]["role"] == "text"
     assert calls[0][1]["scope_hwnd"] == 919586
 
@@ -906,7 +924,8 @@ def test_header_fill_learns_header_template_from_customer(monkeypatch):
         dynamic_index=3,
     )
 
-    assert calls[1] == ("客户", None)
+    assert calls[1][0] == "客户"
+    assert calls[1][1]["source"] == "default-header-template"
     assert calls[2][0] == "单据日期"
     assert calls[2][1]["source"] == "learned-from-客户"
     assert steps[1]["header_path_template_learned"]["source"] == "learned-from-客户"
@@ -1276,12 +1295,19 @@ def test_header_dynamic_field_records_snapshot_without_blocking_after_guarded_pa
     assert result["post_write_snapshot"]["written"] is False
 
 
-def test_finance_org_does_not_fallback_to_dynamic_path_when_control_write_fails(
-    monkeypatch,
-):
+def test_finance_org_falls_back_to_control_name_when_write_path_missing(monkeypatch):
     class FakeJAB:
         pass
 
+    monkeypatch.setattr(
+        trial,
+        "set_finance_org_by_write_path",
+        lambda *_args, **_kwargs: {
+            "ok": False,
+            "method": "finance-org-write-path-guarded-paste-enter",
+            "reason": "finance org write path not found",
+        },
+    )
     monkeypatch.setattr(
         trial,
         "set_finance_org_by_legacy_control_name",
@@ -1290,13 +1316,6 @@ def test_finance_org_does_not_fallback_to_dynamic_path_when_control_write_fails(
             "method": "legacy-control-name-guarded-paste-enter",
             "reason": "foreground mismatch",
         },
-    )
-    monkeypatch.setattr(
-        trial,
-        "find_receipt_header_field_by_dynamic_path",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("财务组织控件名写入失败后不应回退动态 path")
-        ),
     )
 
     result = trial.set_receipt_header_dynamic_field(
@@ -1310,14 +1329,15 @@ def test_finance_org_does_not_fallback_to_dynamic_path_when_control_write_fails(
     assert result["ok"] is False
     assert result["method"] == "legacy-control-name-guarded-paste-enter"
     assert result["reason"] == "foreground mismatch"
+    assert result["dynamic_write_attempt"]["reason"] == "finance org write path not found"
 
 
-def test_finance_org_prefers_control_name_guarded_paste_enter(monkeypatch):
-    legacy_result = {
+def test_finance_org_prefers_write_path_guarded_paste_enter(monkeypatch):
+    write_result = {
         "ok": True,
-        "method": "legacy-control-name-guarded-paste-enter",
-        "source": "legacy-control-name",
-        "path": "0.legacy",
+        "method": "finance-org-write-path-guarded-paste-enter",
+        "source": "finance-org-write-path",
+        "path": "0.write",
         "set_ok": True,
         "enter_ok": True,
         "guarded_paste": {
@@ -1334,14 +1354,14 @@ def test_finance_org_prefers_control_name_guarded_paste_enter(monkeypatch):
     }
     monkeypatch.setattr(
         trial,
-        "set_finance_org_by_legacy_control_name",
-        lambda *_args, **_kwargs: legacy_result,
+        "set_finance_org_by_write_path",
+        lambda *_args, **_kwargs: write_result,
     )
     monkeypatch.setattr(
         trial,
-        "find_receipt_header_field_by_dynamic_path",
+        "set_finance_org_by_legacy_control_name",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("财务组织控件名写入成功后不应跑 dynamic path")
+            AssertionError("财务组织 write path 成功后不应跑 legacy")
         ),
     )
 
@@ -1354,10 +1374,187 @@ def test_finance_org_prefers_control_name_guarded_paste_enter(monkeypatch):
     )
 
     assert result["ok"] is True
-    assert result["method"] == "legacy-control-name-guarded-paste-enter"
+    assert result["method"] == "finance-org-write-path-guarded-paste-enter"
     assert result["enter_ok"] is True
     assert result["dynamic_index"] == 2
     assert result["dynamic_prefix"].endswith(".2")
+
+
+def test_finance_org_write_path_uses_cached_index_first(monkeypatch):
+    calls = []
+
+    class Info:
+        name = "财务组织(O)"
+        description = ""
+        role = "text"
+        role_en_US = "text"
+        states = "enabled,visible,showing,editable"
+        states_en_US = "enabled,visible,showing,editable"
+
+    class FakeJAB:
+        def __init__(self):
+            self._finance_org_write_path_cache = {
+                919586: {"ok": True, "write_index": 5}
+            }
+
+        def find_context_by_path_once(self, path, **kwargs):
+            calls.append(path)
+            return object(), 1, [object()], {"hwnd": kwargs.get("scope_hwnd")}
+
+        def get_context_info(self, _vm_id, _context):
+            return Info()
+
+    result = trial.find_finance_org_write_field_by_path(
+        FakeJAB(),
+        scope_hwnd=919586,
+        min_index=1,
+        max_index=10,
+    )
+
+    assert result["ok"] is True
+    assert result["write_index"] == 5
+    assert calls[0] == (
+        "0.0.0.0.1.0.0.0.0.5.0.0.0.1.1.0.0.0.0.1.1.1.0"
+    )
+
+
+def test_finance_org_header_scope_prefers_shallow_semantic(monkeypatch):
+    def fake_shallow(*_args, **_kwargs):
+        return {
+            "ok": True,
+            "scope_hwnd": 919586,
+            "mode": "finance-org-shallow-semantic",
+            "dynamic_index": 5,
+            "dynamic_prefix": "0.0.1.0.0.0.0.5",
+            "label_path": "0.0.1.0.0.0.0.5.0.0.0.1.1.0.0.0.0.1.1.0",
+        }
+
+    class FakeJAB:
+        def find_context_by_path_once(self, *_args, **_kwargs):
+            raise AssertionError("shallow semantic hit should skip path scan")
+
+    monkeypatch.setattr(
+        trial,
+        "find_finance_org_header_scope_by_shallow_semantic",
+        fake_shallow,
+    )
+
+    result = trial.find_finance_org_header_scope_by_paths(FakeJAB(), 919586)
+
+    assert result["ok"] is True
+    assert result["dynamic_index"] == 5
+    assert result["path_scan_skipped"] is True
+    assert result["preferred_dynamic_index"] is None
+
+
+def test_finance_org_shallow_semantic_canonical_label_path_uses_dynamic_index(
+    monkeypatch,
+):
+    class Dll:
+        def getAccessibleContextFromHWND(self, _hwnd, vm_id_ref, root_ref):
+            vm_id_ref._obj.value = 1
+            root_ref._obj.value = 100
+            return True
+
+        def getAccessibleChildFromContext(self, _vm_id, context, index):
+            children = {
+                100: [200],
+                200: [300],
+                300: [],
+            }
+            try:
+                return children[context][index]
+            except IndexError:
+                return 0
+
+    class Info:
+        def __init__(self, role, name="", children=0):
+            self.role = role
+            self.role_en_US = role
+            self.name = name
+            self.description = ""
+            self.states = "visible,showing"
+            self.states_en_US = "visible,showing"
+            self.childrenCount = children
+
+    class FakeJAB:
+        dll = Dll()
+        max_children = 100
+
+        def get_context_info(self, _vm_id, context):
+            return {
+                100: Info("panel", children=1),
+                200: Info("panel", children=1),
+                300: Info("label", name="财务组织(O)", children=0),
+            }[context]
+
+        def release_contexts(self, *_args):
+            return None
+
+    monkeypatch.setattr(
+        trial,
+        "extract_receipt_header_dynamic_index",
+        lambda _path: 2,
+    )
+    monkeypatch.setattr(
+        trial,
+        "correct_header_dynamic_index_by_customer_paths",
+        lambda *_args, **_kwargs: {"ok": False},
+    )
+
+    result = trial.find_finance_org_header_scope_by_shallow_semantic(
+        FakeJAB(),
+        919586,
+        order="bfs",
+        max_depth=5,
+        max_nodes=10,
+    )
+
+    assert result["ok"] is True
+    assert result["dynamic_index"] == 2
+    assert result["label_path"] == (
+        "0.0.1.0.0.0.0.2.0.0.0.1.1.0.0.0.0.1.1.0"
+    )
+
+
+def test_finance_org_write_path_failure_falls_back_to_legacy(monkeypatch):
+    legacy_result = {
+        "ok": True,
+        "method": "legacy-control-name-guarded-paste-enter",
+        "source": "legacy-control-name",
+        "path": "0.legacy",
+        "set_ok": True,
+        "enter_ok": True,
+    }
+    monkeypatch.setattr(
+        trial,
+        "set_finance_org_by_write_path",
+        lambda *_args, **_kwargs: {
+            "ok": False,
+            "method": "finance-org-write-path-guarded-paste-enter",
+            "reason": "表头字段未确认解析为目标值",
+        },
+    )
+    monkeypatch.setattr(
+        trial,
+        "set_finance_org_by_legacy_control_name",
+        lambda *_args, **_kwargs: legacy_result,
+    )
+
+    result = trial.set_receipt_header_dynamic_field(
+        object(),
+        "财务组织",
+        "A001",
+        2,
+        919586,
+    )
+
+    assert result["ok"] is True
+    assert result["method"] == "legacy-control-name-guarded-paste-enter"
+    assert result["dynamic_write_attempt"]["method"] == (
+        "finance-org-write-path-guarded-paste-enter"
+    )
+    assert result["enter_ok"] is True
 
 
 def test_finance_org_control_name_write_uses_guarded_paste_enter_first(monkeypatch):

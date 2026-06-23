@@ -109,6 +109,8 @@ def _check_processor_api(errors):
         "detect_voucher_window_state",
         "dry_run",
         "finish_run_state",
+        "generate_and_backfill",
+        "generate_and_collect_saved",
         "generate_and_save",
         "load_pending_items",
         "match_current_table",
@@ -119,6 +121,7 @@ def _check_processor_api(errors):
         "require_page_state",
         "resume_current_voucher_window",
         "switch_to_generated_list",
+        "wait_for_page_state",
     }
     helper_methods = {
         "choose_main_signature_table",
@@ -126,7 +129,6 @@ def _check_processor_api(errors):
         "collect_window_controls",
         "describe_signature_table",
         "is_generated_signature",
-        "is_pending_signature",
         "looks_loading",
         "read_page_table_signatures",
         "sample_table_col",

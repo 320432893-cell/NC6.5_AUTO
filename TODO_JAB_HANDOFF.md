@@ -9,9 +9,9 @@
 
 当前不要从头推翻方案。2026-06-11 已确认的产品方向是：在 Windows Python + JAB 下，从 NC【收款单录入】且【新增】可见的页面开始，先按本地预检后的批次连续保存，再按主体统一后验查询，最后把保存/查询结果结构化落到 Sheet2。真实保存必须等用户明确说“开始/可以”。
 
-重要边界：当前没有正式桌面 GUI/Web 前端，测试人员入口是 Windows `.bat` 菜单。`tools/nc_auto_test_menu.bat` 会集中启动工程检查、凭证、收款本地预检、Sheet2 写入、完整流程不保存/保存、明细、查询和历史写回入口；其中凭证生成项会保存凭证，收款完整流程保存项会保存收款单。当前收款单完整流程测试入口是 `tools/receipt_full_flow_entry.py`：它消费 `ReceiptPlanRow`，默认跑 `新增 -> 自制 -> 表头 -> 明细主行 -> 手续费分支` 后停在保存前，显式 `--save` 才真实保存。`--query-after-save` 已接入保存后统一后验查询；配合 `--write-selected-plan-sheet` 会把本批业务列、NC客户名称、后验核对状态和最终异常原因写入 Sheet2。Sheet2 不再写 `NC单据号` 列，该主线也不写 Sheet1 的 `是否NC已做过`。
+重要边界：本仓库是 NC/JAB 引擎仓库，桌面 GUI 代码在 `H:\python脚本\采购对账桌面版`，当前封装产物是 `H:\python脚本\采购对账桌面版\dist\采购对账桌面版\采购对账桌面版.exe`。Windows `.bat` 菜单仍只是测试入口：`tools/nc_auto_test_menu.bat` 会集中启动工程检查、凭证、收款本地预检、Sheet2 写入、完整流程不保存/保存、明细、查询和历史写回入口；其中凭证生成项会保存凭证，收款完整流程保存项会保存收款单。当前收款单完整流程测试入口是 `tools/receipt_full_flow_entry.py`：它消费 `ReceiptPlanRow`，默认跑 `新增 -> 自制 -> 表头 -> 明细主行 -> 手续费分支` 后停在保存前，显式 `--save` 才真实保存。`--query-after-save` 已接入保存后统一后验查询；配合 `--write-selected-plan-sheet` 会把本批业务列、NC客户名称、后验核对状态和最终异常原因写入 Sheet2。Sheet2 不再写 `NC单据号` 列，该主线也不写 Sheet1 的 `是否NC已做过`。
 
-本轮真实保存 T0 脚本已清理；后续不要再依赖 `tools/tmp_receipt_two_case_save_run.py` 或 `tools/tmp_receipt_three_org_real_save_run.py` 作为入口。需要复盘现场脚本时从 git 历史恢复。仓库仍保留若干 `tools/tmp_*` 探测/诊断脚本，只能作为现场复盘参考，不是正式批量入口：`tmp_receipt_cell_probe_run.py`、`tmp_receipt_tables_probe.py`、`tmp_jab_recovery_probe.py`。旧表头账户参照探针已移入 `tools/archive/`；`tmp_receipt_detail_main_line_run.py` 只保留短期兼容并转发到正式入口 `tools/receipt_detail_entry.py`。
+本轮真实保存 T0 脚本已清理；后续不要再依赖 `tools/tmp_receipt_two_case_save_run.py` 或 `tools/tmp_receipt_three_org_real_save_run.py` 作为入口。需要复盘现场脚本时从 git 历史恢复。仓库仍保留若干 `tools/tmp_*` 探测/诊断脚本，只能作为现场复盘参考，不是正式批量入口：`tmp_receipt_cell_probe_run.py`、`tmp_receipt_tables_probe.py`、`tmp_jab_recovery_probe.py`。旧表头账户参照探针已移入 `tools/archive/`；`tmp_receipt_detail_main_line_run.py` 只保留短期兼容并转发到正式入口 `tools/receipt_detail_entry.py`。本轮已删除无引用的分页、弹窗、前缀比较和手工选行探针。
 
 运行前必须确认：
 
@@ -62,6 +62,8 @@
 - Excel 写入锁已包装为 `ExcelLockedError`，覆盖拆分 A/B、写生成状态和回填凭证号。
 - `backfill` 默认会从 `pending` 自动切到 `generated`；阻塞/异常状态会停止，避免按错误表格列位读取。
 - `backfill` 已记录结构化审计事件 `backfill_audit`，包含 Excel 行、金额、对手方、NC 行、凭证号和失败状态。
+- 已生成页状态识别只看主表凭证号列是否存在真实凭证号；待生成和已生成可能共用同一套工具栏，不能用列数、日期列或 `正式单据` 控件作为页面证明。
+- 凭证保存触发只保留 JAB 保存按钮；`Ctrl+S` 保存已因 NC 崩溃风险退出正式逻辑。`save_button_path` 可在制单窗口内缓存复用，但待生成页按钮 path 不做跨会话硬编码。
 - 关键匹配模型已收口为 dataclass：`ExcelVoucherItem`、`PendingMatch`、`GeneratedVoucherMatch`、`VoucherPendingMatch`、`VoucherSaveMatch`、`MatchIssue`。
 - `ExcelVoucherItem` 和 `VoucherSaveMatch` 已有统一契约检查；失败会带 Excel 行、金额、对手方、NC 行或制单表位置。
 - 待生成表重复匹配属于异常；`generate` 默认 `duplicate_match_policy=stop`，会在点击 NC 前暂停。临时允许跳过异常行时用 `--on-duplicate skip`。
@@ -89,7 +91,7 @@
 - A006 已在真实查询窗口跑通：NC 结果 `24` 行，Excel A006 候选 `24` 行，`24/24` 唯一匹配，无未找到、无重复、无异常。该能力只作查询诊断，不写回 Excel 主表状态。
 - A003 当前不要写回：输入框可写 `A003`，但确认后结果仍是 A001 口径 `437` 行，说明查询条件没有被 NC 采用；用户判断可能是 A003 权限问题，必须先由人工确认权限/主体可用。
 - 收款单 `新增(Ctrl+N)` 按钮本身可用，问题根因是旧 AWT cleanup 误伤了按钮弹出的 `自制/应收单` 菜单。健康 popup 下曾确认 `自制` path `0.0.1.0.0.0`、`应收单` path `0.0.1.0.0.2`，但 path/hwnd 不稳定，后续必须现场复验。
-- 收款单自制录入页的上方 `保存(Ctrl+S)`、`暂存`、`取消(Ctrl+Q)` 三按钮同时出现，即作为 `自制录入态` 成功判据；没有用户明确指令时禁止保存或暂存。
+- 收款单自制录入页的上方编辑态按钮任一出现即可作为 `自制录入态` 成功判据，优先看 `保存(Ctrl+S)`；没有用户明确指令时禁止保存或暂存。
 - 2026-06-17 最新状态：授权主体真实保存 + 后验查询 + Sheet2 结果落表已按正式入口归档。正式入口是 `tools/receipt_full_flow_entry.py --save --query-after-save --write-selected-plan-sheet` 或包装入口 `tools/receipt_full_flow_save_query_write_test.py`；测试人员优先从 `.bat` 菜单或明确的 PowerShell bat 包装入口启动。
 - 2026-06-09 历史无保存测试口径：银行账号固定 `FTE1219165931831RMB`，选择最近两条 A001 人民币有效行，手续费测试值覆盖 `20.00`、`33.00`。该轮只做填写和速度诊断，未保存、未暂存。
 - `新增->自制` 已优化为复用同一 JAB、复用起始检测得到的【新增】按钮和窗口快照；点中【自制】后快速确认入口态，识别不到时记录 `partial_ok` 并交给后续表头定位兜底，不再阻塞在入口态按钮识别。
@@ -115,7 +117,7 @@
 ## 改动落点速查
 
 - 改凭证 `plan/generate/resume-voucher`：先看 `core/nc_pending_workflow.py`、`core/nc_voucher_workflow.py`、`core/nc_table_matcher.py`，牵连 `core/models.py` 和相关 workflow 测试。
-- 改页面状态、查询窗口或切已生成：先看 `core/nc_state.py`、`core/nc_page_probe.py`、`core/nc_switch_generated_workflow.py`，同时核对 `config.json` 的窗口 title/class、path、日期列和 0 基 NC 列位。
+- 改页面状态、查询窗口或切已生成：先看 `core/nc_state.py`、`core/nc_page_probe.py`、`core/nc_switch_generated_workflow.py`，同时核对 `config.json` 的窗口 title/class、path 和 0 基 NC 列位；页面状态不要恢复日期/列数证明。
 - 改回填：先看 `core/nc_backfill_workflow.py` 和 `core/data_handler.py`，重点保护 Excel C 列状态、凭证日期过滤、凭证号去前导 0 和 Excel 锁异常。
 - 改收款单本地计划：先看 `core/receipt_entry.py`、`core/receipt_sheet.py`、`tools/receipt_entry_check.py` 和 `tests/test_receipt_entry.py`，正式批量入口必须消费 `ReceiptPlanRow`，不要回退旧 `ReceiptExcelRow` 候选口径。
 - 改收款查询/写回：先看 `tools/receipt_query_fill.py` 和 `tests/test_receipt_query_fill.py`，注意完全未命中写回 `未做过`，诊断 reason 才是 `金额和对手方均未匹配`。
@@ -152,6 +154,11 @@
    - 正式后验查询已把“保存阶段”和“查询阶段”分开，并按主体分组查询一次、按本批日期区间读取结果后在内存匹配；查询耗时和 page_guard 等诊断进入 JSON 报告，Sheet2 只写业务结果列。
    - 匹配使用录入客户编码后 NC 主表显示出的客户名，不使用 Sheet1 银行来款名；金额使用 `到账净额 + 手续费`，日期优先。正式代码只保留 `read_receipt_result_pages_incremental()` 返回的 match snapshot，再由 `match_snapshot_to_result()` 转成批次结果；旧的第二遍 `match_targets()` / `name_similarity()` 匹配链路已删除，不要恢复。
    - Sheet2 只展示业务结果：`NC客户名称`、`后验核对状态`、`异常原因` 等；`NC单据号` 已作为旧列清理。按主体插入 `主体：xxx` 分割行，分割行浅蓝；后验通过浅绿，后验未匹配/待确认浅红。
+   - 每个主体数据块末尾追加 `主体合计：xxx` 行，汇总 `🟪原始金额`、`手续费`、`🟪到账金额`；不要把合计行当业务行参与后续匹配。
+
+3. 凭证应付 Excel 和汇率配置
+   - 应付 Excel 列映射走 `jab_batch.key_col/amount_out_col/partner_out_col/result_col`，都是 1 基列号，GUI 已暴露；CLI 临时覆盖参数是 `--key-col`、`--amount-out-col`、`--partner-out-col`、`--result-col`。
+   - 外币汇率走 `jab_batch.foreign_currency_rate`，GUI 已暴露；CLI 临时覆盖参数是 `--foreign-currency-rate`。配置汇率后，制单窗口匹配用金额差容差：`abs(制单金额 - Excel金额 * 汇率) <= foreign_currency_amount_tolerance`，默认 5，CLI 可用 `--foreign-currency-amount-tolerance` 临时覆盖。留空汇率时仍由引擎自动估计。
 
 4. 历史查询/写回工具维护口径
    - `tools/receipt_query_fill.py --dry-run-match` 是历史查重/诊断入口，仍可用于人工核查列位、分页和结果表守卫，但不再写回 Sheet1 状态列，也不作为新批量录入主线的前置筛选。
@@ -163,8 +170,8 @@
    - 已覆盖模型契约不要复制第二份定义，见 `core/models.py`。
 
 6. 收款单自制录入
-   - 继续用 JAB 控件树而不是坐标/截图/剪贴板填表。入口顺序应是：点 `新增(Ctrl+N)` 按钮，等待可见 enabled `SunAwtWindow` 菜单，点 `自制`，验证 `保存`/`暂存`/`取消` 三按钮进入录入态。
-   - `receipt_self_made_fill_trial.py` 必须把三按钮状态作为开单成功条件；JAB action 成功、菜单项点中或 path 命中都不能单独算成功。
+   - 继续用 JAB 控件树而不是坐标/截图/剪贴板填表。入口顺序应是：点 `新增(Ctrl+N)` 按钮，等待可见 enabled `SunAwtWindow` 菜单，点 `自制`，验证 `保存`/`暂存`/`取消` 任一编辑态按钮进入录入态。
+   - `receipt_self_made_fill_trial.py` 必须把编辑态按钮作为开单成功条件，优先 `保存(Ctrl+S)`，`暂存` 或 `取消(Ctrl+Q)` 任一出现也可；JAB action 成功、菜单项点中或 path 命中都不能单独算成功。
    - 表头区目标业务值仍是：财务组织取银行推导主体，到款日期写单据日期，客户写 Excel 客户编码，币种直接写 `USD`/`CNY` 后回车，表头 `结算方式` 固定写 `网银`；PayPal 特例没有账号，只输入名称。当前已验证财务组织写入后会解析为中文，后续字段用客户校正后的动态 path 写入。
    - 客户字段仍是硬门槛：路径可由动态 path 或单字段 live semantic 兜底定位，但保存前必须能解析到非空 NC 客户名称；不能用明细 verifier 或后验查询掩盖客户为空。
    - 明细默认已有 1 行，但自动化默认不能直接填明细；必须先单独定位 25 列明细表，确认目标列位，再显式进入明细阶段。主行顺序固定为：`收款业务类型=货款`、`收款银行账户`、`科目=1002`、`贷方原币金额=到账净额`、`结算方式=网银`。币种不写明细行。正式写法是首字段 JAB 选格，后续字段方向键移动；字段值整段剪贴板粘贴后 Enter。账号列从相邻列方向键进入，粘贴裸账号后等待 `0.1s` 再 Enter；不用 Tab。

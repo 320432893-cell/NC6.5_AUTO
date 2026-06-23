@@ -20,7 +20,6 @@ class NCStateDetector:
         jab,
         batch_cfg,
         generated_date_value,
-        generated_date_col,
         voucher_col,
         generated_voucher_max,
         record_event,
@@ -29,7 +28,6 @@ class NCStateDetector:
         self.jab = jab
         self.batch_cfg = batch_cfg
         self.generated_date_value = generated_date_value
-        self.generated_date_col = generated_date_col
         self.voucher_col = voucher_col
         self.generated_voucher_max = generated_voucher_max
         self.record_event = record_event
@@ -122,18 +120,11 @@ class NCStateDetector:
         ):
             return NCPageState("query_open", "查询子窗口打开，父页面被阻塞")
 
-        controls = self.probe.collect_named_controls(
-            ("单据生成", "查询", "生成", "前台生成", "正式单据")
-        )
-        has_parent = any(control["name"] == "单据生成" for control in controls)
-        visible_names = {
-            control["name"] for control in controls if control.get("showing")
-        }
-        has_buttons = {"查询", "生成"}.issubset(visible_names)
-        has_formal = "正式单据" in visible_names
+        controls = self.probe.collect_watched_controls()
+        pending_toolbar = self.probe.detect_pending_toolbar(controls)
+        has_parent = pending_toolbar.get("parent_count", 0) > 0
 
         tables = self.probe.read_page_table_signatures(
-            self.generated_date_col,
             self.voucher_col,
             self.jab.amount_col,
             self.jab.partner_col,
@@ -144,6 +135,29 @@ class NCStateDetector:
             return NCPageState(
                 "error",
                 f"父页面/主表均未检测到，停止深度重试 parent={has_parent} tables={len(tables)}",
+            )
+
+        if main and self.is_generated_signature(main):
+            return NCPageState("generated", "父页+真实凭证号表特征", table=main)
+
+        if pending_toolbar.get("ok") and main:
+            ratio = self.table_match_ratio(main.get("rows", []), items or [])
+            return NCPageState(
+                "pending",
+                f"{pending_toolbar.get('reason')} sample_match_ratio={ratio:.3f}",
+                table=main,
+                match_ratio=ratio,
+            )
+
+        if pending_toolbar.get("ok") and not main:
+            if looks_loading(controls, tables):
+                return NCPageState(
+                    "loading",
+                    f"待生成工具栏已就绪但主表暂未就绪 tables={len(tables)}",
+                )
+            return NCPageState(
+                "error",
+                f"待生成工具栏已就绪但未找到主表 tables={len(tables)}",
             )
 
         if not has_parent or not main:
@@ -157,28 +171,10 @@ class NCStateDetector:
                 f"缺少父页面或主表 parent={has_parent} tables={len(tables)}",
             )
 
-        if not has_buttons:
-            return NCPageState(
-                "error",
-                f"按钮布局不完整 visible={sorted(visible_names)}",
-                table=main,
-            )
-
-        if self.is_generated_signature(main, require_formal=has_formal):
-            return NCPageState("generated", "父页+按钮+已生成表特征", table=main)
-
-        ratio = self.table_match_ratio(main.get("rows", []), items or [])
-        if is_pending_signature(main, visible_names):
-            return NCPageState(
-                "pending",
-                f"父页+按钮+待生成表特征 sample_match_ratio={ratio:.3f}",
-                table=main,
-                match_ratio=ratio,
-            )
-
         if looks_loading(controls, tables):
             return NCPageState("loading", "父页面存在但表格特征暂不完整", table=main)
 
+        ratio = self.table_match_ratio(main.get("rows", []), items or [])
         return NCPageState(
             "error",
             (
@@ -190,20 +186,12 @@ class NCStateDetector:
         )
 
     def detect_voucher_window_state(self):
-        tables = [
-            table
-            for table in self.jab.read_window_table_cells(
-                self.voucher_window_title,
-                max_rows=5,
-                max_cols=13,
-            )
-            if table.get("window_class") == self.voucher_window_class
-        ]
-        voucher_tables = [
-            table
-            for table in tables
-            if table.get("row_count", 0) > 0 and table.get("col_count") == 13
-        ]
+        if self.jab.window_exists(
+            self.voucher_window_title,
+            class_name=self.voucher_window_class,
+        ):
+            return NCPageState("voucher_open", "制单子窗口打开，父页面被阻塞")
+
         buttons = self.probe.collect_named_controls(
             ("修改", "保存"),
             window_title=self.voucher_window_title,
@@ -218,35 +206,17 @@ class NCStateDetector:
                 window_class=self.voucher_window_class,
             )
         }
-        if voucher_tables:
-            rows = sum(table["row_count"] for table in voucher_tables)
-            return NCPageState(
-                "voucher_open",
-                "制单子窗口打开，父页面被阻塞 "
-                f"rows={rows} buttons={sorted(visible_buttons)} tokens={sorted(button_tokens)}",
-            )
-        if not tables and not visible_buttons:
+        if not visible_buttons:
             return NCPageState("not_voucher", "未检测到制单子窗口")
         return NCPageState(
             "error",
             (
                 "制单窗口特征不完整: "
-                f"tables={[(t.get('row_count'), t.get('col_count')) for t in tables]} "
                 f"buttons={sorted(visible_buttons)} tokens={sorted(button_tokens)}"
             ),
         )
 
-    def is_generated_signature(self, table, require_formal=True):
-        if table.get("col_count") != 23:
-            return False
-        if require_formal is False:
-            return False
-        target = str(self.generated_date_value).strip()
-        date_values = [str(value).strip() for value in table.get("date_values", [])]
-        if target and not date_values:
-            return False
-        if target and any(value != target for value in date_values[:5]):
-            return False
+    def is_generated_signature(self, table):
         vouchers = table.get("voucher_values", [])
         return any(
             normalize_generated_voucher(value, self.generated_voucher_max)
@@ -302,16 +272,6 @@ def choose_main_signature_table(tables):
         candidates,
         key=lambda table: table.get("row_count", 0) * table.get("col_count", 0),
     )
-
-
-def is_pending_signature(table, visible_names):
-    if table.get("col_count") != 25:
-        return False
-    if table.get("col_count") == 23 and table.get("voucher_values"):
-        return False
-    if "前台生成" not in visible_names:
-        log.info("未枚举到前台生成按钮，按父页按钮和表格列数判定待生成页")
-    return not table.get("voucher_values")
 
 
 def looks_loading(controls, tables):

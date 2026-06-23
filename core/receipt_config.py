@@ -8,6 +8,13 @@ from datetime import date
 from core.receipt_models import ReceiptAccount, ReceiptBank, ReceiptOrganization
 from core.receipt_parsing import normalize_lookup_key, parse_date
 
+DEFAULT_EXCEL_TEXT_FIELD_MAPPINGS = (
+    {"excel_column": "🔷订单PI匹配", "nc_field": "商务领款备忘"},
+)
+ALLOWED_EXCEL_TEXT_FIELD_NC_FIELDS = {
+    item["nc_field"] for item in DEFAULT_EXCEL_TEXT_FIELD_MAPPINGS
+}
+
 
 class ReceiptEntryConfig:
     def __init__(self, config):
@@ -114,6 +121,28 @@ class ReceiptEntryConfig:
     @property
     def fee_column(self):
         return self.excel_cfg.get("fee_column", "手续费")
+
+    @property
+    def excel_text_field_mappings(self):
+        mappings = (
+            self.receipt_cfg.get("excel_text_field_mappings")
+            or list(DEFAULT_EXCEL_TEXT_FIELD_MAPPINGS)
+        )
+        result = []
+        if not isinstance(mappings, list):
+            return result
+        for item in mappings:
+            if not isinstance(item, dict):
+                continue
+            excel_column = str(item.get("excel_column") or "").strip()
+            nc_field = str(item.get("nc_field") or "").strip()
+            if (
+                excel_column
+                and nc_field
+                and nc_field in ALLOWED_EXCEL_TEXT_FIELD_NC_FIELDS
+            ):
+                result.append({"excel_column": excel_column, "nc_field": nc_field})
+        return result
 
     @property
     def organization_column(self):

@@ -28,6 +28,13 @@ HEADER_DYNAMIC_PREFIX_BASE = "0.0.1.0.0.0.0"
 HEADER_COMMON_SUFFIX_TEMPLATE = "0.0.0.1.1.0.0.0.0.1.0.2.0.0.0.0.0.0.0.{index}.0"
 HEADER_COMMON_LABEL_SUFFIX_TEMPLATE = "0.0.0.1.1.0.0.0.0.1.0.2.0.0.0.0.0.0.0.{index}"
 FINANCE_ORG_LABEL_SUFFIX = "0.0.0.1.1.0.0.0.1.1.1.0"
+FINANCE_ORG_COMPACT_LABEL_SUFFIX = "0.0.0.1.1.0.0.0.0.1.1.0"
+FINANCE_ORG_LABEL_SUFFIX_VARIANTS = (
+    ("observed-compact", FINANCE_ORG_COMPACT_LABEL_SUFFIX),
+    ("configured-builder", FINANCE_ORG_LABEL_SUFFIX),
+)
+FINANCE_ORG_WRITE_PREFIX_BASE = "0.0.0.0.1.0.0.0.0"
+FINANCE_ORG_WRITE_TEXT_SUFFIX = "0.0.0.1.1.0.0.0.0.1.1.1.0"
 HEADER_LIVE_SEMANTIC_FALLBACK_TIMEOUT = 0.35
 HEADER_FORM_TEXT_INDEXES = {
     "单据日期": 5,
@@ -35,6 +42,9 @@ HEADER_FORM_TEXT_INDEXES = {
     "收款银行账户": 15,
     "客户": 17,
     "结算方式": 31,
+}
+RECEIPT_EXTRA_TEXT_FIELD_SUFFIXES = {
+    "商务领款备忘": "0.0.0.1.1.0.0.0.0.1.0.2.0.0.0.0.0.0.0.49.0",
 }
 HEADER_REQUIRED_LABELS = ("财务组织", "客户", "单据日期", "币种", "结算方式")
 HEADER_LABEL_ALIASES = {
@@ -365,11 +375,34 @@ def resolve_receipt_header_scope(
             except AttributeError:
                 pass
             return scoped
-        scoped = validate_receipt_header_scope_anchor(
+        scoped = find_finance_org_header_scope_by_paths(
             jab,
             scope_hwnd,
-            dynamic_index,
-            anchor_path=anchor_path,
+            preferred_dynamic_index=dynamic_index,
+            min_index=dynamic_index,
+            max_index=dynamic_index,
+        )
+        if not scoped.get("ok"):
+            scoped = validate_receipt_header_scope_anchor(
+                jab,
+                scope_hwnd,
+                dynamic_index,
+                anchor_path=anchor_path,
+            )
+        if scoped.get("ok"):
+            try:
+                setattr(jab, "_receipt_header_scope_cache", scoped)
+            except AttributeError:
+                pass
+            return scoped
+        return scoped
+    if scope_hwnd:
+        scoped = find_finance_org_header_scope_by_paths(
+            jab,
+            scope_hwnd,
+            preferred_dynamic_index=dynamic_index,
+            min_index=1,
+            max_index=10,
         )
         if scoped.get("ok"):
             try:
@@ -449,6 +482,426 @@ def validate_receipt_header_scope_anchor(
         "semantic_label_path": label_path,
         "anchor_text": anchor_text,
         "window": window_info,
+    }
+
+
+def build_finance_org_path_variants(dynamic_index):
+    if dynamic_index is None:
+        return
+    seen = set()
+    for variant, suffix in FINANCE_ORG_LABEL_SUFFIX_VARIANTS:
+        label_path = f"{HEADER_DYNAMIC_PREFIX_BASE}.{int(dynamic_index)}.{suffix}"
+        text_path = infer_header_text_path_from_label_path(
+            HEADER_SCOPE_ANCHOR_LABEL,
+            label_path,
+        )
+        key = (label_path, text_path)
+        if not label_path or not text_path or key in seen:
+            continue
+        seen.add(key)
+        yield variant, label_path, text_path
+
+
+def finance_org_label_info_matches(info):
+    if not info:
+        return False
+    for text in (
+        str(getattr(info, "name", "") or "").strip(),
+        str(getattr(info, "description", "") or "").strip(),
+    ):
+        if text == HEADER_SCOPE_ANCHOR_TEXT:
+            return True
+    return False
+
+
+def find_finance_org_header_scope_by_paths(
+    jab,
+    scope_hwnd,
+    preferred_dynamic_index=None,
+    min_index=1,
+    max_index=10,
+):
+    started_at = time.perf_counter()
+    shallow = find_finance_org_header_scope_by_shallow_semantic(
+        jab,
+        scope_hwnd,
+        order="dfs",
+        max_depth=30,
+        max_nodes=800,
+    )
+    if shallow.get("ok"):
+        shallow["path_scan_skipped"] = True
+        shallow["seconds"] = round(time.perf_counter() - started_at, 3)
+        shallow["preferred_dynamic_index"] = preferred_dynamic_index
+        return shallow
+    if not hasattr(jab, "find_context_by_path_once"):
+        return {
+            "ok": False,
+            "mode": "finance-org-dynamic-path-scan",
+            "reason": "JAB path lookup unavailable；不走语义兜底",
+            "scope_hwnd": scope_hwnd,
+            "dynamic_index": preferred_dynamic_index,
+            "attempts": [],
+            "shallow_semantic_attempt": shallow,
+            "seconds": round(time.perf_counter() - started_at, 3),
+            "preferred_dynamic_index": preferred_dynamic_index,
+        }
+    indexes = []
+    if preferred_dynamic_index is not None:
+        try:
+            indexes.append(int(preferred_dynamic_index))
+        except (TypeError, ValueError):
+            pass
+    for index in range(int(min_index), int(max_index) + 1):
+        if index not in indexes:
+            indexes.append(index)
+    attempts = []
+    for dynamic_index in indexes:
+        for variant, label_path, text_path in build_finance_org_path_variants(
+            dynamic_index
+        ):
+            label_context, vm_id, owned_contexts, window_info = (
+                jab.find_context_by_path_once(
+                    label_path,
+                    class_name="SunAwtCanvas",
+                    scope_hwnd=scope_hwnd,
+                    role="label",
+                    require_showing=False,
+                    require_valid_bounds=False,
+                )
+            )
+            label_info = None
+            label_matches = False
+            if label_context:
+                try:
+                    label_info = jab.get_context_info(vm_id, label_context)
+                    label_matches = finance_org_label_info_matches(label_info)
+                finally:
+                    jab.release_contexts(vm_id, owned_contexts)
+            attempt = {
+                "dynamic_index": dynamic_index,
+                "variant": variant,
+                "label_path": label_path,
+                "text_path": text_path,
+                "label_found": bool(label_context),
+                "label_matches": bool(label_matches),
+                "label_text": {
+                    "name": str(getattr(label_info, "name", "") or "").strip()
+                    if label_info
+                    else "",
+                    "description": str(
+                        getattr(label_info, "description", "") or ""
+                    ).strip()
+                    if label_info
+                    else "",
+                },
+            }
+            if not label_matches:
+                attempts.append(attempt)
+                continue
+            text_context, text_vm_id, text_owned_contexts, text_window = (
+                jab.find_context_by_path_once(
+                    text_path,
+                    class_name="SunAwtCanvas",
+                    scope_hwnd=scope_hwnd,
+                    role="text",
+                    require_showing=False,
+                    require_valid_bounds=False,
+                )
+            )
+            attempt["text_found"] = bool(text_context)
+            attempts.append(attempt)
+            if not text_context:
+                continue
+            try:
+                text_info = jab.get_context_info(text_vm_id, text_context)
+                text_snapshot = {
+                    "name": str(getattr(text_info, "name", "") or "").strip()
+                    if text_info
+                    else "",
+                    "description": str(
+                        getattr(text_info, "description", "") or ""
+                    ).strip()
+                    if text_info
+                    else "",
+                    "text": jab.get_text_context_value(text_vm_id, text_context),
+                }
+            finally:
+                jab.release_contexts(text_vm_id, text_owned_contexts)
+            correction = correct_header_dynamic_index_by_customer_paths(
+                jab,
+                scope_hwnd,
+                dynamic_index,
+            )
+            header_dynamic_index = (
+                correction.get("dynamic_index")
+                if correction.get("ok")
+                else dynamic_index
+            )
+            corrected = bool(header_dynamic_index != dynamic_index)
+            return {
+                "ok": True,
+                "scope_hwnd": scope_hwnd,
+                "mode": (
+                    "finance-org-dynamic-path-corrected-by-customer"
+                    if corrected
+                    else "finance-org-dynamic-path-scan"
+                ),
+                "dynamic_index": header_dynamic_index,
+                "dynamic_prefix": receipt_header_dynamic_prefix(header_dynamic_index),
+                "finance_org_dynamic_index": dynamic_index,
+                "finance_org_dynamic_prefix": receipt_header_dynamic_prefix(
+                    dynamic_index
+                ),
+                "matched_labels": [HEADER_SCOPE_ANCHOR_LABEL],
+                "semantic_label_path": label_path,
+                "label_path": label_path,
+                "text_path": text_path,
+                "anchor_text": attempt["label_text"],
+                "finance_org_text_snapshot": text_snapshot,
+                "window": text_window or window_info,
+                "variant": variant,
+                "attempts": attempts,
+                "shallow_semantic_attempt": shallow,
+                "customer_index_correction": correction,
+                "seconds": round(time.perf_counter() - started_at, 3),
+                "preferred_dynamic_index": preferred_dynamic_index,
+            }
+    return {
+        "ok": False,
+        "mode": "finance-org-dynamic-path-scan",
+        "reason": "当前 canvas 未通过财务组织(O) dynamic path 扫描",
+        "scope_hwnd": scope_hwnd,
+        "dynamic_index": preferred_dynamic_index,
+        "attempts": attempts,
+        "shallow_semantic_attempt": shallow,
+        "seconds": round(time.perf_counter() - started_at, 3),
+        "preferred_dynamic_index": preferred_dynamic_index,
+    }
+
+
+def find_finance_org_header_scope_by_shallow_semantic(
+    jab,
+    scope_hwnd,
+    order="dfs",
+    max_depth=30,
+    max_nodes=800,
+):
+    started_at = time.perf_counter()
+    if not scope_hwnd or not hasattr(jab.dll, "getAccessibleContextFromHWND"):
+        return {
+            "ok": False,
+            "mode": "finance-org-shallow-semantic",
+            "reason": "missing scope hwnd or JAB root lookup",
+            "scope_hwnd": scope_hwnd,
+            "seconds": round(time.perf_counter() - started_at, 3),
+        }
+    from tools.jab_probe import JOBJECT
+
+    vm_id_ref = ctypes.c_long()
+    root_context = JOBJECT()
+    if not jab.dll.getAccessibleContextFromHWND(
+        int(scope_hwnd),
+        ctypes.byref(vm_id_ref),
+        ctypes.byref(root_context),
+    ):
+        return {
+            "ok": False,
+            "mode": "finance-org-shallow-semantic",
+            "reason": "getAccessibleContextFromHWND failed",
+            "scope_hwnd": scope_hwnd,
+            "seconds": round(time.perf_counter() - started_at, 3),
+        }
+    vm_id = vm_id_ref.value
+    pending = [(root_context.value, [], 0)]
+    scanned = 0
+    release_after = [root_context.value]
+    try:
+        while pending and scanned < int(max_nodes):
+            if order == "dfs":
+                context, path_indexes, depth = pending.pop()
+            else:
+                context, path_indexes, depth = pending.pop(0)
+            scanned += 1
+            info = jab.get_context_info(vm_id, context)
+            if not info:
+                continue
+            role = (info.role_en_US.strip() or info.role.strip()).lower()
+            states = (info.states_en_US.strip() or info.states.strip()).lower()
+            path = "0" + "".join(f".{index}" for index in path_indexes)
+            if (
+                role == "label"
+                and header_scope_anchor_text_matches(info)
+                and ("visible" in states and "showing" in states)
+            ):
+                dynamic_index = extract_receipt_header_dynamic_index(path)
+                if dynamic_index is None:
+                    return {
+                        "ok": False,
+                        "mode": "finance-org-shallow-semantic",
+                        "reason": "matched label but dynamic index not inferred",
+                        "scope_hwnd": scope_hwnd,
+                        "label_path": path,
+                        "scanned_nodes": scanned,
+                        "seconds": round(time.perf_counter() - started_at, 3),
+                    }
+                canonical_label_path = build_receipt_header_dynamic_label_path(
+                    dynamic_index,
+                    HEADER_SCOPE_ANCHOR_LABEL,
+                )
+                text_path = infer_header_text_path_from_label_path(
+                    HEADER_SCOPE_ANCHOR_LABEL,
+                    canonical_label_path or path,
+                )
+                correction = correct_header_dynamic_index_by_customer_paths(
+                    jab,
+                    scope_hwnd,
+                    dynamic_index,
+                )
+                header_dynamic_index = (
+                    correction.get("dynamic_index")
+                    if correction.get("ok")
+                    else dynamic_index
+                )
+                corrected = bool(header_dynamic_index != dynamic_index)
+                return {
+                    "ok": True,
+                    "scope_hwnd": scope_hwnd,
+                    "mode": (
+                        "finance-org-shallow-semantic-corrected-by-customer"
+                        if corrected
+                        else "finance-org-shallow-semantic"
+                    ),
+                    "dynamic_index": header_dynamic_index,
+                    "dynamic_prefix": receipt_header_dynamic_prefix(
+                        header_dynamic_index
+                    ),
+                    "finance_org_dynamic_index": dynamic_index,
+                    "finance_org_dynamic_prefix": receipt_header_dynamic_prefix(
+                        dynamic_index
+                    ),
+                    "matched_labels": [HEADER_SCOPE_ANCHOR_LABEL],
+                    "semantic_label_path": path,
+                    "label_path": canonical_label_path or path,
+                    "text_path": text_path,
+                    "anchor_text": {
+                        "name": str(getattr(info, "name", "") or "").strip(),
+                        "description": str(
+                            getattr(info, "description", "") or ""
+                        ).strip(),
+                    },
+                    "variant": "shallow-semantic",
+                    "customer_index_correction": correction,
+                    "scanned_nodes": scanned,
+                    "max_nodes": max_nodes,
+                    "max_depth": max_depth,
+                    "order": order,
+                    "seconds": round(time.perf_counter() - started_at, 3),
+                }
+            if depth >= int(max_depth) or role == "table":
+                continue
+            child_count = min(info.childrenCount, jab.max_children)
+            for index in range(child_count):
+                child = jab.dll.getAccessibleChildFromContext(vm_id, context, index)
+                if not child:
+                    continue
+                release_after.append(child)
+                pending.append((child, [*path_indexes, index], depth + 1))
+        return {
+            "ok": False,
+            "mode": "finance-org-shallow-semantic",
+            "reason": "finance org anchor not found in shallow scope",
+            "scope_hwnd": scope_hwnd,
+            "scanned_nodes": scanned,
+            "max_nodes": max_nodes,
+            "max_depth": max_depth,
+            "order": order,
+            "seconds": round(time.perf_counter() - started_at, 3),
+        }
+    finally:
+        jab.release_contexts(vm_id, release_after)
+
+
+def correct_header_dynamic_index_by_customer_paths(jab, scope_hwnd, dynamic_index):
+    candidates = []
+    try:
+        base = int(dynamic_index)
+    except (TypeError, ValueError):
+        base = None
+    if base is not None:
+        candidates.extend([base, base + 1, base + 2, base - 1, base - 2])
+    for index in range(1, 11):
+        candidates.append(index)
+    attempts = []
+    seen = set()
+    for index in candidates:
+        if index is None or index <= 0 or index in seen:
+            continue
+        seen.add(index)
+        found = find_receipt_header_field_by_dynamic_path(
+            jab,
+            "客户",
+            index,
+            scope_hwnd=scope_hwnd,
+            require_showing=False,
+            require_valid_bounds=False,
+        )
+        attempts.append(
+            {
+                "dynamic_index": index,
+                "ok": bool(found.get("ok")),
+                "path": found.get("path"),
+                "reason": found.get("reason"),
+            }
+        )
+        if found.get("ok"):
+            path = found.get("path")
+            window = found.get("window")
+            jab.release_contexts(found["vm_id"], found["owned_contexts"])
+            return {
+                "ok": True,
+                "source": "customer-dynamic-path-nearby",
+                "dynamic_index": index,
+                "dynamic_prefix": receipt_header_dynamic_prefix(index),
+                "path": path,
+                "window": window,
+                "attempts": attempts,
+            }
+    semantic = find_receipt_header_field_by_semantic_label(
+        jab,
+        "客户",
+        scope_hwnd=scope_hwnd,
+        timeout=0.6,
+    )
+    if not semantic.get("ok"):
+        return {
+            "ok": False,
+            "source": "customer-dynamic-path-nearby",
+            "dynamic_index": dynamic_index,
+            "attempts": attempts,
+            "semantic_attempt": semantic,
+        }
+    corrected_index = extract_receipt_header_dynamic_index(semantic.get("path"))
+    path = semantic.get("path")
+    window = semantic.get("window")
+    jab.release_contexts(semantic["vm_id"], semantic["owned_contexts"])
+    if corrected_index is None:
+        return {
+            "ok": False,
+            "source": "customer-semantic-correction",
+            "dynamic_index": dynamic_index,
+            "attempts": attempts,
+            "semantic_path": path,
+            "reason": "客户语义 path 无法推出 dynamic_index",
+        }
+    return {
+        "ok": True,
+        "source": "customer-semantic-correction",
+        "dynamic_index": corrected_index,
+        "dynamic_prefix": receipt_header_dynamic_prefix(corrected_index),
+        "path": path,
+        "window": window,
+        "attempts": attempts,
     }
 
 
@@ -641,6 +1094,24 @@ def set_receipt_header_dynamic_field(
     total_started_at = time.perf_counter()
     legacy_control_name_attempt = None
     if label == HEADER_SCOPE_ANCHOR_LABEL:
+        dynamic_write_attempt = set_finance_org_by_write_path(
+            jab,
+            value,
+            scope_hwnd=scope_hwnd,
+            accepted_text=accepted_text,
+            recover_after_failure=recover_after_failure,
+            preferred_write_index=dynamic_index,
+        )
+        if dynamic_write_attempt.get("ok"):
+            return {
+                **dynamic_write_attempt,
+                "dynamic_index": dynamic_index,
+                "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
+                "timing": {
+                    **(dynamic_write_attempt.get("timing") or {}),
+                    "total_seconds": round(time.perf_counter() - total_started_at, 3),
+                },
+            }
         legacy_control_name_attempt = set_finance_org_by_legacy_control_name(
             jab,
             value,
@@ -651,6 +1122,7 @@ def set_receipt_header_dynamic_field(
             **legacy_control_name_attempt,
             "dynamic_index": dynamic_index,
             "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
+            "dynamic_write_attempt": dynamic_write_attempt,
             "timing": {
                 **(legacy_control_name_attempt.get("timing") or {}),
                 "total_seconds": round(time.perf_counter() - total_started_at, 3),
@@ -731,101 +1203,21 @@ def set_receipt_header_dynamic_field(
     window_info = found["window"]
 
     def write_current_context(initial_recovery=None):
-        write_started_at = time.perf_counter()
-        info_before = jab.get_context_info(vm_id, context)
-        before = jab.get_text_context_value(vm_id, context)
-        set_text_ok = False
-        modal_recovery = initial_recovery
-        paste_started_at = time.perf_counter()
-        guarded_paste = guarded_paste_header_value(
+        return write_header_context_with_guarded_paste(
             jab,
             vm_id,
             context,
             window_info,
             value,
-        )
-        paste_seconds = round(time.perf_counter() - paste_started_at, 3)
-        set_ok = bool(guarded_paste.get("ok"))
-        if not set_ok and recover_after_failure is not None:
-            recovery_after_set = recover_after_failure()
-            modal_recovery = recovery_after_set or modal_recovery
-            if recovery_after_set.get("attempted") and recovery_after_set.get("ok"):
-                guarded_paste = guarded_paste_header_value(
-                    jab,
-                    vm_id,
-                    context,
-                    window_info,
-                    value,
-                )
-                set_ok = bool(guarded_paste.get("ok"))
-        if set_ok and hasattr(jab.dll, "requestFocus"):
-            jab.dll.requestFocus(vm_id, context)
-        commit_action = None
-        enter_ok = (
-            bool(guarded_paste.get("enter_ok"))
-            if guarded_paste and guarded_paste.get("ok")
-            else False
-        )
-        info_after = jab.get_context_info(vm_id, context)
-        after = jab.get_text_context_value(vm_id, context)
-        backend_state = describe_backend_field_state(
-            info_after,
-            after,
-            value=value,
             accepted_text=accepted_text,
+            found=found,
+            path_attempt=path_attempt,
+            resolve_seconds=resolve_seconds,
+            total_started_at=total_started_at,
+            modal_recovery=initial_recovery,
+            recover_after_failure=recover_after_failure,
+            legacy_control_name_attempt=legacy_control_name_attempt,
         )
-        acceptance_probe = None
-        accepted = bool(backend_state.get("accepted"))
-        accept_started_at = time.perf_counter()
-        if set_ok and accepted_text and not accepted:
-            acceptance_probe = confirm_header_field_accepted(
-                jab,
-                vm_id,
-                context,
-                expected_text=accepted_text,
-                value=value,
-            )
-            accepted = bool(acceptance_probe.get("accepted"))
-        accept_seconds = round(time.perf_counter() - accept_started_at, 3)
-        return {
-            "ok": bool(set_ok and (not accepted_text or accepted)),
-            "path": found.get("path"),
-            "label_path": found.get("label_path"),
-            "dynamic_index": found.get("dynamic_index"),
-            "dynamic_prefix": found.get("dynamic_prefix"),
-            "source": found.get("source") or "path",
-            "path_attempt": path_attempt,
-            "dynamic_path_attempt": found.get("dynamic_path_attempt"),
-            "text_before": before,
-            "description_before": (
-                info_before.description.strip() if info_before else None
-            ),
-            "set_ok": bool(set_ok),
-            "set_text_ok": bool(set_text_ok),
-            "guarded_paste": guarded_paste,
-            "legacy_control_name_attempt": legacy_control_name_attempt,
-            "modal_recovery": modal_recovery,
-            "commit_action": commit_action,
-            "enter_ok": bool(enter_ok),
-            "post_write_snapshot": backend_state,
-            "acceptance_probe": acceptance_probe,
-            "accepted_text": accepted_text_from_backend(
-                (acceptance_probe or {}).get("matched_snapshot") or backend_state,
-                value,
-                accepted_text,
-            ),
-            "text_after": after,
-            "description_after": (
-                info_after.description.strip() if info_after else None
-            ),
-            "timing": {
-                "resolve_seconds": resolve_seconds,
-                "paste_seconds": paste_seconds,
-                "accept_seconds": accept_seconds,
-                "write_seconds": round(time.perf_counter() - write_started_at, 3),
-                "total_seconds": round(time.perf_counter() - total_started_at, 3),
-            },
-        }
 
     try:
         try:
@@ -911,6 +1303,365 @@ def confirm_header_field_accepted(
         "attempts": attempts,
         "reason": "表头字段未确认解析为目标值",
     }
+
+
+def write_header_context_with_guarded_paste(
+    jab,
+    vm_id,
+    context,
+    window_info,
+    value,
+    accepted_text=None,
+    found=None,
+    path_attempt=None,
+    resolve_seconds=0.0,
+    total_started_at=None,
+    modal_recovery=None,
+    recover_after_failure=None,
+    legacy_control_name_attempt=None,
+):
+    total_started_at = total_started_at or time.perf_counter()
+    found = found or {}
+    write_started_at = time.perf_counter()
+    info_before = jab.get_context_info(vm_id, context)
+    before = jab.get_text_context_value(vm_id, context)
+    set_text_ok = False
+    paste_started_at = time.perf_counter()
+    guarded_paste = guarded_paste_header_value(
+        jab,
+        vm_id,
+        context,
+        window_info,
+        value,
+    )
+    paste_seconds = round(time.perf_counter() - paste_started_at, 3)
+    set_ok = bool(guarded_paste.get("ok"))
+    if not set_ok and recover_after_failure is not None:
+        recovery_after_set = recover_after_failure()
+        modal_recovery = recovery_after_set or modal_recovery
+        if recovery_after_set.get("attempted") and recovery_after_set.get("ok"):
+            guarded_paste = guarded_paste_header_value(
+                jab,
+                vm_id,
+                context,
+                window_info,
+                value,
+            )
+            set_ok = bool(guarded_paste.get("ok"))
+    if set_ok and hasattr(jab.dll, "requestFocus"):
+        jab.dll.requestFocus(vm_id, context)
+    commit_action = None
+    enter_ok = (
+        bool(guarded_paste.get("enter_ok"))
+        if guarded_paste and guarded_paste.get("ok")
+        else False
+    )
+    info_after = jab.get_context_info(vm_id, context)
+    after = jab.get_text_context_value(vm_id, context)
+    backend_state = describe_backend_field_state(
+        info_after,
+        after,
+        value=value,
+        accepted_text=accepted_text,
+    )
+    acceptance_probe = None
+    accepted = bool(backend_state.get("accepted"))
+    accept_started_at = time.perf_counter()
+    if set_ok and accepted_text and not accepted:
+        acceptance_probe = confirm_header_field_accepted(
+            jab,
+            vm_id,
+            context,
+            expected_text=accepted_text,
+            value=value,
+        )
+        accepted = bool(acceptance_probe.get("accepted"))
+    accept_seconds = round(time.perf_counter() - accept_started_at, 3)
+    return {
+        "ok": bool(set_ok and (not accepted_text or accepted)),
+        "path": found.get("path"),
+        "label_path": found.get("label_path"),
+        "dynamic_index": found.get("dynamic_index"),
+        "dynamic_prefix": found.get("dynamic_prefix"),
+        "source": found.get("source") or "path",
+        "path_attempt": path_attempt,
+        "dynamic_path_attempt": found.get("dynamic_path_attempt"),
+        "text_before": before,
+        "description_before": info_before.description.strip() if info_before else None,
+        "set_ok": bool(set_ok),
+        "set_text_ok": bool(set_text_ok),
+        "guarded_paste": guarded_paste,
+        "legacy_control_name_attempt": legacy_control_name_attempt,
+        "modal_recovery": modal_recovery,
+        "commit_action": commit_action,
+        "enter_ok": bool(enter_ok),
+        "post_write_snapshot": backend_state,
+        "acceptance_probe": acceptance_probe,
+        "accepted_text": accepted_text_from_backend(
+            (acceptance_probe or {}).get("matched_snapshot") or backend_state,
+            value,
+            accepted_text,
+        ),
+        "text_after": after,
+        "description_after": info_after.description.strip() if info_after else None,
+        "timing": {
+            "resolve_seconds": resolve_seconds,
+            "paste_seconds": paste_seconds,
+            "accept_seconds": accept_seconds,
+            "write_seconds": round(time.perf_counter() - write_started_at, 3),
+            "total_seconds": round(time.perf_counter() - total_started_at, 3),
+        },
+    }
+
+
+def set_finance_org_by_write_path(
+    jab,
+    value,
+    scope_hwnd=None,
+    accepted_text=None,
+    recover_after_failure=None,
+    preferred_write_index=None,
+):
+    total_started_at = time.perf_counter()
+    accepted_text = accepted_text or FINANCE_ORG_ACCEPTED_TEXT
+    resolve_started_at = time.perf_counter()
+    found = find_finance_org_write_field_by_path(
+        jab,
+        scope_hwnd=scope_hwnd,
+        preferred_write_index=preferred_write_index,
+        require_showing=False,
+        require_valid_bounds=False,
+    )
+    resolve_seconds = round(time.perf_counter() - resolve_started_at, 3)
+    if not found.get("ok"):
+        return {
+            "ok": False,
+            "method": "finance-org-write-path-guarded-paste-enter",
+            "source": "finance-org-write-path",
+            "stage": "resolve",
+            "reason": found.get("reason") or "finance org write path not found",
+            "scope_hwnd": scope_hwnd,
+            "preferred_write_index": preferred_write_index,
+            "path_attempt": found,
+            "timing": {
+                "resolve_seconds": resolve_seconds,
+                "total_seconds": round(time.perf_counter() - total_started_at, 3),
+            },
+        }
+    context = found["context"]
+    vm_id = found["vm_id"]
+    owned_contexts = found["owned_contexts"]
+    try:
+        result = write_header_context_with_guarded_paste(
+            jab,
+            vm_id,
+            context,
+            found.get("window"),
+            value,
+            accepted_text=accepted_text,
+            found=found,
+            path_attempt=found,
+            resolve_seconds=resolve_seconds,
+            total_started_at=total_started_at,
+            recover_after_failure=recover_after_failure,
+        )
+        result["method"] = "finance-org-write-path-guarded-paste-enter"
+        result["control_name"] = HEADER_SCOPE_ANCHOR_TEXT
+        result["scope_hwnd"] = scope_hwnd
+        result["preferred_write_index"] = preferred_write_index
+        if result.get("ok"):
+            cache_finance_org_write_path(
+                jab,
+                scope_hwnd,
+                found.get("write_index"),
+                found.get("path"),
+            )
+        return result
+    finally:
+        jab.release_contexts(vm_id, owned_contexts)
+
+
+def build_finance_org_write_path(write_index):
+    if write_index is None:
+        return None
+    return (
+        f"{FINANCE_ORG_WRITE_PREFIX_BASE}.{int(write_index)}."
+        f"{FINANCE_ORG_WRITE_TEXT_SUFFIX}"
+    )
+
+
+def get_finance_org_write_path_cache(jab):
+    cache = getattr(jab, "_finance_org_write_path_cache", None)
+    if isinstance(cache, dict):
+        return cache
+    cache = {}
+    try:
+        setattr(jab, "_finance_org_write_path_cache", cache)
+    except AttributeError:
+        pass
+    return cache
+
+
+def cache_finance_org_write_path(jab, scope_hwnd, write_index, path):
+    if write_index is None:
+        return None
+    cache = get_finance_org_write_path_cache(jab)
+    key = int(scope_hwnd) if scope_hwnd is not None else None
+    value = {
+        "ok": True,
+        "scope_hwnd": scope_hwnd,
+        "write_index": int(write_index),
+        "path": path,
+        "dynamic_prefix": f"{FINANCE_ORG_WRITE_PREFIX_BASE}.{int(write_index)}",
+    }
+    cache[key] = value
+    cache["last"] = value
+    return value
+
+
+def finance_org_write_text_info_matches(info):
+    if not info:
+        return False
+    role = (
+        str(getattr(info, "role_en_US", "") or "").strip()
+        or str(getattr(info, "role", "") or "").strip()
+    ).lower()
+    if role != "text":
+        return False
+    states = (
+        str(getattr(info, "states_en_US", "") or "").strip()
+        or str(getattr(info, "states", "") or "").strip()
+    ).lower()
+    if "editable" not in states:
+        return False
+    return finance_org_label_info_matches(info)
+
+
+def find_finance_org_write_field_by_path(
+    jab,
+    scope_hwnd=None,
+    preferred_write_index=None,
+    min_index=1,
+    max_index=10,
+    require_showing=True,
+    require_valid_bounds=True,
+):
+    attempts = []
+    scope_pid = get_window_pid(jab, scope_hwnd)
+    cache = get_finance_org_write_path_cache(jab)
+    cache_key = int(scope_hwnd) if scope_hwnd is not None else None
+    cached = cache.get(cache_key) or cache.get("last") or cache.get(None) or {}
+    indexes = []
+    nearby_candidates = []
+    try:
+        preferred_int = int(preferred_write_index)
+    except (TypeError, ValueError):
+        preferred_int = None
+    try:
+        cached_int = int(cached.get("write_index"))
+    except (TypeError, ValueError):
+        cached_int = None
+    for seed in (cached_int, preferred_int):
+        if seed is not None:
+            nearby_candidates.extend([seed, seed + 1, seed + 2, seed - 1, seed - 2])
+    for candidate in (cached.get("write_index"), preferred_write_index, *nearby_candidates):
+        if candidate is None:
+            continue
+        try:
+            value = int(candidate)
+        except (TypeError, ValueError):
+            continue
+        if value not in indexes:
+            indexes.append(value)
+    for index in range(int(min_index), int(max_index) + 1):
+        if index not in indexes:
+            indexes.append(index)
+    for write_index in indexes:
+        path = build_finance_org_write_path(write_index)
+        context, vm_id, owned_contexts, window_info = jab.find_context_by_path_once(
+            path,
+            scope_hwnd=None,
+            role="text",
+            require_showing=require_showing,
+            require_valid_bounds=require_valid_bounds,
+        )
+        info = None
+        matches = False
+        pid_matches = bool(
+            scope_pid is None
+            or not (window_info or {}).get("pid")
+            or int((window_info or {}).get("pid")) == int(scope_pid)
+        )
+        if context:
+            try:
+                info = jab.get_context_info(vm_id, context)
+                matches = bool(pid_matches and finance_org_write_text_info_matches(info))
+                if matches:
+                    return {
+                        "ok": True,
+                        "context": context,
+                        "vm_id": vm_id,
+                        "owned_contexts": owned_contexts,
+                        "path": path,
+                        "label_path": None,
+                        "window": window_info,
+                        "dynamic_index": write_index,
+                        "dynamic_prefix": f"{FINANCE_ORG_WRITE_PREFIX_BASE}.{write_index}",
+                        "write_index": write_index,
+                        "source": "finance-org-write-path",
+                        "attempts": attempts
+                        + [
+                            {
+                                "write_index": write_index,
+                                "path": path,
+                                "found": True,
+                                "matches": True,
+                            }
+                        ],
+                    }
+            finally:
+                if not matches:
+                    jab.release_contexts(vm_id, owned_contexts)
+        attempts.append(
+            {
+                "write_index": write_index,
+                "path": path,
+                "found": bool(context),
+                "matches": bool(matches),
+                "pid_matches": bool(pid_matches),
+                "window": window_info,
+                "name": str(getattr(info, "name", "") or "").strip()
+                if info
+                else "",
+                "description": str(getattr(info, "description", "") or "").strip()
+                if info
+                else "",
+            }
+        )
+    return {
+        "ok": False,
+        "reason": "finance org write path not found",
+        "scope_hwnd": scope_hwnd,
+        "attempts": attempts,
+        "cached": cached,
+    }
+
+
+def get_window_pid(jab, hwnd):
+    if hwnd is None or os.name != "nt":
+        return None
+    try:
+        windows = jab.get_scoped_windows(hwnd, include_children=True)
+    except Exception:
+        return None
+    for item in windows:
+        try:
+            item_hwnd, _title, _class_name, pid, _visible = item
+        except ValueError:
+            continue
+        if int(item_hwnd) == int(hwnd):
+            return int(pid)
+    return None
 
 
 def find_receipt_header_field_by_live_semantic(
@@ -1482,7 +2233,7 @@ def build_receipt_header_dynamic_label_path(dynamic_index, label):
             return path
     if label == "财务组织":
         return (
-            f"{HEADER_DYNAMIC_PREFIX_BASE}.{dynamic_index}.{FINANCE_ORG_LABEL_SUFFIX}"
+            f"{HEADER_DYNAMIC_PREFIX_BASE}.{dynamic_index}.{FINANCE_ORG_COMPACT_LABEL_SUFFIX}"
         )
     index = HEADER_FORM_TEXT_INDEXES.get(label)
     if index is None:
@@ -1637,6 +2388,151 @@ def find_receipt_header_field_by_dynamic_path(
         "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
         "path_template": path_template,
     }
+
+
+def find_finance_org_field_by_dynamic_path(
+    jab,
+    dynamic_index,
+    scope_hwnd=None,
+    require_showing=True,
+    require_valid_bounds=True,
+):
+    attempts = []
+    for variant, label_path, text_path in build_finance_org_path_variants(
+        dynamic_index
+    ):
+        context, vm_id, owned_contexts, window_info = jab.find_context_by_path_once(
+            text_path,
+            class_name="SunAwtCanvas",
+            scope_hwnd=scope_hwnd,
+            role="text",
+            require_showing=require_showing,
+            require_valid_bounds=require_valid_bounds,
+        )
+        attempts.append(
+            {
+                "variant": variant,
+                "path": text_path,
+                "label_path": label_path,
+                "ok": bool(context),
+            }
+        )
+        if context:
+            return {
+                "ok": True,
+                "context": context,
+                "vm_id": vm_id,
+                "owned_contexts": owned_contexts,
+                "path": text_path,
+                "label_path": label_path,
+                "window": window_info,
+                "dynamic_index": dynamic_index,
+                "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
+                "variant": variant,
+                "attempts": attempts,
+            }
+    return {
+        "ok": False,
+        "reason": "finance org dynamic path not found",
+        "label": HEADER_SCOPE_ANCHOR_LABEL,
+        "dynamic_index": dynamic_index,
+        "attempts": attempts,
+    }
+
+
+def build_receipt_extra_text_field_path(dynamic_index, label):
+    suffix = RECEIPT_EXTRA_TEXT_FIELD_SUFFIXES.get(label)
+    if dynamic_index is None or not suffix:
+        return None
+    return f"{receipt_header_dynamic_prefix(dynamic_index)}.{suffix}"
+
+
+def find_receipt_extra_text_field_by_dynamic_path(
+    jab,
+    label,
+    dynamic_index,
+    scope_hwnd=None,
+    require_showing=True,
+    require_valid_bounds=True,
+):
+    text_path = build_receipt_extra_text_field_path(dynamic_index, label)
+    if not text_path:
+        return {
+            "ok": False,
+            "reason": "extra text field dynamic path not configured",
+            "label": label,
+            "dynamic_index": dynamic_index,
+        }
+    context, vm_id, owned_contexts, window_info = jab.find_context_by_path_once(
+        text_path,
+        class_name="SunAwtCanvas",
+        scope_hwnd=scope_hwnd,
+        role="text",
+        require_showing=require_showing,
+        require_valid_bounds=require_valid_bounds,
+    )
+    if not context:
+        return {
+            "ok": False,
+            "reason": "extra text field dynamic path not found",
+            "label": label,
+            "path": text_path,
+            "dynamic_index": dynamic_index,
+            "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
+        }
+    return {
+        "ok": True,
+        "label": label,
+        "context": context,
+        "vm_id": vm_id,
+        "owned_contexts": owned_contexts,
+        "path": text_path,
+        "window": window_info,
+        "dynamic_index": dynamic_index,
+        "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
+        "source": "dynamic-path",
+    }
+
+
+def infer_receipt_extra_text_field_suffix(path, dynamic_index):
+    prefix = f"{receipt_header_dynamic_prefix(dynamic_index)}."
+    if not path or dynamic_index is None or not str(path).startswith(prefix):
+        return None
+    return str(path)[len(prefix) :]
+
+
+def find_receipt_extra_text_field_by_live_semantic(
+    jab,
+    label,
+    dynamic_index,
+    scope_hwnd=None,
+    timeout=HEADER_LIVE_SEMANTIC_FALLBACK_TIMEOUT,
+):
+    found = find_receipt_header_field_by_semantic_label(
+        jab,
+        label,
+        scope_hwnd=scope_hwnd,
+        timeout=timeout,
+    )
+    if not found.get("ok"):
+        return {
+            "ok": False,
+            "label": label,
+            "source": "semantic-live-after-path-miss",
+            "reason": found.get("reason") or "semantic label not found",
+            "semantic_attempt": found,
+            "dynamic_index": dynamic_index,
+        }
+    suffix = infer_receipt_extra_text_field_suffix(found.get("path"), dynamic_index)
+    found["source"] = "semantic-live-after-path-miss"
+    found["dynamic_index"] = dynamic_index
+    found["dynamic_prefix"] = (
+        receipt_header_dynamic_prefix(dynamic_index)
+        if dynamic_index is not None
+        else None
+    )
+    found["inferred_suffix"] = suffix
+    return found
 
 
 def find_receipt_header_field_by_scoped_label(jab, label, scope_hwnd=None):

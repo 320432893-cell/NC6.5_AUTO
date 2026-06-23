@@ -17,6 +17,7 @@ def set_text_near_label(
     text,
     title=None,
     class_name=None,
+    hwnd=None,
     wait=None,
     timeout=None,
     require_showing=True,
@@ -31,6 +32,7 @@ def set_text_near_label(
             label,
             title=title,
             class_name=class_name,
+            hwnd=hwnd,
             require_showing=require_showing,
         )
         context, vm_id, owned_contexts, label_info, text_info, window_info = result
@@ -62,21 +64,24 @@ def find_text_context_near_label_once(
     label,
     title=None,
     class_name=None,
+    hwnd=None,
     require_showing=True,
 ):
     windows = enum_windows(include_children=True)
-    for hwnd, window_title, window_class, pid, visible in windows:
+    for window_hwnd, window_title, window_class, pid, visible in windows:
+        if hwnd is not None and int(window_hwnd) != int(hwnd):
+            continue
         if title is not None and window_title != title:
             continue
         if class_name is not None and window_class != class_name:
             continue
-        if not jab.dll.isJavaWindow(hwnd):
+        if not jab.dll.isJavaWindow(window_hwnd):
             continue
 
         vm_id = ctypes.c_long()
         root_context = JOBJECT()
         if not jab.dll.getAccessibleContextFromHWND(
-            hwnd,
+            window_hwnd,
             ctypes.byref(vm_id),
             ctypes.byref(root_context),
         ):
@@ -98,7 +103,7 @@ def find_text_context_near_label_once(
                 label_info,
                 text_info,
                 {
-                    "hwnd": int(hwnd),
+                    "hwnd": int(window_hwnd),
                     "title": window_title,
                     "class": window_class,
                     "pid": pid,
@@ -114,6 +119,7 @@ def describe_controls_near_label(
     label,
     title=None,
     class_name=None,
+    hwnd=None,
     require_showing=True,
     max_vertical_distance=28,
     max_right_distance=420,
@@ -121,22 +127,25 @@ def describe_controls_near_label(
     """Read-only diagnostic for controls near a label row."""
     jab.ensure_started()
     windows = []
+    target_hwnd = None if hwnd is None else int(hwnd)
 
-    for hwnd, window_title, window_class, pid, visible in enum_windows(
+    for window_hwnd, window_title, window_class, pid, visible in enum_windows(
         include_children=True
     ):
+        if target_hwnd is not None and int(window_hwnd) != target_hwnd:
+            continue
         if title is not None and window_title != title:
             continue
         if class_name is not None and window_class != class_name:
             continue
 
         window_result = {
-            "hwnd": int(hwnd),
+            "hwnd": int(window_hwnd),
             "title": window_title,
             "class": window_class,
             "pid": pid,
             "visible": visible,
-            "is_java": bool(jab.dll.isJavaWindow(hwnd)),
+            "is_java": bool(jab.dll.isJavaWindow(window_hwnd)),
             "labels": [],
         }
         windows.append(window_result)
@@ -146,7 +155,7 @@ def describe_controls_near_label(
         vm_id = ctypes.c_long()
         root_context = JOBJECT()
         if not jab.dll.getAccessibleContextFromHWND(
-            hwnd,
+            window_hwnd,
             ctypes.byref(vm_id),
             ctypes.byref(root_context),
         ):

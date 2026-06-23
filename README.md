@@ -4,11 +4,11 @@
 
 当前主线是 Java Access Bridge（JAB）。旧的 `pyautogui` 坐标点击、截图识别、固定坐标方案已经删除，不再作为新功能方向。
 
-本仓库当前不是桌面 GUI 应用，也没有正式图形界面入口。对 NC 的真实操作只通过 CLI 工具驱动 Windows Python + JAB；若后续要做可视化配置或前端，也必须复用现有配置对象、计划模型和 JAB 工作流，不能另起坐标/截图方案。
+本仓库是 NC/JAB 引擎仓库，不直接承载桌面 GUI 代码。正式桌面入口由 `H:\python脚本\采购对账桌面版` 封装调用本仓库引擎，当前构建产物为 `H:\python脚本\采购对账桌面版\dist\采购对账桌面版\采购对账桌面版.exe`。对 NC 的真实操作仍通过 Windows Python + JAB 执行；桌面端只能调用现有配置对象、计划模型和 JAB 工作流，不能另起坐标/截图方案。
 
 ## GUI / 前端接手口径
 
-当前没有正式 GUI，也不要把 `tools/tmp_*`、`.bat` 菜单或现场探测脚本理解成 GUI。它们只是 CLI/测试入口。未来如果要做桌面 GUI、Web 前端或 TypeScript 配置台，必须接现有业务对象，而不是重写自动化路径。
+桌面 GUI 代码在 `H:\python脚本\采购对账桌面版`，本仓库只维护被它调用的 NC 引擎。不要把 `tools/tmp_*`、`.bat` 菜单或现场探测脚本理解成 GUI；它们只是 CLI/测试入口。后续改桌面 GUI、Web 前端或 TypeScript 配置台时，必须接现有业务对象，而不是重写自动化路径。
 
 可视化入口应该围绕这些对象设计：
 
@@ -80,10 +80,13 @@
 - `tools/receipt_query_fill.py`
 - `tools/receipt_self_made_fill_trial.py`
 - `tools/close_awt_popup_residue.py`
+- `tools/receipt_business_memo_probe.py`：收款单表头 `商务领款备忘` path 现场探测，只作诊断。
+- `tools/receipt_finance_org_path_probe.py` / `tools/receipt_finance_org_write_path_probe.py`：财务组织 label/write path 现场探测，只作诊断。
+- `tools/voucher_path_stability_probe.py`：凭证待生成工具栏和相关控件 path 稳定性采样，只作诊断。
 - `tools/query_jab.bat`
 - `tools/run_jab_probe.bat`
 
-仍存在的 `tools/tmp_*` 只作为现场探测、复盘或窄场景诊断参考，不是正式批量入口：`tmp_receipt_cell_probe_run.py`、`tmp_receipt_tables_probe.py`、`tmp_receipt_detail_main_line_run.py`、`tmp_jab_recovery_probe.py`。其中 `tmp_receipt_detail_main_line_run.py` 只是兼容壳，会转发到正式入口 `tools/receipt_detail_entry.py`；旧表头账户参照探针已移入 `tools/archive/`，已删除的真实保存 T0 脚本只能从 git 历史恢复。
+仍存在的 `tools/tmp_*` 只作为现场探测、复盘或窄场景诊断参考，不是正式批量入口：`tmp_receipt_cell_probe_run.py`、`tmp_receipt_tables_probe.py`、`tmp_receipt_detail_main_line_run.py`、`tmp_jab_recovery_probe.py`。其中 `tmp_receipt_detail_main_line_run.py` 只是兼容壳，会转发到正式入口 `tools/receipt_detail_entry.py`；旧表头账户参照探针已移入 `tools/archive/`，已删除的真实保存 T0 脚本和本轮生命周期结束探针只能从 git 历史恢复。
 
 历史探针和人工现场测试入口已收口到 `tools/archive/`。这些文件只作复盘证据，不是测试人员默认入口，也不能被正式流程 import；需要重新启用时先移回合适目录并补检查闭包。
 
@@ -297,7 +300,7 @@ NC 表头层级很深，JAB 默认搜索深度必须保持 `max_depth=50`。`25`
 > `财务组织` 步骤只证明代码定位到 `财务组织(O)` scoped text 并发送 guarded paste + Enter，未证明 NC 已落入 `A001`；用户肉眼确认财务组织未写入。
 > `setTextContents(A001)` 已确认返回失败。客户字段随后 scoped label-following-text 和固定 path 均定位失败。接手前必须先做单字段探针确认财务组织真实输入/提交方式和客户字段真实路径。
 
-`新增 -> 自制` 的成功标准是上方 `保存(Ctrl+S)`、`暂存`、`取消(Ctrl+Q)` 三个按钮同时出现；只看到 JAB action 返回成功或菜单项被点击，不算进入自制录入态。25 列明细表只作为填明细前的单独校验，不作为开单成功条件。完整流程复用同一个主 JAB 完成开单、表头、明细和保存；`自制` 后不得再起子进程或重新启动主 JAB 造成空等。
+`新增 -> 自制` 的成功标准是上方编辑态按钮出现，优先看 `保存(Ctrl+S)`，`暂存` 或 `取消(Ctrl+Q)` 任一出现也可证明已进入录入态；只看到 JAB action 返回成功或菜单项被点击，不算进入自制录入态。25 列明细表只作为填明细前的单独校验，不作为开单成功条件。完整流程复用同一个主 JAB 完成开单、表头、明细和保存；`自制` 后不得再起子进程或重新启动主 JAB 造成空等。
 
 `tools/receipt_self_made_fill_trial.py` 默认只负责开单和表头阶段；表头字段主路是“当前 canvas + 动态前缀 + 固定后缀 path”写入，`财务组织(O)` 是前缀硬锚点。完整流程开单成功后立即写表头首字段；下方表格 path 预热只在财务组织写入成功后后台启动，不得阻塞财务组织写入。明细填入默认禁用，必须显式传 `--fill-detail` 才会尝试进入明细；明细正式入口统一调用 `tools/receipt_detail_*`，使用受保护前台键盘和剪贴板粘贴，不能回退到坐标或无守卫 typing。
 
@@ -342,6 +345,8 @@ C:\Users\Queclink\Desktop\6.1凭证.xlsx
 - `jab_batch.amount_out_col = 1`
 - `jab_batch.partner_out_col = 2`
 - `jab_batch.result_col = 3`
+- 上述列号均为 Excel/openpyxl 1 基列号，GUI 可配置；CLI 也可用 `--key-col`、`--amount-out-col`、`--partner-out-col`、`--result-col` 临时覆盖。
+- `jab_batch.foreign_currency_rate` 可配置外币折本位币汇率；GUI 可填，CLI 可用 `--foreign-currency-rate` 覆盖。配置汇率后，制单窗口按 `abs(制单金额 - Excel金额 * 汇率) <= foreign_currency_amount_tolerance` 接受匹配，默认金额差容差为 5，CLI 可用 `--foreign-currency-amount-tolerance` 覆盖。留空汇率时继续使用引擎的自动估计逻辑。
 
 解析规则：
 
@@ -385,6 +390,7 @@ C:\Users\Queclink\Desktop\6.1凭证.xlsx
 - 凭证号列：`col=22`
 - 凭证号回填时去前导 0。
 - 凭证号有效范围：`1 <= 凭证号 <= 9999`。
+- 页面状态识别只用真实凭证号判定已生成；`00000000` 不算，列数和日期不作为页面证明。
 
 收款单查询结果表：
 
@@ -415,7 +421,8 @@ C:\Users\Queclink\Desktop\6.1凭证.xlsx
 - `ReceiptPlanIssue` 必须带 `excel_row`、`stage`、`issue_type`、`field`、`raw_value`、`config_node`、`message`、`action`；不要新增笼统的“配置错误/数据错误”。Sheet2 展示时会压缩为单列 `异常原因`，详细结构只留给 CLI/日志和代码判断。
 - 当前会识别缺必需列、起始行无效、银行为空/未配置/账户禁用、账户主体不存在、日期错误、银行来款名为空、金额错误或非正、币种为空或不支持、客户编码为空、手续费错误或负数、以及本批 Sheet1 内重复。
 - 重复键为 `主体 + 到款日期 + 银行 + 币种 + 客户编码 + 银行来款名 + 金额`。同一 key 出现多行时标 `DUPLICATE_EXCEL_ROWS`，整组不录入。
-- 通过预检的行按主体分组供后续录入使用；录入前不查 NC。全部录入后再进入后验查询阶段，查询结果只影响 Sheet2 的 `NC单据号` 和 `异常原因`。`--query-after-save` 已接入正式后验查询：按本批保存成功行的主体分组，最多四个主体；每个主体用本批日期区间查一次 NC，先改每页 500，再按页读取并只匹配本批目标。匹配使用录入客户编码后 NC 主表显示出的客户名，不使用 Sheet1 银行来款名；名称归一化相似度阈值不低于 90，金额必须精确相等。
+- 通过预检的行按主体分组供后续录入使用；录入前不查 NC。全部录入后再进入后验查询阶段，查询结果只影响 Sheet2 的 `NC客户名称`、`后验核对状态` 和 `异常原因`。`--query-after-save` 已接入正式后验查询：按本批保存成功行的主体分组，最多四个主体；每个主体用本批日期区间查一次 NC，先改每页 500，再按页读取并只匹配本批目标。匹配使用录入客户编码后 NC 主表显示出的客户名，不使用 Sheet1 银行来款名；名称归一化相似度阈值不低于 90，金额必须精确相等。
+- Sheet2 本批结果按主体、到款日期、原 Sheet1 行号排序；每个主体块后追加 `主体合计：xxx` 行，汇总 `🟪原始金额`、`手续费`、`🟪到账金额`。
 - 收款单录入 path 策略的稳定事实：当前页路径前缀会随打开的 NC 页面/页签动态变化，字段后缀在同类收款单页面内稳定。正式入口已按“当前 canvas + `财务组织(O)` 锚点确认动态前缀 + 稳定后缀”为主接入；表头主 path 失败不再语义接管，只在动作失败后尝试 `Alt+C` 阻塞弹窗恢复并重试当前动作一次。明细后台 verifier 已接入完整流程。
 - 收款单查询条件也按同一口径处理：F3 打开查询条件后先解析查询窗口自己的动态前缀，拼接 `收款财务组织`、`单据日期起止` 的稳定后缀写入；动态 path 失败后走当前查询窗口内的语义路径推断，不再回退旧 near-label 写入。F3 触发用 `pyautogui.press("f3")` 按 `0.2s` 重试直到 `查询条件/SunAwtDialog` 可见，裸 SendInput F3 现场验证不稳定。
 - 收款单查询结果页正式策略：优先用模块动态前缀 `0.0.1.0.0.0.0.{index}` 拼结果区固定后缀 `0.0.0.1.1.0.0.0.1.1.1.0.0.0`，再拼结果表 `0.0.0`、页码 label `1.6`、每页行数 `1.7`、下一页 `1.2`；失败才枚举 table path 反推。缓存命中后按 `cached_trusted` 复用，不重复校验所有分页控件。读取结果只取匹配必要列，不全表扫列。
@@ -481,7 +488,7 @@ C:\Users\Queclink\Desktop\6.1凭证.xlsx
 6. 等 `目的业务日期` 条件出现。
 7. 用 JAB `setTextContents` 写入两个日期框。
 8. 用 JAB AccessibleAction 点击 `确定`。
-9. 读取表格确认已进入已生成列表。
+9. 读取表格凭证号列，确认存在真实凭证号后判定已进入已生成列表。
 
 日期默认优先级：
 
@@ -497,13 +504,14 @@ JAB 查询入口现状：
   `0.0.1.0.0.0.0.2.0.0.0.0.0.0.0.2`
 - 控件信息：`查询` / `push button` / `单击`。
 - 该 path 可以打开查询窗口。
-- 但主查询入口用 JAB action 会触发 Access Bridge 不稳定，因此默认仍用 F3 打开查询窗口。
+- 主查询入口默认仍用 F3 打开查询窗口；JAB action 仅作为受控备选，不能恢复坐标点击。
 - 查询窗口内部已验证：`正式单据` / `确定` 走 JAB AccessibleAction，日期框走 JAB `setTextContents`。
 - `目的业务日期` 条件操作符是 `介于`，限定当天时两个日期框都要填同一天。
 - `目的业务日期` 依赖先选择 `正式单据` 才出现；选择前可见的 `.2` 行是 `生效日期`，不要用于 `generated_date_value`。当前目的业务日期起止 path 是 `.11.1.0.0` / `.11.1.2.0`。
 - F3 后不要固定 sleep 盲点，必须等查询窗口内目标 path 出现后再执行下一步。
 - 开启 `--perf` 后，查询窗口步骤会拆分记录 `switch_step_formal_action`、`switch_step_date_from`、`switch_step_date_to`、`switch_step_confirm_action`。
 - NC 查询条件区的视觉布局不等于 JAB 结构：有些输入框看起来像上下两行，实际可能像同一个 div/容器里换行显示，JAB 仍会归到同一个容器或同一行组。定位时必须按 label、role、row 容器、bounds 和后置状态验证综合判断。
+- 待生成和已生成页面可能保留同一套 `删除/查询/刷新/选择/生成` 工具栏；不能用工具栏或 `正式单据` 控件证明已生成页。
 
 ### 回填
 
@@ -529,23 +537,23 @@ JAB 查询入口现状：
 
 ## 制单保存策略
 
-当前正式主线是 `single + jab_button + use_voucher_queue_cache`：
+当前默认主线是 `single + jab_button + use_voucher_queue_cache`：
 
 - 一张一保存，保证凭证号按 Excel 顺序递增。
 - 保存触发走 JAB 保存按钮，稳定性高于快捷键。
 - 制单表只读取一次初始队列；每保存一张后，缓存中位于被删行下方的行号统一减 1。
 - Excel 状态在保存结束后批量写入，减少 I/O。
 
-代码只保留稳定主线和一个快速备选策略；旧的 `bottom_up` 已淘汰删除。
+代码只保留稳定单张主线和一个已验证的小批量备选策略；旧的 `bottom_up`、`batch`、`batch_reverse_select` 已淘汰删除。
 
 可配置策略：
 
 - `single`：当前正式策略。一行一保存，凭证号顺序最稳，速度较慢。
-- `safe_batch_by_pending_row`：快速备选策略。只合并 Excel 顺序中待生成 NC 行号递增、且制单窗口行号递增的连续段；其它自动拆成单张。它整体线性，但不承诺凭证号严格按 Excel 递增。
+- `safe_batch_by_pending_row`：快速备选策略。只合并 Excel 顺序中待生成 NC 行号递增、且制单窗口行号递增的连续段；其它自动拆成单张。3 张小批量已验证可保存并回填，放大批量前仍应按 `3 -> 10 -> 50` 逐级测试。
 
 已发生真实案例：Excel 行 25/26 的制单行分别是 1/9，但回填凭证号为 370/369。后续多轮实验也证明行号递增、递减、选择顺序都不能稳定保证凭证号按 Excel 顺序递增。因此严格顺序主线固定使用 `single`。
 
-`Ctrl+S` 保存触发也做过对照：可保存成功，但端到端没有优于 JAB 按钮。因此默认仍使用 JAB 按钮。
+`Ctrl+S` 保存触发已废弃：真实测试中会增加 NC 崩溃风险，配置校验和 CLI 只允许 `jab_button`。
 
 ## 验证规则
 

@@ -7,6 +7,11 @@ from core.models import ExcelVoucherItem, VoucherSaveMatch
 from core.nc_voucher_workflow import NCVoucherWorkflow
 
 
+@pytest.fixture(autouse=True)
+def no_real_keyboard_abort(monkeypatch):
+    monkeypatch.setattr("core.nc_voucher_workflow.check_abort", lambda: None)
+
+
 class FakeSpan:
     def __enter__(self):
         return self
@@ -22,6 +27,9 @@ class FakePerf:
     def span(self, *args, **kwargs):
         self.spans.append((args, kwargs))
         return FakeSpan()
+
+    def event(self, *args, **kwargs):
+        self.spans.append((args, kwargs))
 
 
 class FakeJAB:
@@ -61,12 +69,28 @@ class FakeProcessor:
         self.voucher_record_timeout = 0.1
         self.voucher_window_title = "制单"
         self.voucher_window_class = "SunAwtDialog"
+        self.save_wait = 0.1
         self.batch_cfg = {
             "state_wait_timeout": 0.1,
             "state_wait_interval": 0.01,
             "voucher_table_read_min_rows": 5,
             "voucher_table_read_row_buffer": 2,
         }
+        self.foreign_currency_rate = None
+        self.foreign_currency_rate_tolerance = Decimal("0.02")
+        self.foreign_currency_amount_tolerance = Decimal("5.00")
+        self.table_matcher = self
+
+    def _as_decimal(self, value):
+        if isinstance(value, Decimal):
+            return value
+        return Decimal(str(value)).quantize(Decimal("0.01"))
+
+    def record_event(self, *args, **kwargs):
+        self.perf.event(*args, **kwargs)
+
+    def record_transition(self, *args, **kwargs):
+        self.perf.event(*args, **kwargs)
 
 
 def make_match(row, *, table_index=2, table_rows=5, voucher_row=0):
@@ -90,6 +114,39 @@ def make_match(row, *, table_index=2, table_rows=5, voucher_row=0):
         voucher_row=voucher_row,
         voucher_cells=["1.00", "深圳公司"],
     )
+
+
+def make_pending_match(row, amount, partner="深圳公司"):
+    item = ExcelVoucherItem(
+        row=row,
+        raw_key="",
+        raw_amount=str(amount),
+        raw_partner=partner,
+        amount=Decimal(str(amount)),
+        partner=partner,
+        voucher="",
+        source="split_ab",
+        parse_error="",
+    )
+    return VoucherSaveMatch(
+        item=item,
+        nc_row=row,
+        row_data={},
+        table_index=0,
+        table_rows=2,
+        voucher_row=0,
+        voucher_cells=[],
+    )
+
+
+def make_record(row_index, amount):
+    return {
+        "table": {"table_index": 0, "row_count": 2},
+        "row": {"row_index": row_index, "cells": []},
+        "amount": Decimal(str(amount)),
+        "partner_key_text": "深圳公司",
+        "row_text": "深圳公司",
+    }
 
 
 def test_verify_voucher_batch_removed_passes_on_exact_table_count_decrease():
@@ -178,3 +235,40 @@ def test_close_voucher_window_after_save_polls_without_action_wait():
 
     assert jab.closed_windows
     assert jab.closed_windows[-1][1]["wait"] == 0
+
+
+def test_rate_assignment_uses_amount_tolerance_when_rate_configured():
+    processor = FakeProcessor(FakeJAB())
+    processor.foreign_currency_rate = Decimal("7.10")
+    processor.foreign_currency_amount_tolerance = Decimal("5.00")
+    workflow = NCVoucherWorkflow(processor)
+    matches = [
+        make_pending_match(1, "100.00"),
+        make_pending_match(2, "200.00"),
+    ]
+    records = [
+        make_record(0, "1423.00"),
+        make_record(1, "713.00"),
+    ]
+
+    assignment = workflow.choose_rate_consistent_assignment(matches, records)
+
+    assert assignment is not None
+    assert [record["row"]["row_index"] for _match, record in assignment] == [1, 0]
+
+
+def test_rate_assignment_rejects_amount_diff_over_tolerance():
+    processor = FakeProcessor(FakeJAB())
+    processor.foreign_currency_rate = Decimal("7.10")
+    processor.foreign_currency_amount_tolerance = Decimal("5.00")
+    workflow = NCVoucherWorkflow(processor)
+    matches = [
+        make_pending_match(1, "100.00"),
+        make_pending_match(2, "200.00"),
+    ]
+    records = [
+        make_record(0, "716.00"),
+        make_record(1, "1420.00"),
+    ]
+
+    assert workflow.choose_rate_consistent_assignment(matches, records) is None

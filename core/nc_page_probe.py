@@ -3,11 +3,15 @@ from tools.jab_probe import JOBJECT, enum_windows
 
 WATCH_NAMES = (
     "单据生成",
+    "删除",
     "查询",
+    "刷新",
+    "选择",
     "生成",
     "前台生成",
     "正式单据",
     "确定",
+    "保存",
     "取消",
     "制单",
 )
@@ -133,6 +137,7 @@ class NCPageProbe:
                     {
                         "window_title": window["title"],
                         "window_class": window["class"],
+                        "window_hwnd": window["hwnd"],
                         "path": ".".join(map(str, path)),
                         "name": name,
                         "description": desc,
@@ -157,7 +162,6 @@ class NCPageProbe:
             self.jab.release_contexts(vm_id, [child])
 
     def describe_table(self, table):
-        generated_date_col = self.batch_cfg.get("generated_date_col", 18)
         voucher_col = self.batch_cfg.get("generated_voucher_col", 22)
         return {
             "table_index": table["table_index"],
@@ -165,8 +169,6 @@ class NCPageProbe:
             "window_class": table.get("window_class"),
             "row_count": table["row_count"],
             "col_count": table["col_count"],
-            "date_col": generated_date_col,
-            "date_values": sample_col(table, generated_date_col)[:8],
             "voucher_col": voucher_col,
             "voucher_values": sample_col(table, voucher_col)[:8],
             "sample_rows": [
@@ -214,10 +216,118 @@ class NCPageProbe:
                         "path": ".".join(map(str, path)),
                         "role": info.role_en_US.strip() or info.role.strip(),
                         "showing": "visible" in states and "showing" in states,
+                        "bounds": [info.x, info.y, info.width, info.height],
                     }
                 )
             self.jab.release_contexts(vm_id, owned)
         return controls
+
+    def collect_watched_controls(self):
+        self.jab.ensure_started()
+        return self.collect_controls()
+
+    def detect_pending_toolbar(self, controls):
+        parent_markers = [
+            control
+            for control in controls
+            if control.get("name") == "单据生成" and control.get("showing")
+        ]
+        if not parent_markers:
+            return {
+                "ok": False,
+                "reason": "未检测到单据生成父页面",
+                "parent_count": 0,
+            }
+
+        required = ("删除", "查询", "刷新", "选择", "生成")
+        candidates = [
+            control
+            for control in controls
+            if control.get("name") in required and control.get("showing")
+        ]
+        missing = [
+            name
+            for name in required
+            if not any(c.get("name") == name for c in candidates)
+        ]
+        if missing:
+            return {
+                "ok": False,
+                "reason": f"待生成工具栏按钮缺失: {missing}",
+                "parent_count": len(parent_markers),
+                "missing": missing,
+            }
+
+        best = None
+        for window_hwnd in sorted(
+            {
+                control.get("window_hwnd")
+                for control in candidates
+                if control.get("window_hwnd") is not None
+            }
+        ):
+            grouped = [
+                control
+                for control in candidates
+                if control.get("window_hwnd") == window_hwnd
+            ]
+            picked = {}
+            for name in required:
+                choices = [
+                    control for control in grouped if control.get("name") == name
+                ]
+                if not choices:
+                    picked = {}
+                    break
+                picked[name] = min(choices, key=lambda item: button_x(item))
+            if not picked:
+                continue
+            xs = [button_x(picked[name]) for name in required]
+            y_values = [button_y(picked[name]) for name in required]
+            ordered = all(left < right for left, right in zip(xs, xs[1:]))
+            same_row = max(y_values) - min(y_values) <= max(
+                40,
+                max(
+                    (picked[name].get("bounds") or [0, 0, 0, 0])[3]
+                    for name in required
+                ),
+            )
+            if ordered and same_row:
+                best = {
+                    "window_hwnd": window_hwnd,
+                    "buttons": [
+                        {
+                            "name": name,
+                            "path": picked[name].get("path"),
+                            "bounds": picked[name].get("bounds"),
+                        }
+                        for name in required
+                    ],
+                }
+                break
+
+        if best:
+            return {
+                "ok": True,
+                "reason": "单据生成父页+待生成工具栏顺序匹配",
+                "parent_count": len(parent_markers),
+                **best,
+            }
+
+        return {
+            "ok": False,
+            "reason": "待生成工具栏按钮顺序不匹配",
+            "parent_count": len(parent_markers),
+            "buttons": [
+                {
+                    "name": control.get("name"),
+                    "path": control.get("path"),
+                    "bounds": control.get("bounds"),
+                    "window_hwnd": control.get("window_hwnd"),
+                }
+                for control in candidates
+            ],
+        }
 
     def collect_visible_buttons_by_desc_tokens(
         self,
@@ -300,29 +410,47 @@ class NCPageProbe:
 
     def read_page_table_signatures(
         self,
-        generated_date_col,
         voucher_col,
         amount_col,
         partner_col,
     ):
-        tables = self.jab.read_all_table_cells(max_rows=25, max_cols=30)
+        min_cols = max(
+            column
+            for column in (amount_col, partner_col, 0)
+            if column is not None
+        ) + 1
+        summaries = self.jab.read_table_summaries(min_rows=1, min_cols=min_cols)
+        main = choose_main_summary_table(summaries)
+        if not main:
+            return []
+
+        columns = [amount_col, partner_col]
+        if voucher_col is not None and main.get("col_count", 0) > voucher_col:
+            columns.append(voucher_col)
+        tables = self.jab.read_all_table_selected_columns(
+            columns,
+            max_rows=25,
+            min_rows=max(1, main.get("row_count", 1)),
+            min_cols=min_cols,
+            exact_cols=main.get("col_count"),
+        )
+        table = choose_main_summary_table(tables)
+        if not table:
+            return []
         return [
             describe_signature_table(
                 self.jab,
                 table,
-                generated_date_col,
                 voucher_col,
                 amount_col,
                 partner_col,
             )
-            for table in tables
         ]
 
 
 def describe_signature_table(
     jab,
     table,
-    generated_date_col,
     voucher_col,
     amount_col,
     partner_col,
@@ -333,7 +461,6 @@ def describe_signature_table(
         "window_class": table.get("window_class"),
         "row_count": table["row_count"],
         "col_count": table["col_count"],
-        "date_values": sample_col(table, generated_date_col),
         "voucher_values": sample_col(table, voucher_col),
         "rows": [
             {
@@ -361,3 +488,23 @@ def sample_col(table, col):
             if text:
                 values.append(text)
     return values
+
+
+def button_x(control):
+    bounds = control.get("bounds") or [0, 0, 0, 0]
+    return int(bounds[0])
+
+
+def button_y(control):
+    bounds = control.get("bounds") or [0, 0, 0, 0]
+    return int(bounds[1])
+
+
+def choose_main_summary_table(tables):
+    candidates = [table for table in tables if table.get("col_count", 0) > 1]
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda table: table.get("row_count", 0) * table.get("col_count", 0),
+    )

@@ -120,7 +120,6 @@ class NCVoucherWorkflow:
                 excel_rows=[match.item.row for match in voucher_batch],
                 save_batch_index=save_batches + 1,
                 save_trigger=self.save_trigger,
-                hotkey_activate_policy=self.hotkey_activate_policy,
             ):
                 if not self.trigger_voucher_save():
                     raise JABActionError(
@@ -243,51 +242,7 @@ class NCVoucherWorkflow:
     def trigger_voucher_save(self):
         if self.save_trigger == "jab_button":
             return self.jab.click_save(timeout=self.save_success_timeout)
-        if self.save_trigger == "hotkey":
-            if not self.jab.window_exists(
-                self.voucher_window_title,
-                class_name=self.voucher_window_class,
-            ):
-                log.warning("Ctrl+S 保存前未检测到制单窗口")
-                return False
-            if not self.prepare_hotkey_save_focus():
-                return False
-            self.jab.press_hotkey("ctrl", "s", wait=0)
-            self.hotkey_save_attempts += 1
-            return True
         raise ValueError(f"不支持的保存触发方式: {self.save_trigger!r}")
-
-    def prepare_hotkey_save_focus(self):
-        if self.hotkey_activate_policy == "always":
-            return self.jab.maximize_window_by_title(
-                self.voucher_window_title,
-                class_name=self.voucher_window_class,
-                timeout=1,
-            )
-
-        if self.hotkey_activate_policy == "first":
-            if self.hotkey_save_attempts == 0:
-                return self.jab.maximize_window_by_title(
-                    self.voucher_window_title,
-                    class_name=self.voucher_window_class,
-                    timeout=1,
-                )
-            return True
-
-        if self.hotkey_activate_policy == "foreground_guard":
-            if self.jab.foreground_window_matches(
-                self.voucher_window_title,
-                class_name=self.voucher_window_class,
-            ):
-                return True
-            foreground = self.jab.get_foreground_window_info()
-            log.warning(
-                "Ctrl+S 保存前前台窗口不是制单，停止避免误触发: "
-                f"foreground={foreground}"
-            )
-            return False
-
-        raise ValueError(f"不支持的 Ctrl+S 激活策略: {self.hotkey_activate_policy!r}")
 
     def voucher_verify_result_state(self, verify_result):
         if verify_result is True:
@@ -623,7 +578,17 @@ class NCVoucherWorkflow:
                 continue
             expected_rate = self.foreign_currency_rate
             if expected_rate:
-                score = sum(abs(rate - expected_rate) / expected_rate for rate in rates)
+                amount_diffs = []
+                for match, record in zip(matches, permutation):
+                    excel_amount = self.table_matcher._as_decimal(match.item.amount)
+                    expected_amount = excel_amount * expected_rate
+                    amount_diffs.append(abs(record["amount"] - expected_amount))
+                if any(
+                    diff > self.foreign_currency_amount_tolerance
+                    for diff in amount_diffs
+                ):
+                    continue
+                score = sum(amount_diffs)
             else:
                 mean_rate = sum(rates) / len(rates)
                 if not mean_rate:
@@ -635,7 +600,10 @@ class NCVoucherWorkflow:
 
         if best is None or best_score is None:
             return None
-        if best_score > self.foreign_currency_rate_tolerance:
+        if (
+            not self.foreign_currency_rate
+            and best_score > self.foreign_currency_rate_tolerance
+        ):
             return None
         return best
 

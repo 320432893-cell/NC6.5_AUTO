@@ -12,6 +12,7 @@ from core.jab_helpers import (
 )
 from core import jab_window
 from core import jab_popup
+from core import jab_operator
 from core.jab_context_tree import matches_control, release_contexts
 from core.jab_operator import JABOperator
 from core.jab_table_reader import read_table_cells_from_context
@@ -145,6 +146,7 @@ def test_generate_front_prefers_tracked_popup_and_cleans_it(monkeypatch):
     calls = []
 
     monkeypatch.setattr(operator, "ensure_started", lambda: calls.append("started"))
+    monkeypatch.setattr(jab_operator, "check_abort", lambda: None)
     monkeypatch.setattr(
         operator,
         "click_control",
@@ -189,6 +191,7 @@ def test_generate_front_falls_back_when_tracked_popup_missing(monkeypatch):
     clicked = []
 
     monkeypatch.setattr(operator, "ensure_started", lambda: None)
+    monkeypatch.setattr(jab_operator, "check_abort", lambda: None)
 
     def fake_click(name, **kwargs):
         clicked.append((name, kwargs))

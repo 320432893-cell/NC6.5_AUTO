@@ -24,7 +24,6 @@ def base_config():
             "generated_date_col": 18,
             "save_strategy": "single",
             "save_trigger": "jab_button",
-            "hotkey_activate_policy": "always",
             "duplicate_match_policy": "stop",
             "max_batch_size": 50,
             "save_wait": 0.5,
@@ -79,6 +78,9 @@ def test_validate_receipt_entry_accepts_account_mapping():
             "mode": "strict",
             "skip_invalid_rows": False,
         },
+        "excel_text_field_mappings": [
+            {"excel_column": "🔷订单PI匹配", "nc_field": "商务领款备忘"},
+        ],
         "query": {
             "date_from": "2026-01-01",
             "date_to": "{today}",
@@ -146,6 +148,74 @@ def test_validate_receipt_entry_accepts_account_mapping():
     }
 
     assert validate_config(config) == []
+
+
+def test_validate_receipt_entry_rejects_invalid_excel_text_field_mapping():
+    config = base_config()
+    config["receipt_entry"] = {
+        "state_label": "收款单录入",
+        "excel": {
+            "path": "payments.xlsx",
+            "sheet_name": "💸Payments来款通知",
+            "header_row": 1,
+            "start_row": 2,
+            "start_date": "2026-01-01",
+            "date_column": "到款日期",
+            "payer_name_column": "🟪银行来款名",
+            "raw_amount_column": "🟪原始金额",
+            "bank_column": "银行",
+            "currency_column": "币种",
+            "customer_code_column": "客户编码",
+            "organization_column": "主体名称",
+        },
+        "finance_organizations": [],
+        "accounts": [],
+        "excel_text_field_mappings": [
+            {"excel_column": "🔷订单PI匹配", "nc_field": ""},
+            "bad",
+        ],
+    }
+
+    errors = validate_config(config)
+
+    assert (
+        "receipt_entry.excel_text_field_mappings[0].nc_field must be non-empty"
+        in errors
+    )
+    assert "receipt_entry.excel_text_field_mappings[1] must be an object" in errors
+
+
+def test_validate_receipt_entry_rejects_unknown_excel_text_nc_field():
+    config = base_config()
+    config["receipt_entry"] = {
+        "state_label": "收款单录入",
+        "excel": {
+            "path": "payments.xlsx",
+            "sheet_name": "💸Payments来款通知",
+            "header_row": 1,
+            "start_row": 2,
+            "start_date": "2026-01-01",
+            "date_column": "到款日期",
+            "payer_name_column": "🟪银行来款名",
+            "raw_amount_column": "🟪原始金额",
+            "bank_column": "银行",
+            "currency_column": "币种",
+            "customer_code_column": "客户编码",
+            "organization_column": "主体名称",
+        },
+        "finance_organizations": [],
+        "accounts": [],
+        "excel_text_field_mappings": [
+            {"excel_column": "备注列", "nc_field": "任意NC字段"},
+        ],
+    }
+
+    errors = validate_config(config)
+
+    assert (
+        "receipt_entry.excel_text_field_mappings[0].nc_field must be one of ['商务领款备忘']"
+        in errors
+    )
 
 
 def test_validate_receipt_entry_accepts_extensible_bank_account_schema():

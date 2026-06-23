@@ -3,7 +3,7 @@
 # 允许依赖层：标准库基础类型
 # 谁不应该 import：底层 JAB 操作模块不应 import
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
 
@@ -88,6 +88,7 @@ class ReceiptPlanRow:
     account_no: str
     header_currency_code: str
     duplicate_key: tuple[str, ...]
+    extra_text_fields: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

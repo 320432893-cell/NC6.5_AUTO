@@ -5,8 +5,7 @@ from pathlib import Path
 
 
 SAVE_STRATEGIES = {"single", "safe_batch_by_pending_row"}
-SAVE_TRIGGERS = {"jab_button", "hotkey"}
-HOTKEY_ACTIVATE_POLICIES = {"always", "first", "foreground_guard"}
+SAVE_TRIGGERS = {"jab_button"}
 DUPE_MATCH_POLICIES = {"stop", "skip"}
 OPEN_QUERY_METHODS = {"hotkey", "jab_action"}
 ACCOUNT_INPUT_STRATEGIES = {"detail_first", "reference_first"}
@@ -43,13 +42,6 @@ def validate_config(config):
 
     _enum(batch_cfg, "save_strategy", SAVE_STRATEGIES, errors, prefix="jab_batch")
     _enum(batch_cfg, "save_trigger", SAVE_TRIGGERS, errors, prefix="jab_batch")
-    _enum(
-        batch_cfg,
-        "hotkey_activate_policy",
-        HOTKEY_ACTIVATE_POLICIES,
-        errors,
-        prefix="jab_batch",
-    )
     _optional_enum(
         batch_cfg,
         "duplicate_match_policy",
@@ -135,6 +127,11 @@ def _validate_receipt_entry(receipt_cfg, errors):
     detail_entry_policy = receipt_cfg.get("detail_entry_policy")
     if detail_entry_policy is not None:
         _validate_receipt_detail_entry_policy(detail_entry_policy, errors)
+    if "excel_text_field_mappings" in receipt_cfg:
+        _validate_receipt_excel_text_field_mappings(
+            receipt_cfg.get("excel_text_field_mappings"),
+            errors,
+        )
 
     org_codes = set()
     org_short_names = {}
@@ -341,6 +338,25 @@ def _validate_receipt_detail_entry_policy(policy, errors):
         policy.get("fee_clear_account"), bool
     ):
         errors.append(f"{prefix}.fee_clear_account must be bool")
+
+
+def _validate_receipt_excel_text_field_mappings(mappings, errors):
+    prefix = "receipt_entry.excel_text_field_mappings"
+    allowed_nc_fields = {"商务领款备忘"}
+    if not isinstance(mappings, list):
+        errors.append(f"{prefix} must be a list")
+        return
+    for index, item in enumerate(mappings):
+        item_prefix = f"{prefix}[{index}]"
+        if not isinstance(item, dict):
+            errors.append(f"{item_prefix} must be an object")
+            continue
+        _require_non_empty_str(item, "excel_column", errors, prefix=item_prefix)
+        nc_field = _require_non_empty_str(item, "nc_field", errors, prefix=item_prefix)
+        if nc_field and nc_field not in allowed_nc_fields:
+            errors.append(
+                f"{item_prefix}.nc_field must be one of {sorted(allowed_nc_fields)!r}"
+            )
 
 
 def _validate_receipt_excel(excel_cfg, errors):

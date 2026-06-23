@@ -41,6 +41,7 @@ class DetailPipelineVerifier:
         self._results = {}
         self._submitted = []
         self._pending_fields = {}
+        self._path_text_tasks = {}
         self._snapshots = []
         self._row_count_tasks = {}
         self._stopped = threading.Event()
@@ -106,6 +107,33 @@ class DetailPipelineVerifier:
         self._queue.put(task)
         return task_id
 
+    def submit_path_text(
+        self,
+        label,
+        path,
+        expected,
+        scope_hwnd=None,
+        timeout=1.2,
+        interval=0.08,
+    ):
+        task_id = self._new_task_id("text")
+        task = {
+            "id": task_id,
+            "type": "path_text",
+            "label": str(label or ""),
+            "path": str(path or ""),
+            "expected": str(expected or "").strip(),
+            "scope_hwnd": scope_hwnd,
+            "timeout": float(timeout),
+            "interval": float(interval),
+            "submitted_at": time.perf_counter(),
+        }
+        with self._lock:
+            self._submitted.append(task_id)
+            self._path_text_tasks[task_id] = task
+        self._queue.put(task)
+        return task_id
+
     def wait(self, task_ids, timeout=2.0):
         ids = [task_ids] if isinstance(task_ids, str) else list(task_ids or [])
         deadline = time.perf_counter() + float(timeout)
@@ -124,6 +152,7 @@ class DetailPipelineVerifier:
             results = dict(self._results)
             submitted = list(self._submitted)
             pending = dict(self._pending_fields)
+            pending_text = dict(self._path_text_tasks)
             snapshots = list(self._snapshots)
         done = len(results)
         failed = [
@@ -133,10 +162,11 @@ class DetailPipelineVerifier:
             "status": "running" if self._thread and self._thread.is_alive() else "done",
             "submitted": submitted,
             "done": done,
-            "pending": len(pending),
+            "pending": len(pending) + len(pending_text),
             "ok": bool(submitted)
             and done == len(submitted)
             and not pending
+            and not pending_text
             and not failed,
             "failed": failed,
             "results": results,
@@ -203,6 +233,11 @@ class DetailPipelineVerifier:
                 elif task.get("type") == "row_count":
                     result = self._verify_row_count(jab, task)
                     with self._lock:
+                        self._results[task["id"]] = result
+                elif task.get("type") == "path_text":
+                    result = self._verify_path_text(jab, task)
+                    with self._lock:
+                        self._path_text_tasks.pop(task["id"], None)
                         self._results[task["id"]] = result
                 else:
                     with self._lock:
@@ -304,6 +339,46 @@ class DetailPipelineVerifier:
                         }
                     )
                 return
+            time.sleep(task["interval"])
+
+    def _verify_path_text(self, jab, task):
+        started_at = time.perf_counter()
+        deadline = started_at + task["timeout"]
+        expected = str(task.get("expected") or "").strip()
+        actual = ""
+        while True:
+            value = self._with_jab_lock(
+                jab.get_text_by_path,
+                task.get("path"),
+                class_name="SunAwtCanvas",
+                scope_hwnd=task.get("scope_hwnd"),
+                role="text",
+                timeout=0.25,
+                require_showing=True,
+                require_valid_bounds=False,
+            )
+            actual = str(value or "").strip()
+            if actual == expected:
+                return {
+                    "ok": True,
+                    "type": "path_text",
+                    "label": task.get("label"),
+                    "path": task.get("path"),
+                    "expected": expected,
+                    "actual": actual,
+                    "seconds": round(time.perf_counter() - started_at, 3),
+                }
+            if time.perf_counter() >= deadline:
+                return {
+                    "ok": False,
+                    "type": "path_text",
+                    "label": task.get("label"),
+                    "path": task.get("path"),
+                    "expected": expected,
+                    "actual": actual,
+                    "seconds": round(time.perf_counter() - started_at, 3),
+                    "reason": "后台文本字段验证超时或内容不匹配",
+                }
             time.sleep(task["interval"])
 
     def _apply_snapshot_to_pending(self, task, snapshot, started_at):

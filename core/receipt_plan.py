@@ -91,6 +91,7 @@ def build_plan_row(config, ws, columns, row_index):
         if config.fee_column in columns
         else None
     )
+    extra_text_fields = read_extra_text_fields(config, ws, columns, row_index)
 
     receipt_date = None
     amount = None
@@ -334,6 +335,20 @@ def build_plan_row(config, ws, columns, row_index):
             account_no=account.account_no,
             header_currency_code=account.header_currency_code,
             duplicate_key=duplicate_key,
+            extra_text_fields=extra_text_fields,
         ),
         [],
     )
+
+
+def read_extra_text_fields(config, ws, columns, row_index):
+    values = {}
+    for mapping in config.excel_text_field_mappings:
+        excel_column = mapping["excel_column"]
+        nc_field = mapping["nc_field"]
+        if excel_column not in columns:
+            continue
+        value = read_optional_cell(ws, row_index, columns.get(excel_column))
+        if value:
+            values[nc_field] = value
+    return values

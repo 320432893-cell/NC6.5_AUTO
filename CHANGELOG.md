@@ -161,6 +161,10 @@
 
 - 新增页面状态识别和状态守卫：`pending`、`generated`、`voucher_open`、`query_open`、`loading`、`error`。
 - 页面状态识别同时检查父页面标签、按钮布局、表格数据特征；制单、查询按阻塞式子窗口处理。
+- 2026-06-23 清理凭证页面识别口径：已生成页只看真实凭证号，删除列数、日期列和 `正式单据` 控件作为页面证明的废弃逻辑。
+- 2026-06-23 清理生命周期结束的根目录临时探针：分页大小/分页控件/弹窗守卫/前缀比较/查询分页 path/手工选行脚本；保留的 `tools/tmp_*` 仅作现场诊断参考。
+- 2026-06-23 凭证应付 Excel 列映射和外币汇率支持从 GUI/CLI 覆盖；Sheet2 本批结果按主体排序后追加主体合计行，汇总原始金额、手续费和到账金额。
+- 2026-06-23 桌面版 app 已重新封装：`H:\python脚本\采购对账桌面版\dist\采购对账桌面版\采购对账桌面版.exe`。打包内已确认包含收款单财务组织 DFS 快速定位逻辑，且未包含已废弃的 `receipt_finance_org_semantic_probe.py`。
 - 增加状态事件和状态跳转记录。
 - 新增 workflow 领域异常：`WorkflowStateError`、`TableMatchError`、`ContractViolation`、`JABControlNotFound`、`JABActionError`。
 - 架构检查阻止 workflow 模块新增裸 `raise RuntimeError(...)`，避免业务失败原因继续混成一种异常。
@@ -190,8 +194,8 @@
 - `目的业务日期` 是 `介于` 条件，限定当天必须同时填写起始和结束两个日期框。
 - 补充验证：`目的业务日期` 依赖先选择 `正式单据` 才出现；选择前的 `.2` 行是 `生效日期`，正式查询日期仍使用 `.11` 行。
 - 删除无继续维护价值的 `batch_reverse_select` 和 `batch` 保存策略。
-- 正式保存主线收敛为 `single + jab_button + use_voucher_queue_cache`。
-- 保留 `safe_batch_by_pending_row` 作为快速备选，但不承诺凭证号严格按 Excel 递增。
+- 正式保存主线收敛为 `single + jab_button + use_voucher_queue_cache`；`Ctrl+S` 保存触发已因 NC 崩溃风险退出凭证正式逻辑。
+- 保留 `safe_batch_by_pending_row` 作为快速备选，3 张小批量已验证可保存并回填，但放大批量前仍需逐级测试。
 
 保留坑点：
 

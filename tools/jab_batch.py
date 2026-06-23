@@ -102,9 +102,9 @@ def build_parser():
     )
     parser.add_argument(
         "--save-trigger",
-        choices=("jab_button", "hotkey"),
+        choices=("jab_button",),
         default=None,
-        help="覆盖保存触发方式：jab_button=JAB按钮；hotkey=Ctrl+S",
+        help="覆盖保存触发方式：jab_button=JAB按钮",
     )
     parser.add_argument(
         "--save-strategy",
@@ -128,16 +128,40 @@ def build_parser():
         help="外币到本位币汇率；不传则同名多行自动估计一致汇率",
     )
     parser.add_argument(
+        "--foreign-currency-amount-tolerance",
+        type=str,
+        default=None,
+        help="配置外币汇率时，制单金额与 Excel金额*汇率 的允许金额差，默认 5",
+    )
+    parser.add_argument(
+        "--key-col",
+        type=int,
+        default=None,
+        help="覆盖应付 Excel 拼接索引列，1 基列号，例如 A=1",
+    )
+    parser.add_argument(
+        "--amount-out-col",
+        type=int,
+        default=None,
+        help="覆盖应付 Excel 金额列，1 基列号，例如 A=1",
+    )
+    parser.add_argument(
+        "--partner-out-col",
+        type=int,
+        default=None,
+        help="覆盖应付 Excel 对手方列，1 基列号，例如 B=2",
+    )
+    parser.add_argument(
+        "--result-col",
+        type=int,
+        default=None,
+        help="覆盖应付 Excel 结果/凭证号列，1 基列号，例如 C=3",
+    )
+    parser.add_argument(
         "--on-duplicate",
         choices=("stop", "skip"),
         default=None,
         help="generate 遇到待生成表重复匹配时的处理：stop=暂停；skip=写异常并跳过该行继续",
-    )
-    parser.add_argument(
-        "--hotkey-activate-policy",
-        choices=("always", "first", "foreground_guard"),
-        default=None,
-        help="Ctrl+S 保存前窗口处理：always=每张激活；first=仅首张激活；foreground_guard=只校验前台制单",
     )
     parser.add_argument(
         "--no-backfill-auto-switch",
@@ -177,6 +201,21 @@ def main():  # noqa: C901 (intentional single-function dispatch)
         cfg.setdefault("jab_batch", {})["foreign_currency_rate"] = (
             args.foreign_currency_rate
         )
+    if args.foreign_currency_amount_tolerance is not None:
+        cfg.setdefault("jab_batch", {})["foreign_currency_amount_tolerance"] = (
+            args.foreign_currency_amount_tolerance
+        )
+    for arg_name, config_key in (
+        ("key_col", "key_col"),
+        ("amount_out_col", "amount_out_col"),
+        ("partner_out_col", "partner_out_col"),
+        ("result_col", "result_col"),
+    ):
+        value = getattr(args, arg_name)
+        if value is not None:
+            if value <= 0:
+                raise SystemExit(f"--{arg_name.replace('_', '-')} 必须是正整数")
+            cfg.setdefault("jab_batch", {})[config_key] = value
     if args.on_duplicate is not None:
         cfg.setdefault("jab_batch", {})["duplicate_match_policy"] = args.on_duplicate
     processor = JABBatchProcessor(
@@ -186,7 +225,6 @@ def main():  # noqa: C901 (intentional single-function dispatch)
         command=args.command,
         generated_date_value=args.generated_date,
         save_trigger=args.save_trigger,
-        hotkey_activate_policy=args.hotkey_activate_policy,
     )
     state_finished = False
     t_start = time.monotonic()

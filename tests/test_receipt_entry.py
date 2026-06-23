@@ -261,6 +261,39 @@ def test_build_local_plan_reports_precise_local_issues(tmp_path):
     assert "未匹配任何账户配置" in bank_issue.message
 
 
+def test_build_local_plan_reads_extra_text_field_mapping(tmp_path):
+    path = tmp_path / "payments.xlsx"
+    config = receipt_config(path)
+    config["receipt_entry"]["excel_text_field_mappings"] = [
+        {"excel_column": "🔷订单PI匹配", "nc_field": "商务领款备忘"},
+    ]
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "💸Payments来款通知"
+    ws.append(
+        [
+            "到款日期",
+            "🟪银行来款名",
+            "🟪原始金额",
+            "银行",
+            "币种",
+            "客户编码",
+            "手续费",
+            "🔷订单PI匹配",
+        ]
+    )
+    ws.append([date(2026, 6, 1), "OK INC", 100, "Paypal", "USD", "YW001", 0, "PI-001"])
+    ws.append([date(2026, 6, 2), "BLANK INC", 200, "Paypal", "USD", "YW002", 0, ""])
+    wb.save(path)
+    wb.close()
+
+    rows, issues, _summary = ReceiptEntryWorkbook(config).build_local_plan()
+
+    assert issues == []
+    assert rows[0].extra_text_fields == {"商务领款备忘": "PI-001"}
+    assert rows[1].extra_text_fields == {}
+
+
 def test_build_local_plan_writes_machine_sheet2(tmp_path):
     path = tmp_path / "payments.xlsx"
     wb = Workbook()
@@ -290,7 +323,7 @@ def test_build_local_plan_writes_machine_sheet2(tmp_path):
     saved = load_workbook(path)
     ws = saved["收款单自动化结果"]
     headers = [ws.cell(1, column).value for column in range(1, ws.max_column + 1)]
-    assert headers[:15] == [
+    assert headers[:16] == [
         "原Sheet1行号",
         "执行主体名称",
         "到款日期",
@@ -303,15 +336,17 @@ def test_build_local_plan_writes_machine_sheet2(tmp_path):
         "币种",
         "银行",
         "收款银行账户",
+        "🔷订单PI匹配",
         "本地预检状态",
         "后验核对状态",
         "异常原因",
     ]
+    columns = {header: index + 1 for index, header in enumerate(headers) if header}
     assert ws.cell(2, 1).value == rows[0].row
     assert ws.cell(2, 2).value == "上海移为通信技术股份有限公司"
-    assert ws.cell(2, 13).value == "通过"
-    assert ws.cell(2, 14).value in (None, "")
-    assert ws.cell(2, 15).value in (None, "")
+    assert ws.cell(2, columns["本地预检状态"]).value == "通过"
+    assert ws.cell(2, columns["后验核对状态"]).value in (None, "")
+    assert ws.cell(2, columns["异常原因"]).value in (None, "")
     saved.close()
 
 
@@ -397,15 +432,27 @@ def test_write_batch_result_sheet_uses_business_columns_and_sorting(tmp_path):
     assert ws.cell(2, 1).fill.fgColor.rgb == "00D9EAF7"
     assert ws.cell(3, 1).value == 2
     assert ws.cell(3, 4).value == "LATE"
+    assert "🔷订单PI匹配" in columns
     assert ws.cell(3, columns["后验核对状态"]).value == "后验通过"
-    assert ws.cell(4, 1).value == "主体：上海移为通信技术（香港）有限公司"
-    assert ws.cell(5, 1).value == 3
-    assert ws.cell(5, 4).value == "EARLY"
-    assert ws.cell(5, 6).value == "NC EARLY"
-    assert ws.cell(5, 7).value == "203.00"
-    assert ws.cell(5, 8).value == "3.00"
-    assert ws.cell(5, 9).value == "200.00"
-    assert ws.cell(5, columns["后验核对状态"]).value == "后验通过"
+    assert ws.cell(4, 1).value == "主体合计：上海移为通信技术股份有限公司"
+    assert ws.cell(4, 2).value == "1 条"
+    assert ws.cell(4, 7).value == "100.00"
+    assert ws.cell(4, 8).value == "0.00"
+    assert ws.cell(4, 9).value == "100.00"
+    assert ws.cell(4, 1).fill.fgColor.rgb == "00FFF2CC"
+    assert ws.cell(5, 1).value == "主体：上海移为通信技术（香港）有限公司"
+    assert ws.cell(6, 1).value == 3
+    assert ws.cell(6, 4).value == "EARLY"
+    assert ws.cell(6, 6).value == "NC EARLY"
+    assert ws.cell(6, 7).value == "203.00"
+    assert ws.cell(6, 8).value == "3.00"
+    assert ws.cell(6, 9).value == "200.00"
+    assert ws.cell(6, columns["后验核对状态"]).value == "后验通过"
+    assert ws.cell(7, 1).value == "主体合计：上海移为通信技术（香港）有限公司"
+    assert ws.cell(7, 2).value == "1 条"
+    assert ws.cell(7, 7).value == "203.00"
+    assert ws.cell(7, 8).value == "3.00"
+    assert ws.cell(7, 9).value == "200.00"
     saved.close()
 
 
@@ -681,6 +728,7 @@ def test_parse_amount_accepts_nc_negative_spacing():
 def test_receipt_split_modules_export_new_paths():
     assert parse_amount_from_new_module("- 1,368.10") == Decimal("-1368.10")
     assert "异常原因" in RESULT_SHEET_HEADERS
+    assert "🔷订单PI匹配" in RESULT_SHEET_HEADERS
 
 
 def test_extract_receipt_nc_rows_reports_missing_header():

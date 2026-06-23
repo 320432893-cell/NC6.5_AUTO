@@ -254,13 +254,31 @@ def keyboard_write_selected_cell(
     recover_after_failure=None,
     _recovery_retry=False,
 ):
+    timing = {
+        "guard_seconds": 0.0,
+        "edit_prepare_seconds": 0.0,
+        "clear_seconds": 0.0,
+        "clipboard_read_seconds": 0.0,
+        "clipboard_set_seconds": 0.0,
+        "paste_send_seconds": 0.0,
+        "type_send_seconds": 0.0,
+        "pre_commit_wait_seconds": 0.0,
+        "accept_seconds": 0.0,
+        "accept_settle_wait_seconds": 0.0,
+        "commit_seconds": 0.0,
+        "clipboard_restore_seconds": 0.0,
+    }
+    guard_started = time.perf_counter()
     guard = foreground_matches_table(table_window)
     if not guard.get("ok"):
         recovery = recover_after_failure() if recover_after_failure else None
         if recovery and recovery.get("attempted") and recovery.get("ok"):
             guard = foreground_matches_table(table_window)
+        timing["guard_seconds"] = round(time.perf_counter() - guard_started, 4)
         if not guard.get("ok"):
-            return {**guard, "modal_recovery": recovery}
+            return {**guard, "modal_recovery": recovery, "screen_timing": timing}
+    else:
+        timing["guard_seconds"] = round(time.perf_counter() - guard_started, 4)
 
     def retry_current_cell_after_failure(failure):
         if _recovery_retry or recover_after_failure is None:
@@ -293,13 +311,19 @@ def keyboard_write_selected_cell(
     retry_recovery = None
     try:
         if edit_mode != "selected":
+            edit_started = time.perf_counter()
             send_virtual_key(VK_KEYS["F2"])
             time.sleep(0.025)
             send_hotkey_ctrl_a()
             time.sleep(0.02)
+            timing["edit_prepare_seconds"] = round(
+                time.perf_counter() - edit_started, 4
+            )
         clear = None
         if clear_only:
+            clear_started = time.perf_counter()
             clear = guarded_press_virtual_key(table_window, "Delete")
+            timing["clear_seconds"] = round(time.perf_counter() - clear_started, 4)
             if not clear.get("ok"):
                 return retry_current_cell_after_failure(
                     {
@@ -310,14 +334,23 @@ def keyboard_write_selected_cell(
                         "clear": clear,
                         "accept_key": accept_key,
                         "commit_key": commit_key,
+                        "screen_timing": timing,
                         "reason": clear.get("reason"),
                     }
                 )
         else:
             if input_mode == "paste":
+                clipboard_read_started = time.perf_counter()
                 old_clipboard = safe_clipboard_read()
+                timing["clipboard_read_seconds"] = round(
+                    time.perf_counter() - clipboard_read_started, 4
+                )
                 try:
+                    clipboard_set_started = time.perf_counter()
                     set_clipboard_text(str(value))
+                    timing["clipboard_set_seconds"] = round(
+                        time.perf_counter() - clipboard_set_started, 4
+                    )
                 except RuntimeError as exc:
                     if (
                         str(exc) != "OpenClipboard failed"
@@ -328,14 +361,32 @@ def keyboard_write_selected_cell(
                     if not retry_recovery.get("ok"):
                         raise
                     time.sleep(0.05)
+                    clipboard_set_started = time.perf_counter()
                     set_clipboard_text(str(value))
+                    timing["clipboard_set_seconds"] = round(
+                        time.perf_counter() - clipboard_set_started, 4
+                    )
+                paste_started = time.perf_counter()
                 send_hotkey_ctrl_v()
+                timing["paste_send_seconds"] = round(
+                    time.perf_counter() - paste_started, 4
+                )
             else:
+                type_started = time.perf_counter()
                 send_text_slow(value, typing_interval)
+                timing["type_send_seconds"] = round(
+                    time.perf_counter() - type_started, 4
+                )
+        pre_commit_wait_started = time.perf_counter()
         time.sleep(float(pre_commit_wait or 0))
+        timing["pre_commit_wait_seconds"] = round(
+            time.perf_counter() - pre_commit_wait_started, 4
+        )
         accept = None
         if accept_key:
+            accept_started = time.perf_counter()
             accept = guarded_press_virtual_key(table_window, accept_key)
+            timing["accept_seconds"] = round(time.perf_counter() - accept_started, 4)
             if not accept.get("ok"):
                 return retry_current_cell_after_failure(
                     {
@@ -346,11 +397,18 @@ def keyboard_write_selected_cell(
                         "accept_key": accept_key,
                         "accept": accept,
                         "commit_key": commit_key,
+                        "screen_timing": timing,
                         "reason": accept.get("reason"),
                     }
                 )
+            accept_wait_started = time.perf_counter()
             time.sleep(REFERENCE_ACCEPT_SETTLE_SECONDS)
+            timing["accept_settle_wait_seconds"] = round(
+                time.perf_counter() - accept_wait_started, 4
+            )
+        commit_started = time.perf_counter()
         commit = guarded_press_virtual_key(table_window, commit_key)
+        timing["commit_seconds"] = round(time.perf_counter() - commit_started, 4)
     except Exception as exc:
         return retry_current_cell_after_failure(
             {
@@ -359,12 +417,17 @@ def keyboard_write_selected_cell(
                 "reason": f"键盘输入失败：{type(exc).__name__}: {exc}",
                 "accept_key": accept_key,
                 "commit_key": commit_key,
+                "screen_timing": timing,
                 "retry_modal_recovery": retry_recovery,
             }
         )
     finally:
         if old_clipboard is not None:
+            clipboard_restore_started = time.perf_counter()
             clipboard_restored = restore_clipboard_text(old_clipboard)
+            timing["clipboard_restore_seconds"] = round(
+                time.perf_counter() - clipboard_restore_started, 4
+            )
     result = {
         **guard,
         "ok": bool(commit.get("ok")),
@@ -381,6 +444,7 @@ def keyboard_write_selected_cell(
         "accept": accept,
         "commit_key": commit_key,
         "commit": commit,
+        "screen_timing": timing,
         "reason": None if commit.get("ok") else commit.get("reason"),
     }
     if not result["ok"]:

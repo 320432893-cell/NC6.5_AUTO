@@ -12,6 +12,8 @@ from core.receipt_models import ReceiptPlanIssue, ReceiptPlanRow
 from tools.receipt_full_flow_entry import (
     build_console_report_lines,
     business_from_plan_row,
+    cache_receipt_finance_org_write_from_header_steps,
+    prime_receipt_finance_org_write_cache,
     cache_receipt_header_scope,
     confirm_save,
     extract_entry_anchor_path,
@@ -31,7 +33,7 @@ from tools.receipt_post_save_query import target_to_match_row
 from tools.receipt_post_save_query import format_query_exception
 
 
-def plan_row(row, fee=Decimal("0.00")):
+def plan_row(row, fee=Decimal("0.00"), extra_text_fields=None):
     return ReceiptPlanRow(
         row=row,
         receipt_date=date(2026, 5, 22),
@@ -49,6 +51,7 @@ def plan_row(row, fee=Decimal("0.00")):
         account_no="FTE1219165931831",
         header_currency_code="CNY",
         duplicate_key=("A001", "2026-05-22", "招行"),
+        extra_text_fields=extra_text_fields or {},
     )
 
 
@@ -900,9 +903,148 @@ def test_run_one_row_uses_detail_pipeline_verifier(monkeypatch):
     assert calls["closed"] == 0.2
 
 
-def test_run_one_row_retries_current_canvas_header_anchor(monkeypatch):
+def test_run_one_row_verifies_extra_text_fields_in_pipeline(monkeypatch):
     calls = {
-        "anchor_retry": [],
+        "text": [],
+        "wait": [],
+    }
+
+    class FakeJAB:
+        def __init__(self, config):
+            self.config = config
+
+        def ensure_started(self):
+            return True
+
+        def close(self):
+            return None
+
+    class FakeVerifier:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def start(self):
+            pass
+
+        def submit_field(self, *_args, **_kwargs):
+            return "field-0"
+
+        def submit_snapshot(self, *_args, **_kwargs):
+            return "snapshot-0"
+
+        def submit_row_count(self, *_args, **_kwargs):
+            return "rows-0"
+
+        def submit_path_text(
+            self,
+            label,
+            path,
+            expected,
+            scope_hwnd=None,
+            *_args,
+            **_kwargs,
+        ):
+            calls["text"].append(
+                {
+                    "label": label,
+                    "path": path,
+                    "expected": expected,
+                    "scope_hwnd": scope_hwnd,
+                }
+            )
+            return "text-0"
+
+        def wait(self, task_ids, timeout=2.0):
+            calls["wait"].append(list(task_ids))
+            return {
+                "ok": True,
+                "submitted": list(task_ids),
+                "done": len(task_ids),
+                "results": {
+                    "field-0": {"ok": True},
+                    "rows-0": {"ok": True},
+                    "text-0": {"ok": True, "type": "path_text"},
+                },
+            }
+
+        def close(self, timeout=1.0):
+            pass
+
+    monkeypatch.setattr("tools.receipt_full_flow_entry.JABOperator", FakeJAB)
+    monkeypatch.setattr(
+        "tools.receipt_full_flow_entry.open_self_made_entry",
+        lambda _config, _jab=None: open_report_with_header_anchor(),
+    )
+    monkeypatch.setattr(
+        "tools.receipt_full_flow_entry.fill_header",
+        lambda _jab, _business, **_kwargs: [
+            {
+                "ok": True,
+                "label": "客户",
+                "value": "YW03574",
+                "accepted_text": "ACME LTD",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        "tools.receipt_full_flow_entry.locate_receipt_body_table_cached",
+        lambda *_args, **_kwargs: {
+            "best": {"path": "0.1", "row_count": 1, "col_count": 25, "window": {}},
+            "candidates": [],
+        },
+    )
+    monkeypatch.setattr(
+        "tools.receipt_full_flow_entry.write_detail_line_by_screen",
+        lambda *_args, **_kwargs: [{"ok": True}],
+    )
+    monkeypatch.setattr(
+        "tools.receipt_full_flow_entry.write_extra_text_fields",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "fields": [
+                {
+                    "ok": True,
+                    "label": "商务领款备忘",
+                    "value": "PI-001",
+                    "path": "memo.path",
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        "tools.receipt_full_flow_entry.delete_extra_row_if_present",
+        lambda *_args, **_kwargs: {"ok": True},
+    )
+    monkeypatch.setattr(
+        "tools.receipt_full_flow_entry.wait_header_account_description",
+        lambda *_args, **_kwargs: {"accepted": True},
+    )
+    monkeypatch.setattr(
+        "tools.receipt_full_flow_entry.DetailPipelineVerifier", FakeVerifier
+    )
+
+    report = run_one_row(
+        {},
+        plan_row(10, extra_text_fields={"商务领款备忘": "PI-001"}),
+        save_enabled=False,
+    )
+
+    assert report["ok"] is True
+    assert calls["text"] == [
+        {
+            "label": "商务领款备忘",
+            "path": "memo.path",
+            "expected": "PI-001",
+            "scope_hwnd": 2002,
+        }
+    ]
+    assert calls["wait"] == [["rows-0", "text-0"]]
+    assert report["extra_text_verify_tasks"] == ["text-0"]
+
+
+def test_run_one_row_resolves_header_scope_by_finance_org_fast_path(monkeypatch):
+    calls = {
+        "finance_scope": [],
         "fill_header_kwargs": [],
         "body_locate_kwargs": [],
     }
@@ -959,14 +1101,17 @@ def test_run_one_row_retries_current_canvas_header_anchor(monkeypatch):
     )
     monkeypatch.setattr("tools.receipt_full_flow_entry.JABOperator", FakeJAB)
     monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.wait_receipt_header_anchor_in_current_canvas",
-        lambda _jab, hwnd, timeout=1.2, interval=0.2: (
-            calls["anchor_retry"].append((hwnd, timeout, interval))
+        "tools.receipt_full_flow_entry.find_finance_org_header_scope_by_paths",
+        lambda _jab, hwnd, **kwargs: (
+            calls["finance_scope"].append((hwnd, kwargs))
             or {
                 "ok": True,
                 "scope_hwnd": hwnd,
                 "dynamic_index": 5,
                 "dynamic_prefix": "0.0.1.0.0.0.0.5",
+                "label_path": "0.fast.label",
+                "text_path": "0.fast.text",
+                "variant": "observed-compact",
             }
         ),
     )
@@ -1011,9 +1156,15 @@ def test_run_one_row_retries_current_canvas_header_anchor(monkeypatch):
     report = run_one_row({}, plan_row(10), save_enabled=False)
 
     assert report["ok"] is True, report
-    assert calls["anchor_retry"] == [(919586, 1.2, 0.2)]
+    assert calls["finance_scope"] == [
+        (
+            919586,
+            {"preferred_dynamic_index": None, "min_index": 1, "max_index": 10},
+        )
+    ]
     assert report["entry_dynamic_index"] == 5
-    assert report["entry_header_anchor_retry"]["ok"] is True
+    assert report["entry_finance_org_fast_scope"]["ok"] is True
+    assert report["entry_dynamic_index_source"] == "finance-org-fast-scope"
     assert calls["fill_header_kwargs"][0]["scope_hwnd"] == 919586
     assert calls["fill_header_kwargs"][0]["dynamic_index"] == 5
     assert calls["body_locate_kwargs"][0]["scope_hwnd"] == 919586
@@ -1048,7 +1199,37 @@ def test_header_scope_cache_can_be_shared_between_row_jab_instances():
     assert first_jab._receipt_header_scope_cache == shared_cache
 
 
-def test_run_one_row_stops_when_current_canvas_header_anchor_missing(monkeypatch):
+def test_finance_org_write_cache_can_be_shared_between_row_jab_instances():
+    class FakeJAB:
+        pass
+
+    shared_cache = {}
+    first_jab = FakeJAB()
+
+    cached = cache_receipt_finance_org_write_from_header_steps(
+        first_jab,
+        shared_cache,
+        [
+            {
+                "ok": True,
+                "label": "财务组织",
+                "scope_hwnd": 919586,
+                "path": "0.write.5",
+                "path_attempt": {"write_index": 5, "path": "0.write.5"},
+            }
+        ],
+    )
+
+    second_jab = FakeJAB()
+    prime_receipt_finance_org_write_cache(second_jab, shared_cache)
+
+    assert cached["write_index"] == 5
+    assert shared_cache[919586]["write_index"] == 5
+    assert shared_cache["last"]["write_index"] == 5
+    assert second_jab._finance_org_write_path_cache["last"]["write_index"] == 5
+
+
+def test_run_one_row_stops_when_current_canvas_header_scope_missing(monkeypatch):
     class FakeJAB:
         def __init__(self, config):
             self.config = config
@@ -1079,10 +1260,10 @@ def test_run_one_row_stops_when_current_canvas_header_anchor_missing(monkeypatch
     )
     monkeypatch.setattr("tools.receipt_full_flow_entry.JABOperator", FakeJAB)
     monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.wait_receipt_header_anchor_in_current_canvas",
+        "tools.receipt_full_flow_entry.find_finance_org_header_scope_by_paths",
         lambda *_args, **_kwargs: {
             "ok": False,
-            "reason": "当前 canvas 未找到财务组织(O) 锚点",
+            "reason": "当前 canvas 未通过财务组织(O) dynamic path 扫描",
         },
     )
     monkeypatch.setattr(

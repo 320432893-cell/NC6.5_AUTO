@@ -19,6 +19,7 @@ class JABNearLabelMixin:
         text,
         title=None,
         class_name=None,
+        hwnd=None,
         wait=None,
         timeout=None,
         require_showing=True,
@@ -29,6 +30,7 @@ class JABNearLabelMixin:
             text,
             title=title,
             class_name=class_name,
+            hwnd=hwnd,
             wait=wait,
             timeout=timeout,
             require_showing=require_showing,
@@ -39,6 +41,7 @@ class JABNearLabelMixin:
         label,
         title=None,
         class_name=None,
+        hwnd=None,
         require_showing=True,
     ):
         return jab_near_label.find_text_context_near_label_once(
@@ -46,6 +49,7 @@ class JABNearLabelMixin:
             label,
             title=title,
             class_name=class_name,
+            hwnd=hwnd,
             require_showing=require_showing,
         )
 
@@ -54,6 +58,7 @@ class JABNearLabelMixin:
         label,
         title=None,
         class_name=None,
+        hwnd=None,
         require_showing=True,
         max_vertical_distance=28,
         max_right_distance=420,
@@ -63,6 +68,7 @@ class JABNearLabelMixin:
             label,
             title=title,
             class_name=class_name,
+            hwnd=hwnd,
             require_showing=require_showing,
             max_vertical_distance=max_vertical_distance,
             max_right_distance=max_right_distance,

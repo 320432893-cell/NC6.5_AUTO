@@ -47,7 +47,9 @@ from tools.receipt_new_probe import (  # noqa: E402
 from tools.receipt_post_save_query import run_post_save_batch_query  # noqa: E402
 from tools.receipt_self_made_fill_trial import (  # noqa: E402
     HEADER_SCOPE_ANCHOR_LABEL,
+    cache_finance_org_write_path,
     fill_header,
+    find_finance_org_header_scope_by_paths,
     find_receipt_header_field_by_dynamic_path,
     is_valid_customer_name_candidate,
     read_body_table,
@@ -56,6 +58,10 @@ from tools.receipt_self_made_fill_trial import (  # noqa: E402
     run_receipt_new_probe,
     run_receipt_new_probe_with_jab,
     wait_header_account_description,
+    find_receipt_extra_text_field_by_dynamic_path,
+    find_receipt_extra_text_field_by_live_semantic,
+    guarded_paste_header_value,
+    describe_backend_field_state,
 )
 
 BODY_TABLE_SUFFIX = "0.0.0.1.1.0.0.0.0.1.0.2.1.0.0.0.0.0"
@@ -115,6 +121,20 @@ def parse_args(argv=None):
         help="保存后按主体/日期区间查询 NC。当前仅在 --save 后允许。",
     )
     parser.add_argument(
+        "--excel-text-field-map",
+        action="append",
+        default=[],
+        metavar="EXCEL列名=NC文本名",
+        help="把 Sheet1 指定列的非空值写入 NC 同名/近邻文本框；可重复。",
+    )
+    parser.add_argument(
+        "--excel-column",
+        action="append",
+        default=[],
+        metavar="配置键=EXCEL列名",
+        help="覆盖 receipt_entry.excel 下固定列名配置；例如 raw_amount_column=🟪原始金额。",
+    )
+    parser.add_argument(
         "--start-delay",
         type=float,
         default=0.0,
@@ -142,6 +162,8 @@ def parse_args(argv=None):
 def main(argv=None):
     args = parse_args(argv)
     config = load_config(args.config)
+    apply_excel_column_overrides(config, args.excel_column)
+    apply_excel_text_field_mappings(config, args.excel_text_field_map)
     if args.validation_mode:
         policy = config.setdefault("receipt_entry", {}).setdefault(
             "validation_policy", {}
@@ -233,6 +255,7 @@ def main(argv=None):
     _succeeded = 0
     _failed = 0
     header_scope_cache = {}
+    finance_org_write_cache = {}
     try:
         for _step_idx, row in enumerate(selected_rows):
             recorder.set_stage(
@@ -250,6 +273,7 @@ def main(argv=None):
                 diagnose_header_after_pause=args.diagnose_header_after_pause,
                 diagnose_detail_repair=args.diagnose_detail_repair,
                 header_scope_cache=header_scope_cache,
+                finance_org_write_cache=finance_org_write_cache,
             )
             report["rows"].append(row_report)
             if row_report.get("ok"):
@@ -362,6 +386,45 @@ def cache_receipt_header_scope(jab, shared_cache, scope):
         shared_cache.update(cached)
 
 
+def cache_receipt_finance_org_write_path(jab, shared_cache, write_result):
+    if not isinstance(write_result, dict) or not write_result.get("ok"):
+        return None
+    write_index = write_result.get("write_index")
+    path = write_result.get("path")
+    if write_index is None:
+        path_attempt = write_result.get("path_attempt") or {}
+        write_index = path_attempt.get("write_index")
+        path = path or path_attempt.get("path")
+    if write_index is None:
+        return None
+    scope_hwnd = write_result.get("scope_hwnd")
+    cached = cache_finance_org_write_path(jab, scope_hwnd, write_index, path)
+    if isinstance(shared_cache, dict) and cached:
+        key = int(scope_hwnd) if scope_hwnd is not None else None
+        shared_cache[key] = dict(cached)
+        shared_cache["last"] = dict(cached)
+    return cached
+
+
+def prime_receipt_finance_org_write_cache(jab, shared_cache):
+    if not isinstance(shared_cache, dict) or not shared_cache:
+        return
+    try:
+        setattr(jab, "_finance_org_write_path_cache", dict(shared_cache))
+    except AttributeError:
+        pass
+
+
+def cache_receipt_finance_org_write_from_header_steps(jab, shared_cache, steps):
+    for step in steps or []:
+        if step.get("label") != HEADER_SCOPE_ANCHOR_LABEL:
+            continue
+        cached = cache_receipt_finance_org_write_path(jab, shared_cache, step)
+        if cached:
+            return cached
+    return None
+
+
 def select_plan_rows(plan_rows, issues, args):
     issue_rows = {issue.excel_row for issue in issues if issue.excel_row is not None}
     runnable = [row for row in plan_rows if row.row not in issue_rows]
@@ -393,6 +456,7 @@ def run_one_row(
     diagnose_header_after_pause=False,
     diagnose_detail_repair=False,
     header_scope_cache=None,
+    finance_org_write_cache=None,
 ):
     current_stage = {"name": ""}
 
@@ -415,6 +479,7 @@ def run_one_row(
     }
     business = business_from_plan_row(row)
     jab = JABOperator(config)
+    prime_receipt_finance_org_write_cache(jab, finance_org_write_cache)
     jab_lock = threading.RLock()
     pipeline_verifier = None
     modal_events = []
@@ -451,11 +516,14 @@ def run_one_row(
             "entry-state" if entry_dynamic_index is not None else None
         )
         if entry_scope_hwnd and entry_dynamic_index is None:
+            preferred_cached_dynamic_index = None
             cached_scope = {}
             if isinstance(header_scope_cache, dict):
                 cached_scope = header_scope_cache
             if not cached_scope.get("ok"):
                 cached_scope = getattr(jab, "_receipt_header_scope_cache", None) or {}
+            if cached_scope.get("ok") and cached_scope.get("dynamic_index") is not None:
+                preferred_cached_dynamic_index = cached_scope.get("dynamic_index")
             if (
                 cached_scope.get("ok")
                 and cached_scope.get("scope_hwnd") == entry_scope_hwnd
@@ -477,28 +545,29 @@ def run_one_row(
                     "source": cached_scope.get("mode") or "receipt-header-scope-cache",
                 }
             else:
-                anchor_retry = timings.measure(
-                    "header.anchor-retry-current-canvas",
+                finance_scope = timings.measure(
+                    "header.finance-org-fast-scope",
                     run_with_jab_lock,
                     jab_lock,
-                    wait_receipt_header_anchor_in_current_canvas,
+                    find_finance_org_header_scope_by_paths,
                     jab,
                     entry_scope_hwnd,
-                    timeout=1.2,
-                    interval=0.2,
+                    preferred_dynamic_index=preferred_cached_dynamic_index,
+                    min_index=1,
+                    max_index=10,
                 )
-                row_report["entry_header_anchor_retry"] = {
-                    **anchor_retry,
+                row_report["entry_finance_org_fast_scope"] = {
+                    **finance_scope,
                     "purpose": (
-                        "开单快速确认只提供当前 Canvas；表头 dynamic_index 必须由"
-                        "财务组织(O) 锚点实时解析"
+                        "开单快速确认只提供当前 Canvas；优先用财务组织(O)"
+                        "稳定 path 解析表头 dynamic_index"
                     )
                 }
-                if anchor_retry.get("ok"):
-                    entry_dynamic_index = anchor_retry.get("dynamic_index")
-                    entry_dynamic_index_source = "header-anchor-retry"
+                if finance_scope.get("ok"):
+                    entry_dynamic_index = finance_scope.get("dynamic_index")
+                    entry_dynamic_index_source = "finance-org-fast-scope"
                     entry_anchor_path = (
-                        anchor_retry.get("label_path") or entry_anchor_path
+                        finance_scope.get("label_path") or entry_anchor_path
                     )
                     if entry_dynamic_index is not None:
                         cache_receipt_header_scope(
@@ -507,12 +576,14 @@ def run_one_row(
                             {
                                 "ok": True,
                                 "scope_hwnd": entry_scope_hwnd,
-                                "mode": "header-anchor-retry-current-canvas",
+                                "mode": "finance-org-fast-scope",
                                 "dynamic_index": entry_dynamic_index,
-                                "dynamic_prefix": anchor_retry.get("dynamic_prefix"),
+                                "dynamic_prefix": finance_scope.get("dynamic_prefix"),
                                 "matched_labels": [HEADER_SCOPE_ANCHOR_LABEL],
                                 "semantic_label_path": entry_anchor_path,
                                 "label_path": entry_anchor_path,
+                                "text_path": finance_scope.get("text_path"),
+                                "variant": finance_scope.get("variant"),
                             },
                         )
         row_report["entry_scope_hwnd"] = entry_scope_hwnd
@@ -521,8 +592,8 @@ def run_one_row(
         row_report["entry_anchor_path"] = entry_anchor_path
         row_report["locator_policy"] = {
             "header": (
-                "财务组织用控件名粘贴+Enter并确认中文；其它表头字段优先用动态前缀"
-                "+稳定后缀 path，path 失败才单字段语义兜底"
+                "财务组织优先用当前 canvas 动态前缀+稳定后缀 path，失败才控件名兜底；"
+                "其它表头字段优先用动态前缀+稳定后缀 path，path 失败才单字段语义兜底"
             ),
             "body": "明细表用校正后的动态前缀直接拼稳定 path，校验失败才现场扫描",
         }
@@ -598,6 +669,19 @@ def run_one_row(
         if header_pause_reports:
             row_report["header_pause_diagnostics"] = header_pause_reports
         row_report["header_steps"] = header_steps
+        finance_org_write_cached = cache_receipt_finance_org_write_from_header_steps(
+            jab,
+            finance_org_write_cache,
+            header_steps,
+        )
+        if finance_org_write_cached:
+            row_report["finance_org_write_cache"] = {
+                "ok": True,
+                "scope_hwnd": finance_org_write_cached.get("scope_hwnd"),
+                "write_index": finance_org_write_cached.get("write_index"),
+                "path": finance_org_write_cached.get("path"),
+                "source": "header-step",
+            }
         cached_after_header = getattr(jab, "_receipt_header_scope_cache", None) or {}
         if cached_after_header.get("ok"):
             cache_receipt_header_scope(jab, header_scope_cache, cached_after_header)
@@ -662,6 +746,7 @@ def run_one_row(
         pipeline_verifier.start()
         pipeline_field_task_ids = []
         pipeline_field_tasks = {}
+        pipeline_text_task_ids = []
         pipeline_snapshot_task_ids = []
         pipeline_row_count_task_id = None
 
@@ -701,6 +786,49 @@ def run_one_row(
         if not all(step.get("ok") for step in detail_steps):
             _event("detail-main-failed", excel_row=row.row, error="明细主行写入失败")
             return fail(row_report, "detail-main-line", timings, "明细主行写入失败")
+        extra_text_report = timings.measure(
+            "detail.extra-text-fields",
+            run_with_jab_lock,
+            jab_lock,
+            write_extra_text_fields,
+            jab,
+            row.extra_text_fields,
+            entry_dynamic_index,
+            entry_scope_hwnd,
+            recover_after_failure=recover_modal_after_failure,
+        )
+        row_report["extra_text_fields"] = extra_text_report
+        if not extra_text_report.get("ok"):
+            _event(
+                "detail-extra-text-failed",
+                excel_row=row.row,
+                error=extra_text_report.get("reason"),
+            )
+            return fail(
+                row_report,
+                "detail-extra-text-fields",
+                timings,
+                extra_text_report.get("reason") or "扩展文本字段写入失败",
+            )
+        for field_report in extra_text_report.get("fields") or []:
+            if not field_report.get("ok") or not field_report.get("value"):
+                continue
+            if not field_report.get("path"):
+                return fail(
+                    row_report,
+                    "detail-extra-text-fields",
+                    timings,
+                    f"扩展文本字段 {field_report.get('label')!r} 缺少后台验证 path",
+                )
+            pipeline_text_task_ids.append(
+                pipeline_verifier.submit_path_text(
+                    field_report.get("label"),
+                    field_report.get("path"),
+                    field_report.get("value"),
+                    scope_hwnd=entry_scope_hwnd,
+                )
+            )
+        row_report["extra_text_verify_tasks"] = pipeline_text_task_ids
         if row.fee > 0:
             _stage("手续费", excel_row=row.row)
             row_report["extra_row_delete"] = {
@@ -774,11 +902,42 @@ def run_one_row(
             pipeline_wait_ids.append(pipeline_field_task_ids[-1])
         if pipeline_row_count_task_id:
             pipeline_wait_ids.append(pipeline_row_count_task_id)
+        pipeline_wait_ids.extend(pipeline_text_task_ids)
         pipeline_wait_started = time.perf_counter()
         row_report["detail_pipeline_verify"] = pipeline_verifier.wait(
             pipeline_wait_ids,
             timeout=2.0,
         )
+        row_report["detail_pipeline_state"] = verifier_snapshot(pipeline_verifier)
+        timings.add(
+            "detail.pipeline-final-wait",
+            time.perf_counter() - pipeline_wait_started,
+        )
+        extra_text_failures = []
+        if pipeline_text_task_ids:
+            pipeline_results = row_report["detail_pipeline_verify"].get("results") or {}
+            for task_id in pipeline_text_task_ids:
+                result = pipeline_results.get(task_id)
+                if result is None or not result.get("ok"):
+                    extra_text_failures.append(
+                        {
+                            "task_id": task_id,
+                            "result": result,
+                        }
+                    )
+        if extra_text_failures:
+            row_report["extra_text_verify_failures"] = extra_text_failures
+            _event(
+                "extra-text-verify-failed",
+                excel_row=row.row,
+                error="扩展文本字段后台验证未通过",
+            )
+            return fail(
+                row_report,
+                "detail-extra-text-verify",
+                timings,
+                "扩展文本字段后台验证未通过",
+            )
         if diagnose_detail_repair:
             row_report["detail_pipeline_verify_before_repair_drill"] = dict(
                 row_report["detail_pipeline_verify"]
@@ -787,11 +946,6 @@ def run_one_row(
                 row_report["detail_pipeline_verify"],
                 pipeline_field_task_ids,
             )
-        row_report["detail_pipeline_state"] = verifier_snapshot(pipeline_verifier)
-        timings.add(
-            "detail.pipeline-final-wait",
-            time.perf_counter() - pipeline_wait_started,
-        )
         row_report["detail_pipeline_snapshots"] = pipeline_snapshot_task_ids
         detail_pipeline_ok = bool(row_report["detail_pipeline_verify"].get("ok"))
         if not detail_pipeline_ok:
@@ -1330,6 +1484,266 @@ def business_from_plan_row(row):
         "fee_subject": "660305",
         "fee_business_type": "手续费",
     }
+
+
+def apply_excel_text_field_mappings(config, raw_mappings):
+    mappings = []
+    for raw in raw_mappings or []:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        if "=" not in text:
+            raise SystemExit("--excel-text-field-map 格式必须是 EXCEL列名=NC文本名")
+        excel_column, nc_field = [part.strip() for part in text.split("=", 1)]
+        if not excel_column or not nc_field:
+            raise SystemExit("--excel-text-field-map 两侧都不能为空")
+        mappings.append({"excel_column": excel_column, "nc_field": nc_field})
+    if mappings:
+        config.setdefault("receipt_entry", {})["excel_text_field_mappings"] = mappings
+
+
+def apply_excel_column_overrides(config, raw_overrides):
+    allowed = {
+        "date_column",
+        "payer_name_column",
+        "raw_amount_column",
+        "bank_column",
+        "currency_column",
+        "customer_code_column",
+        "fee_column",
+        "organization_column",
+    }
+    excel_cfg = config.setdefault("receipt_entry", {}).setdefault("excel", {})
+    for raw in raw_overrides or []:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        if "=" not in text:
+            raise SystemExit("--excel-column 格式必须是 配置键=EXCEL列名")
+        key, excel_column = [part.strip() for part in text.split("=", 1)]
+        if key not in allowed:
+            raise SystemExit(f"--excel-column 不支持配置键 {key!r}")
+        if not excel_column:
+            raise SystemExit("--excel-column 的 EXCEL列名不能为空")
+        excel_cfg[key] = excel_column
+
+
+def write_extra_text_fields(
+    jab,
+    fields,
+    dynamic_index,
+    scope_hwnd=None,
+    recover_after_failure=None,
+):
+    values = {
+        str(label or "").strip(): str(value or "").strip()
+        for label, value in (fields or {}).items()
+        if str(label or "").strip() and str(value or "").strip()
+    }
+    if not values:
+        return {"ok": True, "skipped": True, "fields": []}
+    results = []
+    for label, value in values.items():
+        result = write_extra_text_field_by_dynamic_path(
+            jab,
+            label,
+            value,
+            dynamic_index,
+            scope_hwnd=scope_hwnd,
+            recover_after_failure=recover_after_failure,
+        )
+        results.append(result)
+        if not result.get("ok"):
+            return {
+                "ok": False,
+                "fields": results,
+                "reason": f"未能写入 NC 文本字段 {label!r}",
+            }
+    return {"ok": True, "fields": results}
+
+
+def write_extra_text_field_by_dynamic_path(
+    jab,
+    label,
+    value,
+    dynamic_index,
+    scope_hwnd=None,
+    recover_after_failure=None,
+):
+    started_at = time.perf_counter()
+    recovery_after_find = None
+
+    def find_field():
+        path_found = find_receipt_extra_text_field_by_dynamic_path(
+            jab,
+            label,
+            dynamic_index,
+            scope_hwnd=scope_hwnd,
+            require_showing=True,
+            require_valid_bounds=False,
+        )
+        if path_found.get("ok"):
+            return path_found
+        semantic_found = find_receipt_extra_text_field_by_live_semantic(
+            jab,
+            label,
+            dynamic_index,
+            scope_hwnd=scope_hwnd,
+        )
+        semantic_found["dynamic_path_attempt"] = path_found
+        return semantic_found
+
+    try:
+        found = find_field()
+    except Exception as exc:
+        if recover_after_failure is None:
+            raise
+        recovery_after_find = recover_after_failure()
+        if recovery_after_find.get("attempted") and recovery_after_find.get("ok"):
+            try:
+                found = find_field()
+            except Exception as retry_exc:
+                return {
+                    "ok": False,
+                    "stage": "resolve",
+                    "label": label,
+                    "value": value,
+                    "dynamic_index": dynamic_index,
+                    "exception": f"{type(retry_exc).__name__}: {retry_exc}",
+                    "first_exception": f"{type(exc).__name__}: {exc}",
+                    "modal_recovery": recovery_after_find,
+                    "seconds": round(time.perf_counter() - started_at, 3),
+                }
+        else:
+            return {
+                "ok": False,
+                "stage": "resolve",
+                "label": label,
+                "value": value,
+                "dynamic_index": dynamic_index,
+                "exception": f"{type(exc).__name__}: {exc}",
+                "modal_recovery": recovery_after_find,
+                "seconds": round(time.perf_counter() - started_at, 3),
+            }
+    if not found.get("ok") and recover_after_failure is not None:
+        recovery_after_find = recover_after_failure()
+        if recovery_after_find.get("attempted") and recovery_after_find.get("ok"):
+            found = find_field()
+    path_attempt = found.get("dynamic_path_attempt") or found
+    if not found.get("ok"):
+        return {
+            "ok": False,
+            "stage": "resolve",
+            "label": label,
+            "value": value,
+            "dynamic_index": dynamic_index,
+            "dynamic_path_attempt": path_attempt,
+            "semantic_attempt": found,
+            "modal_recovery": recovery_after_find,
+            "reason": found.get("reason") or "extra text field not found",
+            "seconds": round(time.perf_counter() - started_at, 3),
+        }
+    context = found["context"]
+    vm_id = found["vm_id"]
+    owned_contexts = found["owned_contexts"]
+    def write_current_context(initial_recovery=None):
+        write_started_at = time.perf_counter()
+        info_before = jab.get_context_info(vm_id, context)
+        before = jab.get_text_context_value(vm_id, context)
+        paste_started_at = time.perf_counter()
+        paste = guarded_paste_header_value(
+            jab,
+            vm_id,
+            context,
+            found.get("window") or {},
+            value,
+        )
+        paste_seconds = round(time.perf_counter() - paste_started_at, 3)
+        modal_recovery = initial_recovery
+        if not paste.get("ok") and recover_after_failure is not None:
+            recovery_after_set = recover_after_failure()
+            modal_recovery = recovery_after_set or modal_recovery
+            if recovery_after_set.get("attempted") and recovery_after_set.get("ok"):
+                paste = guarded_paste_header_value(
+                    jab,
+                    vm_id,
+                    context,
+                    found.get("window") or {},
+                    value,
+                )
+        info_after = jab.get_context_info(vm_id, context)
+        after = jab.get_text_context_value(vm_id, context)
+        ok = bool(paste.get("ok"))
+        backend_state = describe_backend_field_state(info_after, after, value=value)
+        return {
+            "ok": ok,
+            "stage": "write",
+            "label": label,
+            "value": value,
+            "path": found.get("path"),
+            "source": found.get("source") or "dynamic-path",
+            "dynamic_index": dynamic_index,
+            "dynamic_prefix": found.get("dynamic_prefix"),
+            "dynamic_path_attempt": found.get("dynamic_path_attempt") or path_attempt,
+            "inferred_suffix": found.get("inferred_suffix"),
+            "modal_recovery": modal_recovery,
+            "text_before": before,
+            "text_after": after,
+            "description_before": info_before.description.strip() if info_before else "",
+            "description_after": info_after.description.strip() if info_after else "",
+            "post_write_snapshot": backend_state,
+            "guarded_paste": paste,
+            "enter_ok": bool(paste.get("enter_ok")),
+            "timing": {
+                "paste_seconds": paste_seconds,
+                "write_seconds": round(time.perf_counter() - write_started_at, 3),
+                "total_seconds": round(time.perf_counter() - started_at, 3),
+            },
+            "seconds": round(time.perf_counter() - started_at, 3),
+        }
+
+    try:
+        try:
+            return write_current_context(recovery_after_find)
+        except Exception as exc:
+            if recover_after_failure is None:
+                raise
+            recovery_after_exception = recover_after_failure()
+            if recovery_after_exception.get(
+                "attempted"
+            ) and recovery_after_exception.get("ok"):
+                try:
+                    retried = write_current_context(recovery_after_exception)
+                except Exception as retry_exc:
+                    return {
+                        "ok": False,
+                        "stage": "write",
+                        "label": label,
+                        "value": value,
+                        "path": found.get("path"),
+                        "dynamic_index": dynamic_index,
+                        "dynamic_prefix": found.get("dynamic_prefix"),
+                        "exception": f"{type(retry_exc).__name__}: {retry_exc}",
+                        "first_exception": f"{type(exc).__name__}: {exc}",
+                        "modal_recovery": recovery_after_exception,
+                        "seconds": round(time.perf_counter() - started_at, 3),
+                    }
+                retried["retried_after_modal_recovery"] = True
+                return retried
+            return {
+                "ok": False,
+                "stage": "write",
+                "label": label,
+                "value": value,
+                "path": found.get("path"),
+                "dynamic_index": dynamic_index,
+                "dynamic_prefix": found.get("dynamic_prefix"),
+                "exception": f"{type(exc).__name__}: {exc}",
+                "modal_recovery": recovery_after_exception,
+                "seconds": round(time.perf_counter() - started_at, 3),
+            }
+    finally:
+        jab.release_contexts(vm_id, owned_contexts)
 
 
 def read_customer_name_after_header(

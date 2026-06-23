@@ -24,7 +24,6 @@ class JABBatchProcessor:
         command=None,
         generated_date_value=None,
         save_trigger=None,
-        hotkey_activate_policy=None,
     ):
         self.cfg = config
         self.batch_cfg = config.get("jab_batch", {})
@@ -39,10 +38,6 @@ class JABBatchProcessor:
         self.save_trigger = save_trigger or self.batch_cfg.get(
             "save_trigger", "jab_button"
         )
-        self.hotkey_activate_policy = hotkey_activate_policy or self.batch_cfg.get(
-            "hotkey_activate_policy", "always"
-        )
-        self.hotkey_save_attempts = 0
         self.wait_between_save_batches = float(
             self.batch_cfg.get("wait_between_save_batches", self.save_wait)
         )
@@ -64,6 +59,9 @@ class JABBatchProcessor:
         self.foreign_currency_rate_tolerance = self.parse_optional_decimal(
             self.batch_cfg.get("foreign_currency_rate_tolerance", 0.02)
         ) or Decimal("0.02")
+        self.foreign_currency_amount_tolerance = self.parse_optional_decimal(
+            self.batch_cfg.get("foreign_currency_amount_tolerance", 5)
+        ) or Decimal("5")
         self.save_success_timeout = float(
             self.batch_cfg.get("save_success_timeout", 8.0)
         )
@@ -90,7 +88,6 @@ class JABBatchProcessor:
             self.jab,
             self.batch_cfg,
             self.generated_date_value,
-            self.generated_date_col,
             self.voucher_col,
             self.generated_voucher_max,
             self.record_event,
@@ -206,14 +203,12 @@ class JABBatchProcessor:
 
     def read_page_table_signatures(self):
         return self.state_detector.probe.read_page_table_signatures(
-            self.generated_date_col,
             self.voucher_col,
             self.jab.amount_col,
             self.jab.partner_col,
         )
 
     def describe_signature_table(self, table):
-        date_values = self.sample_table_col(table, self.generated_date_col)
         voucher_values = self.sample_table_col(table, self.voucher_col)
         return {
             "table_index": table["table_index"],
@@ -221,7 +216,6 @@ class JABBatchProcessor:
             "window_class": table.get("window_class"),
             "row_count": table["row_count"],
             "col_count": table["col_count"],
-            "date_values": date_values,
             "voucher_values": voucher_values,
             "rows": [
                 {
@@ -258,13 +252,8 @@ class JABBatchProcessor:
 
         return choose_main_signature_table(tables)
 
-    def is_generated_signature(self, table, require_formal=True):
-        return self.state_detector.is_generated_signature(table, require_formal)
-
-    def is_pending_signature(self, table, visible_names):
-        from core.nc_state import is_pending_signature
-
-        return is_pending_signature(table, visible_names)
+    def is_generated_signature(self, table):
+        return self.state_detector.is_generated_signature(table)
 
     def table_match_ratio(self, rows, items):
         return self.state_detector.table_match_ratio(rows, items)

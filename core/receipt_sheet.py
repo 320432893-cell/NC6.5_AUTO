@@ -13,6 +13,7 @@ except ImportError:  # pragma: no cover - openpyxl is present in runtime/tests
 
 
 GROUP_FILL = "D9EAF7"
+SUMMARY_FILL = "FFF2CC"
 SUCCESS_FILL = "E2F0D9"
 ERROR_FILL = "FCE4D6"
 
@@ -30,6 +31,7 @@ RESULT_SHEET_HEADERS = [
     "币种",
     "银行",
     "收款银行账户",
+    "🔷订单PI匹配",
     "本地预检状态",
     "后验核对状态",
     "异常原因",
@@ -71,7 +73,7 @@ def verification_status(result=None, issue=None, status=""):
 
 def plan_sheet_row(row, issue, status):
     if row is None:
-        base = [""] * 12
+        base = [""] * 13
     else:
         base = [
             row.row,
@@ -86,6 +88,7 @@ def plan_sheet_row(row, issue, status):
             row.currency,
             row.bank,
             row.account_no,
+            row.extra_text_fields.get("商务领款备忘", ""),
         ]
     issue_reason = format_plan_issue_reason(issue)
     return [
@@ -111,6 +114,7 @@ def batch_result_sheet_row(result):
         row.currency,
         row.bank,
         row.account_no,
+        row.extra_text_fields.get("商务领款备忘", ""),
         result.local_status,
         verification_status(result=result),
         result.exception_reason,
@@ -187,9 +191,36 @@ def append_group_separator_row(ws, columns, row_number, organization_name):
     return row_number + 1
 
 
+def append_group_summary_row(ws, columns, row_number, organization_name, results):
+    if not results:
+        return row_number
+    row_count = len(results)
+    totals = {
+        "🟪原始金额": sum(receipt_nc_amount(result.plan_row) for result in results),
+        "手续费": sum(result.plan_row.fee for result in results),
+        "🟪到账金额": sum(receipt_net_amount(result.plan_row) for result in results),
+    }
+    max_column = max(columns.values(), default=len(RESULT_SHEET_HEADERS))
+    for column in range(1, max_column + 1):
+        cell = ws.cell(row=row_number, column=column)
+        apply_summary_style(cell)
+    ws.cell(row=row_number, column=columns["原Sheet1行号"], value=f"主体合计：{organization_name}")
+    ws.cell(row=row_number, column=columns["执行主体名称"], value=f"{row_count} 条")
+    for header, value in totals.items():
+        ws.cell(row=row_number, column=columns[header], value=str(value))
+    return row_number + 1
+
+
 def apply_group_style(cell):
     if PatternFill is not None:
         cell.fill = PatternFill("solid", fgColor=GROUP_FILL)
+    if Font is not None:
+        cell.font = Font(bold=True)
+
+
+def apply_summary_style(cell):
+    if PatternFill is not None:
+        cell.fill = PatternFill("solid", fgColor=SUMMARY_FILL)
     if Font is not None:
         cell.font = Font(bold=True)
 
@@ -218,9 +249,18 @@ def rewrite_batch_result_sheet(wb, sheet_name, header_row, results):
         ws.delete_rows(header_row + 1, ws.max_row - header_row)
     append_start_row = header_row + 1
     last_org = None
+    group_results = []
     for result in sorted(results, key=batch_result_sort_key):
         org_name = result.plan_row.organization_name
         if org_name != last_org:
+            append_start_row = append_group_summary_row(
+                ws,
+                columns,
+                append_start_row,
+                last_org,
+                group_results,
+            )
+            group_results = []
             append_start_row = append_group_separator_row(
                 ws,
                 columns,
@@ -237,6 +277,8 @@ def rewrite_batch_result_sheet(wb, sheet_name, header_row, results):
             values,
         )
         apply_result_row_style(ws, columns, data_row, values)
+        group_results.append(result)
+    append_group_summary_row(ws, columns, append_start_row, last_org, group_results)
 
 
 def rewrite_plan_sheet(wb, sheet_name, header_row, rows, issues):

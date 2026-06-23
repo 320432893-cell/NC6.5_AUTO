@@ -4,7 +4,9 @@
 # 谁不应该 import：Excel/Sheet 读写、收款匹配、配置解析模块不应直接 import
 
 import ctypes
+import json
 import os
+from pathlib import Path
 from ctypes import wintypes
 import time
 from typing import TYPE_CHECKING, Any
@@ -102,7 +104,31 @@ class JABControlMixin:
         if ok and path:
             log.info(f"JAB 保存按钮候选 path: {path}")
             self.save_button_path = path
+            self.persist_save_button_path(path)
         return ok
+
+    def persist_save_button_path(self, path):
+        config = getattr(self, "config", None)
+        if not isinstance(config, dict):
+            return
+        jab_cfg = config.setdefault("jab", {})
+        if jab_cfg.get("save_button_path") == path:
+            return
+        jab_cfg["save_button_path"] = path
+        config_path = config.get("_config_path")
+        if not config_path:
+            return
+        try:
+            target = Path(config_path)
+            data = json.loads(target.read_text(encoding="utf-8"))
+            data.setdefault("jab", {})["save_button_path"] = path
+            target.write_text(
+                json.dumps(data, ensure_ascii=False, indent=4) + "\n",
+                encoding="utf-8",
+            )
+            log.info(f"JAB 保存按钮 path 已写入配置: {path}")
+        except Exception as exc:
+            log.warning(f"JAB 保存按钮 path 写入配置失败: {exc}")
 
     def wait_for_control(self, name, roles=(), timeout=None, require_showing=False):
         self.ensure_started()

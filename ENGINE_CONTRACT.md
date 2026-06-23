@@ -122,7 +122,7 @@ GUI 解析 stdout **最后一段** JSON 判定结果(命令可在前面打人类
 | `resume-voucher` | 制单窗口残留时的续跑保存 | 是 | `[现状符合]` | 文本 `[需改:小]` |
 | `split-keys` | 拆分拼接键写回列 | 否 | `[现状符合]` | 文本 `[需改:小]` |
 
-**关键输入**(已有):`--config --limit --start-row --end-row --max-batches --yes --generated-date --save-trigger --save-strategy --voucher-order-fallback --foreign-currency-rate --on-duplicate --hotkey-activate-policy --no-backfill-auto-switch --perf --perf-label`。GUI 驱动够用。
+**关键输入**(已有):`--config --limit --start-row --end-row --max-batches --yes --generated-date --save-trigger --save-strategy --voucher-order-fallback --foreign-currency-rate --key-col --amount-out-col --partner-out-col --result-col --on-duplicate --no-backfill-auto-switch --perf --perf-label`。GUI 驱动够用。
 **进度**:已接状态文件、阶段/计数/事件齐全。**停止后续跑**:`resume-voucher`(凭证)/ 重跑对应命令。**退出码**:现 0 / 非0,需收敛到 §1.3。
 
 ### 2.B 收款单线
