@@ -477,143 +477,65 @@ def wait_self_made_entry_ready(
 
 def collect_entry_context_snapshot(jab, popup_hwnd=None, entry_button_target=None):
     foreground = foreground_info()
-    quick_anchor = resolve_foreground_canvas_header_anchor(jab, foreground)
-    if quick_anchor.get("ok"):
-        popup_state = describe_popup_visibility(popup_hwnd)
-        popup_visible = bool(popup_state.get("visible")) if popup_hwnd else False
-        edit_state = detect_entry_state_ready_light(
-            jab,
-            foreground,
-            entry_button_target=entry_button_target,
-        )
-        parent_new_state = {
-            "ok": False,
-            "skipped": True,
-            "method": "skip-parent-new-scan",
-            "reason": "改用保存/暂存/取消任一编辑态按钮确认新建录入态",
-        }
-        entry_ready = bool(not popup_visible and edit_state.get("ok"))
-        if popup_visible:
-            state_reason = "自制菜单 popup 仍可见，暂不写入"
-        elif not edit_state.get("ok"):
-            state_reason = "未确认保存/暂存/取消任一编辑态按钮"
-        else:
-            state_reason = "popup 已关闭，编辑态按钮已出现"
-        state = {
-            "ok": entry_ready,
-            "edit_buttons_ok": bool(edit_state.get("ok")),
-            "partial_ok": bool(edit_state.get("ok")),
-            "names": edit_state.get("names") or [],
-            "hits": [
-                {
-                    "window": quick_anchor.get("window") or {},
-                    "control": {
-                        "path": quick_anchor.get("label_path"),
-                        "role": "label",
-                        "name": (
-                            (quick_anchor.get("anchor_text") or {}).get("name") or ""
-                        ),
-                        "description": (
-                            (quick_anchor.get("anchor_text") or {}).get("description")
-                            or ""
-                        ),
-                        "dynamic_index": quick_anchor.get("dynamic_index"),
-                        "dynamic_prefix": quick_anchor.get("dynamic_prefix"),
-                    },
-                }
-            ]
-            + (edit_state.get("hits") or []),
-            "reason": state_reason,
-            "parent_new_state": parent_new_state,
-            "edit_button_state": edit_state,
-        }
-        anchor_hit = state["hits"][0]["control"]
-        windows = [
-            {
-                "hwnd": (quick_anchor.get("window") or {}).get("hwnd"),
-                "title": (quick_anchor.get("window") or {}).get("title"),
-                "class_name": (quick_anchor.get("window") or {}).get("class_name"),
-                "visible": (quick_anchor.get("window") or {}).get("visible"),
-                "root_hwnd": (quick_anchor.get("window") or {}).get("root_hwnd"),
-                "is_foreground_root": (
-                    (quick_anchor.get("window") or {}).get("is_foreground_root")
-                ),
-                "is_java": True,
-                "controls": [anchor_hit],
-                "all_controls": [anchor_hit],
-            }
-        ]
-        anchor = quick_anchor
-        method = "foreground-canvas-anchor"
-        return {
-            "ok": True,
-            "confirmed": entry_ready,
-            "method": method,
-            "state": state,
-            "windows": windows,
-            "anchor": anchor,
-            "quick_anchor": quick_anchor,
-            "foreground": foreground,
-            "popup": popup_state,
-            "popup_visible": popup_visible,
-        }
-    else:
-        windows = collect_receipt_new_windows_compat(jab, max_depth=8, max_children=200)
-        annotate_foreground_root(windows, foreground)
-        anchor = resolve_current_canvas_header_anchor(jab, windows, foreground)
-        method = "window-snapshot-anchor"
-    state = detect_self_made_entry_state(windows)
+    canvas_window = find_foreground_canvas_window_light(jab, foreground)
     popup_state = describe_popup_visibility(popup_hwnd)
     popup_visible = bool(popup_state.get("visible")) if popup_hwnd else False
+    edit_state = detect_entry_state_ready_light(
+        jab,
+        foreground,
+        entry_button_target=entry_button_target,
+    )
     parent_new_state = {
         "ok": False,
         "skipped": True,
         "method": "skip-parent-new-scan",
         "reason": "改用保存/暂存/取消任一编辑态按钮确认新建录入态",
     }
-    entry_ready = bool(not popup_visible and state.get("ok"))
-    if entry_ready and state.get("ok"):
-        state_reason = "popup 已关闭，编辑态按钮已出现"
-    elif entry_ready:
-        state_reason = "popup 已关闭"
-    elif popup_visible:
+    entry_ready = bool(not popup_visible and edit_state.get("ok"))
+    if popup_visible:
         state_reason = "自制菜单 popup 仍可见，暂不写入"
-    elif not state.get("ok"):
+    elif not edit_state.get("ok"):
         state_reason = "未确认保存/暂存/取消任一编辑态按钮"
     else:
-        state_reason = "未确认财务组织(O)锚点"
-    state = {
-        **state,
-        "ok": entry_ready,
-        "edit_buttons_ok": bool(state.get("ok")),
-        "partial_ok": bool(state.get("partial_ok")),
-        "reason": state_reason,
-        "parent_new_state": parent_new_state,
-    }
-    if anchor.get("ok"):
-        state["hits"].append(
+        state_reason = "popup 已关闭，编辑态按钮已出现"
+    canvas_hit = []
+    windows = []
+    if canvas_window.get("ok"):
+        window = canvas_window.get("window") or {}
+        control = {
+            "path": None,
+            "role": "canvas",
+            "name": "current SunAwtCanvas",
+            "description": "当前前台收款单 canvas；表头 dynamic_index 由 header 阶段解析",
+        }
+        canvas_hit.append({"window": window, "control": control})
+        windows.append(
             {
-                "window": anchor.get("window") or {},
-                "control": {
-                    "path": anchor.get("label_path"),
-                    "role": "label",
-                    "name": ((anchor.get("anchor_text") or {}).get("name") or ""),
-                    "description": (
-                        (anchor.get("anchor_text") or {}).get("description") or ""
-                    ),
-                    "dynamic_index": anchor.get("dynamic_index"),
-                    "dynamic_prefix": anchor.get("dynamic_prefix"),
-                },
+                **window,
+                "is_java": True,
+                "controls": [control],
+                "all_controls": [control],
             }
         )
+    state = {
+        "ok": entry_ready,
+        "edit_buttons_ok": bool(edit_state.get("ok")),
+        "partial_ok": bool(edit_state.get("ok")),
+        "names": edit_state.get("names") or [],
+        "hits": canvas_hit + (edit_state.get("hits") or []),
+        "reason": state_reason,
+        "parent_new_state": parent_new_state,
+        "edit_button_state": edit_state,
+        "canvas_state": canvas_window,
+    }
     return {
         "ok": True,
         "confirmed": entry_ready,
-        "method": method,
+        "method": "edit-button-ready",
         "state": state,
         "windows": windows,
-        "anchor": anchor,
-        "quick_anchor": quick_anchor,
+        "anchor": {},
+        "quick_anchor": {},
         "foreground": foreground,
         "popup": popup_state,
         "popup_visible": popup_visible,
@@ -700,6 +622,50 @@ def detect_parent_new_ready_in_windows(windows, foreground=None):
             }
             for item in usable[:3]
         ],
+    }
+
+
+def find_foreground_canvas_window_light(jab, foreground=None):
+    foreground = foreground or foreground_info()
+    fg_root = (foreground or {}).get("root")
+    if os.name != "nt" or not hasattr(ctypes, "WinDLL") or not fg_root:
+        return {
+            "ok": False,
+            "method": "foreground-canvas-window-light",
+            "reason": "foreground root not available",
+            "window": None,
+        }
+    candidates = []
+    for hwnd, title, class_name, pid, visible in enum_windows(include_children=True):
+        if class_name != "SunAwtCanvas" or not visible:
+            continue
+        if root_hwnd(hwnd) != fg_root:
+            continue
+        if not jab.dll.isJavaWindow(hwnd):
+            continue
+        window = {
+            "hwnd": int(hwnd),
+            "title": title,
+            "class_name": class_name,
+            "pid": pid,
+            "visible": visible,
+            "root_hwnd": int(fg_root),
+            "is_foreground_root": True,
+        }
+        candidates.append(window)
+        return {
+            "ok": True,
+            "method": "foreground-canvas-window-light",
+            "window": window,
+            "candidate_count": len(candidates),
+        }
+    return {
+        "ok": False,
+        "method": "foreground-canvas-window-light",
+        "reason": "foreground SunAwtCanvas not found",
+        "foreground": foreground,
+        "candidate_count": len(candidates),
+        "window": None,
     }
 
 

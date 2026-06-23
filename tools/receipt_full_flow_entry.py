@@ -434,27 +434,51 @@ def run_one_row(
             "entry-state" if entry_dynamic_index is not None else None
         )
         if entry_scope_hwnd and entry_dynamic_index is None:
-            anchor_retry = timings.measure(
-                "header.anchor-retry-current-canvas",
-                run_with_jab_lock,
-                jab_lock,
-                wait_receipt_header_anchor_in_current_canvas,
-                jab,
-                entry_scope_hwnd,
-                timeout=1.2,
-                interval=0.2,
-            )
-            row_report["entry_header_anchor_retry"] = {
-                **anchor_retry,
-                "purpose": (
-                    "开单快速确认只提供当前 Canvas；表头 dynamic_index 必须由"
-                    "财务组织(O) 锚点实时解析"
+            cached_scope = getattr(jab, "_receipt_header_scope_cache", None) or {}
+            if (
+                cached_scope.get("ok")
+                and cached_scope.get("scope_hwnd") == entry_scope_hwnd
+                and cached_scope.get("dynamic_index") is not None
+            ):
+                entry_dynamic_index = cached_scope.get("dynamic_index")
+                entry_dynamic_index_source = "header-scope-cache"
+                entry_anchor_path = (
+                    cached_scope.get("label_path")
+                    or cached_scope.get("semantic_label_path")
+                    or entry_anchor_path
                 )
-            }
-            if anchor_retry.get("ok"):
-                entry_dynamic_index = anchor_retry.get("dynamic_index")
-                entry_dynamic_index_source = "header-anchor-retry"
-                entry_anchor_path = anchor_retry.get("label_path") or entry_anchor_path
+                row_report["entry_header_scope_cache"] = {
+                    "ok": True,
+                    "scope_hwnd": entry_scope_hwnd,
+                    "dynamic_index": entry_dynamic_index,
+                    "dynamic_prefix": cached_scope.get("dynamic_prefix"),
+                    "label_path": entry_anchor_path,
+                    "source": cached_scope.get("mode") or "receipt-header-scope-cache",
+                }
+            else:
+                anchor_retry = timings.measure(
+                    "header.anchor-retry-current-canvas",
+                    run_with_jab_lock,
+                    jab_lock,
+                    wait_receipt_header_anchor_in_current_canvas,
+                    jab,
+                    entry_scope_hwnd,
+                    timeout=1.2,
+                    interval=0.2,
+                )
+                row_report["entry_header_anchor_retry"] = {
+                    **anchor_retry,
+                    "purpose": (
+                        "开单快速确认只提供当前 Canvas；表头 dynamic_index 必须由"
+                        "财务组织(O) 锚点实时解析"
+                    )
+                }
+                if anchor_retry.get("ok"):
+                    entry_dynamic_index = anchor_retry.get("dynamic_index")
+                    entry_dynamic_index_source = "header-anchor-retry"
+                    entry_anchor_path = (
+                        anchor_retry.get("label_path") or entry_anchor_path
+                    )
         row_report["entry_scope_hwnd"] = entry_scope_hwnd
         row_report["entry_dynamic_index"] = entry_dynamic_index
         row_report["entry_dynamic_index_source"] = entry_dynamic_index_source
