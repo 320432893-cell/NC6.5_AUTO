@@ -232,6 +232,7 @@ def main(argv=None):
     exit_code = 0
     _succeeded = 0
     _failed = 0
+    header_scope_cache = {}
     try:
         for _step_idx, row in enumerate(selected_rows):
             recorder.set_stage(
@@ -248,6 +249,7 @@ def main(argv=None):
                 pause_after_header_field=args.pause_after_header_field,
                 diagnose_header_after_pause=args.diagnose_header_after_pause,
                 diagnose_detail_repair=args.diagnose_detail_repair,
+                header_scope_cache=header_scope_cache,
             )
             report["rows"].append(row_report)
             if row_report.get("ok"):
@@ -347,6 +349,19 @@ def user_excel_locked_message(exc):
     )
 
 
+def cache_receipt_header_scope(jab, shared_cache, scope):
+    if not isinstance(scope, dict) or not scope.get("ok"):
+        return
+    cached = dict(scope)
+    try:
+        setattr(jab, "_receipt_header_scope_cache", cached)
+    except AttributeError:
+        pass
+    if isinstance(shared_cache, dict):
+        shared_cache.clear()
+        shared_cache.update(cached)
+
+
 def select_plan_rows(plan_rows, issues, args):
     issue_rows = {issue.excel_row for issue in issues if issue.excel_row is not None}
     runnable = [row for row in plan_rows if row.row not in issue_rows]
@@ -377,6 +392,7 @@ def run_one_row(
     pause_after_header_field=None,
     diagnose_header_after_pause=False,
     diagnose_detail_repair=False,
+    header_scope_cache=None,
 ):
     current_stage = {"name": ""}
 
@@ -435,7 +451,11 @@ def run_one_row(
             "entry-state" if entry_dynamic_index is not None else None
         )
         if entry_scope_hwnd and entry_dynamic_index is None:
-            cached_scope = getattr(jab, "_receipt_header_scope_cache", None) or {}
+            cached_scope = {}
+            if isinstance(header_scope_cache, dict):
+                cached_scope = header_scope_cache
+            if not cached_scope.get("ok"):
+                cached_scope = getattr(jab, "_receipt_header_scope_cache", None) or {}
             if (
                 cached_scope.get("ok")
                 and cached_scope.get("scope_hwnd") == entry_scope_hwnd
@@ -481,23 +501,20 @@ def run_one_row(
                         anchor_retry.get("label_path") or entry_anchor_path
                     )
                     if entry_dynamic_index is not None:
-                        try:
-                            setattr(
-                                jab,
-                                "_receipt_header_scope_cache",
-                                {
-                                    "ok": True,
-                                    "scope_hwnd": entry_scope_hwnd,
-                                    "mode": "header-anchor-retry-current-canvas",
-                                    "dynamic_index": entry_dynamic_index,
-                                    "dynamic_prefix": anchor_retry.get("dynamic_prefix"),
-                                    "matched_labels": [HEADER_SCOPE_ANCHOR_LABEL],
-                                    "semantic_label_path": entry_anchor_path,
-                                    "label_path": entry_anchor_path,
-                                },
-                            )
-                        except AttributeError:
-                            pass
+                        cache_receipt_header_scope(
+                            jab,
+                            header_scope_cache,
+                            {
+                                "ok": True,
+                                "scope_hwnd": entry_scope_hwnd,
+                                "mode": "header-anchor-retry-current-canvas",
+                                "dynamic_index": entry_dynamic_index,
+                                "dynamic_prefix": anchor_retry.get("dynamic_prefix"),
+                                "matched_labels": [HEADER_SCOPE_ANCHOR_LABEL],
+                                "semantic_label_path": entry_anchor_path,
+                                "label_path": entry_anchor_path,
+                            },
+                        )
         row_report["entry_scope_hwnd"] = entry_scope_hwnd
         row_report["entry_dynamic_index"] = entry_dynamic_index
         row_report["entry_dynamic_index_source"] = entry_dynamic_index_source
@@ -581,6 +598,9 @@ def run_one_row(
         if header_pause_reports:
             row_report["header_pause_diagnostics"] = header_pause_reports
         row_report["header_steps"] = header_steps
+        cached_after_header = getattr(jab, "_receipt_header_scope_cache", None) or {}
+        if cached_after_header.get("ok"):
+            cache_receipt_header_scope(jab, header_scope_cache, cached_after_header)
         if any(not step.get("ok") for step in header_steps):
             header_error = summarize_header_failure(header_steps)
             _event("header-fill-failed", excel_row=row.row, error=header_error)

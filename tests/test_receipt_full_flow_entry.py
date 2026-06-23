@@ -12,6 +12,7 @@ from core.receipt_models import ReceiptPlanIssue, ReceiptPlanRow
 from tools.receipt_full_flow_entry import (
     build_console_report_lines,
     business_from_plan_row,
+    cache_receipt_header_scope,
     confirm_save,
     extract_entry_anchor_path,
     extract_entry_dynamic_index,
@@ -1020,6 +1021,31 @@ def test_run_one_row_retries_current_canvas_header_anchor(monkeypatch):
         calls["body_locate_kwargs"][0]["cached"]["best"]["path"]
         == "0.0.1.0.0.0.0.5.0.0.0.1.1.0.0.0.0.1.0.2.1.0.0.0.0.0"
     )
+
+
+def test_header_scope_cache_can_be_shared_between_row_jab_instances():
+    class FakeJAB:
+        pass
+
+    shared_cache = {}
+    first_jab = FakeJAB()
+    scope = {
+        "ok": True,
+        "scope_hwnd": 919586,
+        "mode": "header-anchor-retry-current-canvas",
+        "dynamic_index": 5,
+        "dynamic_prefix": "0.0.1.0.0.0.0.5",
+        "label_path": "0.0.1.0.0.0.0.5.0.0",
+    }
+
+    cache_receipt_header_scope(first_jab, shared_cache, scope)
+
+    second_jab = FakeJAB()
+    assert not hasattr(second_jab, "_receipt_header_scope_cache")
+    assert shared_cache["ok"] is True
+    assert shared_cache["scope_hwnd"] == 919586
+    assert shared_cache["dynamic_index"] == 5
+    assert first_jab._receipt_header_scope_cache == shared_cache
 
 
 def test_run_one_row_stops_when_current_canvas_header_anchor_missing(monkeypatch):
