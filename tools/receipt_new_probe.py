@@ -287,8 +287,10 @@ def summarize_entry_context_snapshot(entry_wait):
         "ok": bool(entry_wait.get("ok")),
         "confirmed": bool(entry_wait.get("confirmed")),
         "method": entry_wait.get("method"),
+        "entry_ready_source": "edit-button",
         "anchor_ok": bool(anchor.get("ok")),
         "anchor_reason": anchor.get("reason"),
+        "header_scope_anchor_ok": bool(anchor.get("ok")),
         "scope_hwnd": anchor.get("scope_hwnd"),
         "dynamic_index": anchor.get("dynamic_index"),
         "quick_anchor_ok": bool(quick_anchor.get("ok")),
@@ -475,19 +477,17 @@ def collect_entry_context_snapshot(jab, popup_hwnd=None):
             "method": "skip-parent-new-scan",
             "reason": "改用保存/暂存/取消任一编辑态按钮确认新建录入态",
         }
-        entry_ready = bool(
-            quick_anchor.get("ok") and not popup_visible and edit_state.get("ok")
-        )
+        entry_ready = bool(not popup_visible and edit_state.get("ok"))
         if popup_visible:
             state_reason = "自制菜单 popup 仍可见，暂不写入"
         elif not edit_state.get("ok"):
             state_reason = "未确认保存/暂存/取消任一编辑态按钮"
         else:
-            state_reason = "财务组织(O)锚点已确认，popup 已关闭，编辑态按钮已出现"
+            state_reason = "popup 已关闭，编辑态按钮已出现"
         state = {
             "ok": entry_ready,
             "edit_buttons_ok": bool(edit_state.get("ok")),
-            "partial_ok": bool(quick_anchor.get("ok")),
+            "partial_ok": bool(edit_state.get("ok")),
             "names": edit_state.get("names") or [],
             "hits": [
                 {
@@ -556,11 +556,11 @@ def collect_entry_context_snapshot(jab, popup_hwnd=None):
         "method": "skip-parent-new-scan",
         "reason": "改用保存/暂存/取消任一编辑态按钮确认新建录入态",
     }
-    entry_ready = bool(anchor.get("ok") and not popup_visible and state.get("ok"))
+    entry_ready = bool(not popup_visible and state.get("ok"))
     if entry_ready and state.get("ok"):
-        state_reason = "编辑态按钮和财务组织(O)锚点均已确认，popup 已关闭"
+        state_reason = "popup 已关闭，编辑态按钮已出现"
     elif entry_ready:
-        state_reason = "财务组织(O)锚点已确认，popup 已关闭"
+        state_reason = "popup 已关闭"
     elif popup_visible:
         state_reason = "自制菜单 popup 仍可见，暂不写入"
     elif not state.get("ok"):
@@ -571,7 +571,7 @@ def collect_entry_context_snapshot(jab, popup_hwnd=None):
         **state,
         "ok": entry_ready,
         "edit_buttons_ok": bool(state.get("ok")),
-        "partial_ok": bool(anchor.get("ok")),
+        "partial_ok": bool(state.get("partial_ok")),
         "reason": state_reason,
         "parent_new_state": parent_new_state,
     }
@@ -603,25 +603,6 @@ def collect_entry_context_snapshot(jab, popup_hwnd=None):
         "popup": popup_state,
         "popup_visible": popup_visible,
     }
-
-
-def build_entry_state_reason(
-    anchor_ok=False,
-    popup_visible=False,
-    parent_new_visible=False,
-    edit_buttons_ok=False,
-):
-    if anchor_ok and not popup_visible and not parent_new_visible:
-        if edit_buttons_ok:
-            return "编辑态按钮和财务组织(O)锚点均已确认，popup 已关闭，父页新增不可用"
-        return "财务组织(O)锚点已确认，popup 已关闭，父页新增不可用"
-    if popup_visible:
-        return "自制菜单 popup 仍可见，暂不写入"
-    if parent_new_visible:
-        return "父页新增按钮仍可用，暂不认为已进入新建录入态"
-    if not edit_buttons_ok:
-        return "未确认保存/暂存/取消编辑态按钮齐全"
-    return "未确认财务组织(O)锚点"
 
 
 def detect_parent_new_ready_light(jab, foreground=None):
