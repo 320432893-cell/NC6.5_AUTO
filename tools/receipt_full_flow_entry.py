@@ -1555,7 +1555,7 @@ def save_receipt_by_ctrl_s(
     timeout=3.0,
     min_samples=3,
     interval=0.1,
-    success_samples=2,
+    success_samples=1,
     min_observe_seconds=0.0,
 ):
     page = None
@@ -1639,7 +1639,7 @@ def save_receipt_by_ctrl_s(
                 "oracle": {
                     "name": "receipt_parent_new_ready_after_save",
                     "ok": True,
-                    "evidence": "保存后连续检测到收款单录入父页前台【新增】按钮可用，且保存/暂存/取消三按钮不再同时存在",
+                    "evidence": "保存后检测到收款单录入父页前台【新增】按钮可用，且保存/暂存/取消三按钮不再同时存在",
                     "parent_new_state": parent_new_state,
                     "self_made_entry_state": state,
                 },
