@@ -468,22 +468,27 @@ def collect_entry_context_snapshot(jab, popup_hwnd=None):
     if quick_anchor.get("ok"):
         popup_state = describe_popup_visibility(popup_hwnd)
         popup_visible = bool(popup_state.get("visible")) if popup_hwnd else False
-        parent_new_state = detect_parent_new_ready_light(jab, foreground)
-        parent_new_visible = bool(parent_new_state.get("ok"))
+        edit_state = detect_entry_state_ready_light(jab, foreground)
+        parent_new_state = {
+            "ok": False,
+            "skipped": True,
+            "method": "skip-parent-new-scan",
+            "reason": "改用保存/暂存/取消任一编辑态按钮确认新建录入态",
+        }
         entry_ready = bool(
-            quick_anchor.get("ok") and not popup_visible and not parent_new_visible
+            quick_anchor.get("ok") and not popup_visible and edit_state.get("ok")
         )
-        state_reason = build_entry_state_reason(
-            anchor_ok=quick_anchor.get("ok"),
-            popup_visible=popup_visible,
-            parent_new_visible=parent_new_visible,
-            edit_buttons_ok=False,
-        )
+        if popup_visible:
+            state_reason = "自制菜单 popup 仍可见，暂不写入"
+        elif not edit_state.get("ok"):
+            state_reason = "未确认保存/暂存/取消任一编辑态按钮"
+        else:
+            state_reason = "财务组织(O)锚点已确认，popup 已关闭，编辑态按钮已出现"
         state = {
             "ok": entry_ready,
-            "edit_buttons_ok": False,
+            "edit_buttons_ok": bool(edit_state.get("ok")),
             "partial_ok": bool(quick_anchor.get("ok")),
-            "names": [],
+            "names": edit_state.get("names") or [],
             "hits": [
                 {
                     "window": quick_anchor.get("window") or {},
@@ -501,9 +506,11 @@ def collect_entry_context_snapshot(jab, popup_hwnd=None):
                         "dynamic_prefix": quick_anchor.get("dynamic_prefix"),
                     },
                 }
-            ],
+            ]
+            + (edit_state.get("hits") or []),
             "reason": state_reason,
             "parent_new_state": parent_new_state,
+            "edit_button_state": edit_state,
         }
         anchor_hit = state["hits"][0]["control"]
         windows = [
@@ -541,21 +548,23 @@ def collect_entry_context_snapshot(jab, popup_hwnd=None):
         anchor = resolve_current_canvas_header_anchor(jab, windows, foreground)
         method = "window-snapshot-anchor"
     state = detect_self_made_entry_state(windows)
-    parent_new_state = detect_parent_new_ready_in_windows(windows, foreground)
     popup_state = describe_popup_visibility(popup_hwnd)
     popup_visible = bool(popup_state.get("visible")) if popup_hwnd else False
-    parent_new_visible = bool(parent_new_state.get("ok"))
-    entry_ready = bool(anchor.get("ok") and not popup_visible and not parent_new_visible)
+    parent_new_state = {
+        "ok": False,
+        "skipped": True,
+        "method": "skip-parent-new-scan",
+        "reason": "改用保存/暂存/取消任一编辑态按钮确认新建录入态",
+    }
+    entry_ready = bool(anchor.get("ok") and not popup_visible and state.get("ok"))
     if entry_ready and state.get("ok"):
-        state_reason = "编辑态按钮和财务组织(O)锚点均已确认，popup 已关闭，父页新增不可用"
+        state_reason = "编辑态按钮和财务组织(O)锚点均已确认，popup 已关闭"
     elif entry_ready:
-        state_reason = "财务组织(O)锚点已确认，popup 已关闭，父页新增不可用"
+        state_reason = "财务组织(O)锚点已确认，popup 已关闭"
     elif popup_visible:
         state_reason = "自制菜单 popup 仍可见，暂不写入"
-    elif parent_new_visible:
-        state_reason = "父页新增按钮仍可用，暂不认为已进入新建录入态"
     elif not state.get("ok"):
-        state_reason = "未确认保存/暂存/取消编辑态按钮齐全"
+        state_reason = "未确认保存/暂存/取消任一编辑态按钮"
     else:
         state_reason = "未确认财务组织(O)锚点"
     state = {
@@ -696,6 +705,132 @@ def detect_parent_new_ready_in_windows(windows, foreground=None):
             for item in usable[:3]
         ],
     }
+
+
+def detect_entry_state_ready_light(jab, foreground=None):
+    foreground = foreground or foreground_info()
+    fg_root = (foreground or {}).get("root")
+    if os.name != "nt" or not hasattr(ctypes, "WinDLL") or not fg_root:
+        return {
+            "ok": False,
+            "method": "light-entry-button-scan",
+            "reason": "foreground root not available",
+            "names": [],
+            "hits": [],
+        }
+    for hwnd, title, class_name, pid, visible in enum_windows(include_children=True):
+        if class_name != "SunAwtFrame" or not visible:
+            continue
+        if root_hwnd(hwnd) != fg_root:
+            continue
+        if not jab.dll.isJavaWindow(hwnd):
+            continue
+        window_info = {
+            "hwnd": int(hwnd),
+            "title": title,
+            "class_name": class_name,
+            "visible": visible,
+            "root_hwnd": int(fg_root),
+            "is_foreground_root": True,
+        }
+        state = find_first_entry_state_button_in_window(jab, int(hwnd), window_info)
+        if state.get("ok"):
+            return state
+    return {
+        "ok": False,
+        "method": "light-entry-button-scan",
+        "reason": "保存/暂存/取消编辑态按钮未出现",
+        "names": [],
+        "hits": [],
+    }
+
+
+def find_first_entry_state_button_in_window(jab, hwnd, window_info):
+    vm_id = ctypes.c_long()
+    root_context = JOBJECT()
+    if not jab.dll.getAccessibleContextFromHWND(
+        int(hwnd),
+        ctypes.byref(vm_id),
+        ctypes.byref(root_context),
+    ):
+        return {
+            "ok": False,
+            "method": "light-entry-button-scan",
+            "reason": "getAccessibleContextFromHWND failed",
+            "names": [],
+            "hits": [],
+        }
+    try:
+        hit = find_first_entry_state_button_context(
+            jab,
+            vm_id.value,
+            root_context.value,
+            path="0",
+            depth=0,
+            max_depth=25,
+            max_children=1000,
+        )
+    finally:
+        jab.release_contexts(vm_id.value, [root_context.value])
+    if not hit:
+        return {
+            "ok": False,
+            "method": "light-entry-button-scan",
+            "reason": "保存/暂存/取消编辑态按钮未出现",
+            "names": [],
+            "hits": [],
+        }
+    return {
+        "ok": True,
+        "partial_ok": True,
+        "method": "light-entry-button-scan",
+        "names": hit["names"],
+        "hits": [
+            {
+                "window": window_info,
+                "control": hit["control"],
+            }
+        ],
+    }
+
+
+def find_first_entry_state_button_context(
+    jab,
+    vm_id,
+    context,
+    path,
+    depth,
+    max_depth,
+    max_children,
+):
+    info = jab.get_context_info(vm_id, context)
+    if not info:
+        return None
+    control = summarize_info(jab, vm_id, context, info, path)
+    names = sorted(normalize_entry_state_names(control))
+    if names and is_current_visible_control(control):
+        return {"names": names, "control": control}
+    if depth >= max_depth:
+        return None
+    for index in range(min(info.childrenCount, max_children)):
+        child = jab.dll.getAccessibleChildFromContext(vm_id, context, index)
+        if not child:
+            continue
+        try:
+            hit = find_first_entry_state_button_context(
+                jab,
+                vm_id,
+                child,
+                f"{path}.{index}",
+                depth + 1,
+                max_depth,
+                max_children,
+            )
+            if hit:
+                return hit
+        finally:
+            jab.release_contexts(vm_id, [child])
+    return None
 
 
 def describe_popup_visibility(hwnd):
@@ -1721,7 +1856,7 @@ def detect_self_made_entry_state(windows):
                     }
                 )
     return {
-        "ok": ENTRY_STATE_NAMES.issubset(names),
+        "ok": bool(names),
         "partial_ok": bool(names),
         "names": sorted(names),
         "hits": hits,
