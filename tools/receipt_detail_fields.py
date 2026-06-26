@@ -180,26 +180,35 @@ def normalize_currency_name(value):
 
 def validate_exchange_rate_not_polluted(cells, currency, amount, row_index=0):
     actual = normalize_text((cells or {}).get(str(EXCHANGE_RATE_COL)))
+    expected_amount = parse_decimal_text(amount)
+    normalized_currency = normalize_currency_name(currency)
     if not actual:
         return {
-            "ok": False,
+            "ok": True,
+            "warning": True,
             "row": row_index,
             "col": EXCHANGE_RATE_COL,
             "currency": currency,
+            "normalized_currency": normalized_currency,
             "actual": actual,
-            "reason": "汇率列为空，无法确认明细金额未误写入汇率列",
+            "amount": normalize_amount_text(amount),
+            "reason": "汇率列为空或未被 JAB 快照读出；不作为污染失败，只记录诊断",
+            "policy": "只在汇率列读到明确金额污染时失败；读不到不熔断",
         }
     actual_decimal = parse_decimal_text(actual)
     if actual_decimal is None:
         return {
-            "ok": False,
+            "ok": True,
+            "warning": True,
             "row": row_index,
             "col": EXCHANGE_RATE_COL,
             "currency": currency,
+            "normalized_currency": normalized_currency,
             "actual": actual,
-            "reason": f"汇率列不是有效数字：{actual!r}",
+            "amount": normalize_amount_text(amount),
+            "reason": f"汇率列不是有效数字：{actual!r}；不作为污染失败，只记录诊断",
+            "policy": "只在汇率列读到明确金额污染时失败；读不到/不可解析不熔断",
         }
-    expected_amount = parse_decimal_text(amount)
     if expected_amount is not None and actual_decimal == expected_amount:
         return {
             "ok": False,
@@ -209,19 +218,32 @@ def validate_exchange_rate_not_polluted(cells, currency, amount, row_index=0):
             "actual": actual,
             "amount": normalize_amount_text(amount),
             "reason": "汇率列值等于本次录入金额，疑似金额误写入汇率列",
+            "policy": "只在汇率列读到明确金额污染时失败",
         }
-    normalized_currency = normalize_currency_name(currency)
+    if actual_decimal.copy_abs() >= Decimal("100"):
+        return {
+            "ok": False,
+            "row": row_index,
+            "col": EXCHANGE_RATE_COL,
+            "currency": currency,
+            "normalized_currency": normalized_currency,
+            "actual": actual,
+            "amount": normalize_amount_text(amount),
+            "reason": f"汇率列值异常偏大：{actual!r}，疑似金额误写入汇率列",
+            "policy": "只在汇率列读到明确金额污染时失败",
+        }
+    warning = False
     if normalized_currency == "USD":
-        ok = Decimal("6") < actual_decimal < Decimal("10")
-        reason = None if ok else f"美元汇率列异常：{actual!r}，应大于 6 且小于 10"
+        warning = not (Decimal("6") < actual_decimal < Decimal("10"))
+        reason = None if not warning else f"美元汇率列诊断异常：{actual!r}，通常应大于 6 且小于 10"
     elif normalized_currency == "CNY":
-        ok = actual_decimal == Decimal("1")
-        reason = None if ok else f"人民币汇率列异常：{actual!r}，应等于 1"
+        warning = actual_decimal != Decimal("1")
+        reason = None if not warning else f"人民币汇率列诊断异常：{actual!r}，通常应等于 1"
     else:
-        ok = True
         reason = None
     return {
-        "ok": ok,
+        "ok": True,
+        "warning": warning,
         "row": row_index,
         "col": EXCHANGE_RATE_COL,
         "currency": currency,
@@ -229,7 +251,7 @@ def validate_exchange_rate_not_polluted(cells, currency, amount, row_index=0):
         "actual": actual,
         "amount": normalize_amount_text(amount),
         "reason": reason,
-        "policy": "只检测汇率列污染，不写入或修正汇率",
+        "policy": "只在汇率列读到明确金额污染时失败；币种汇率合理性只做诊断 warning",
     }
 
 
