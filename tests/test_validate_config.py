@@ -213,9 +213,37 @@ def test_validate_receipt_entry_rejects_unknown_excel_text_nc_field():
     errors = validate_config(config)
 
     assert (
-        "receipt_entry.excel_text_field_mappings[0].nc_field must be one of ['商务领款备忘']"
+        "receipt_entry.excel_text_field_mappings[0].nc_field must be one of ['商务领款备忘', '备注']"
         in errors
     )
+
+
+def test_validate_receipt_entry_accepts_remark_excel_text_nc_field():
+    config = base_config()
+    config["receipt_entry"] = {
+        "state_label": "收款单录入",
+        "excel": {
+            "path": "payments.xlsx",
+            "sheet_name": "💸Payments来款通知",
+            "header_row": 1,
+            "start_row": 2,
+            "start_date": "2026-01-01",
+            "date_column": "到款日期",
+            "payer_name_column": "🟪银行来款名",
+            "raw_amount_column": "🟪原始金额",
+            "bank_column": "银行",
+            "currency_column": "币种",
+            "customer_code_column": "客户编码",
+            "organization_column": "主体名称",
+        },
+        "finance_organizations": [],
+        "accounts": [],
+        "excel_text_field_mappings": [
+            {"excel_column": "🔹NC备注", "nc_field": "备注"},
+        ],
+    }
+
+    assert validate_config(config) == []
 
 
 def test_validate_receipt_entry_accepts_extensible_bank_account_schema():

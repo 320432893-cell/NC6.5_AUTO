@@ -4,6 +4,7 @@
 # 谁不应该 import：core 层模块不应 import 本入口；凭证批量模块不应 import
 
 import argparse
+import ctypes
 from dataclasses import asdict
 from decimal import Decimal
 import json
@@ -24,6 +25,7 @@ from core.run_state import RunStateRecorder  # noqa: E402
 from core.utils import load_config  # noqa: E402
 from tools.receipt_body_table_locator import locate_receipt_body_table_cached  # noqa: E402
 from tools.receipt_detail_async_verifier import DetailPipelineVerifier  # noqa: E402
+from tools.receipt_detail_fields import validate_exchange_rate_not_polluted  # noqa: E402
 from tools.receipt_detail_row_cleanup import delete_extra_row_if_present  # noqa: E402
 from tools.receipt_detail_rows import StepTimer, run_fee_only  # noqa: E402
 from tools.receipt_detail_writer import (  # noqa: E402
@@ -32,9 +34,15 @@ from tools.receipt_detail_writer import (  # noqa: E402
 )
 from tools.receipt_keyboard_utils import (  # noqa: E402
     foreground_matches_window,
+    send_hotkey_alt_y,
+    send_hotkey_ctrl_q,
     send_hotkey_ctrl_s,
 )
-from tools.receipt_modal_guard import recover_cancelable_modal_now  # noqa: E402
+from tools.receipt_modal_guard import (  # noqa: E402
+    collect_visible_java_dialogs,
+    focus_window,
+    recover_cancelable_modal_now,
+)
 from tools.receipt_new_probe import (  # noqa: E402
     annotate_foreground_root_for_targets,
     collect_receipt_new_windows,
@@ -45,27 +53,44 @@ from tools.receipt_new_probe import (  # noqa: E402
     root_hwnd,
 )
 from tools.receipt_post_save_query import run_post_save_batch_query  # noqa: E402
+from tools.jab_probe import JOBJECT  # noqa: E402
 from tools.receipt_self_made_fill_trial import (  # noqa: E402
     HEADER_SCOPE_ANCHOR_LABEL,
-    cache_finance_org_write_path,
     fill_header,
     find_finance_org_header_scope_by_paths,
     find_receipt_header_field_by_dynamic_path,
+    find_receipt_header_field_by_live_semantic,
+    get_receipt_header_path_template,
+    infer_header_path_template_from_field,
     is_valid_customer_name_candidate,
     read_body_table,
     receipt_header_dynamic_prefix,
     resolve_receipt_header_anchor_in_canvas,
     run_receipt_new_probe,
     run_receipt_new_probe_with_jab,
+    set_receipt_header_path_template,
     wait_header_account_description,
-    find_receipt_extra_text_field_by_dynamic_path,
-    find_receipt_extra_text_field_by_live_semantic,
     guarded_paste_header_value,
     describe_backend_field_state,
 )
 
-BODY_TABLE_SUFFIX = "0.0.0.1.1.0.0.0.0.1.0.2.1.0.0.0.0.0"
+COUNTERPARTY_LABEL = "往来对象"
+COUNTERPARTY_EXPECTED = "客户"
+COUNTERPARTY_KNOWN_OPTIONS = {"客户", "部门", "业务员", "供应商"}
+COUNTERPARTY_NEARBY_MAX_VERTICAL_DISTANCE = 36
+COUNTERPARTY_NEARBY_MAX_RIGHT_DISTANCE = 700
+COUNTERPARTY_STATE_OK = "ok"
+COUNTERPARTY_STATE_REPAIRABLE = "repairable-empty"
+COUNTERPARTY_STATE_CONFLICT = "conflict"
+COUNTERPARTY_STATE_DETAIL_UNREADABLE = "detail-unreadable"
+_COUNTERPARTY_NEARBY_SUFFIX_CACHE = {}
+_BODY_TABLE_SUFFIX_CACHE = {}
 SLOW_STEP_THRESHOLD_SECONDS = 0.5
+CIRCUIT_BREAKER_RETRY_STEPS = {
+    "detail-extra-text-verify",
+    "detail-pipeline-verify",
+    "detail-exchange-rate-guard",
+}
 
 
 def parse_args(argv=None):
@@ -255,7 +280,6 @@ def main(argv=None):
     _succeeded = 0
     _failed = 0
     header_scope_cache = {}
-    finance_org_write_cache = {}
     try:
         for _step_idx, row in enumerate(selected_rows):
             recorder.set_stage(
@@ -273,8 +297,55 @@ def main(argv=None):
                 diagnose_header_after_pause=args.diagnose_header_after_pause,
                 diagnose_detail_repair=args.diagnose_detail_repair,
                 header_scope_cache=header_scope_cache,
-                finance_org_write_cache=finance_org_write_cache,
             )
+            if should_retry_row_by_cancel_reopen(row_report):
+                recorder.event(
+                    "row-circuit-breaker-start",
+                    excel_row=row.row,
+                    failed_step=row_report.get("failed_step"),
+                    reason=row_report.get("reason"),
+                )
+                cancel_report = cancel_current_receipt_entry(config)
+                recorder.event(
+                    "row-circuit-breaker-cancel",
+                    excel_row=row.row,
+                    ok=bool(cancel_report.get("ok")),
+                    reason=cancel_report.get("reason") or "",
+                )
+                if cancel_report.get("ok"):
+                    retry_report = run_one_row(
+                        config,
+                        row,
+                        save_enabled=args.save,
+                        recorder=recorder,
+                        pause_after_header_field=args.pause_after_header_field,
+                        diagnose_header_after_pause=args.diagnose_header_after_pause,
+                        diagnose_detail_repair=args.diagnose_detail_repair,
+                        header_scope_cache=header_scope_cache,
+                    )
+                    retry_report["circuit_breaker"] = {
+                        "triggered": True,
+                        "retry_count": 1,
+                        "retryable_steps": sorted(CIRCUIT_BREAKER_RETRY_STEPS),
+                        "first_attempt": summarize_retry_attempt(row_report),
+                        "cancel": cancel_report,
+                    }
+                    row_report = retry_report
+                    recorder.event(
+                        "row-circuit-breaker-retry-done",
+                        excel_row=row.row,
+                        ok=bool(row_report.get("ok")),
+                        failed_step=row_report.get("failed_step") or "",
+                    )
+                else:
+                    row_report["circuit_breaker"] = {
+                        "triggered": True,
+                        "retry_count": 0,
+                        "retryable_steps": sorted(CIRCUIT_BREAKER_RETRY_STEPS),
+                        "first_attempt": summarize_retry_attempt(row_report),
+                        "cancel": cancel_report,
+                        "reason": "取消当前未保存收款单失败，拒绝重试避免叠单",
+                    }
             report["rows"].append(row_report)
             if row_report.get("ok"):
                 _succeeded += 1
@@ -386,45 +457,6 @@ def cache_receipt_header_scope(jab, shared_cache, scope):
         shared_cache.update(cached)
 
 
-def cache_receipt_finance_org_write_path(jab, shared_cache, write_result):
-    if not isinstance(write_result, dict) or not write_result.get("ok"):
-        return None
-    write_index = write_result.get("write_index")
-    path = write_result.get("path")
-    if write_index is None:
-        path_attempt = write_result.get("path_attempt") or {}
-        write_index = path_attempt.get("write_index")
-        path = path or path_attempt.get("path")
-    if write_index is None:
-        return None
-    scope_hwnd = write_result.get("scope_hwnd")
-    cached = cache_finance_org_write_path(jab, scope_hwnd, write_index, path)
-    if isinstance(shared_cache, dict) and cached:
-        key = int(scope_hwnd) if scope_hwnd is not None else None
-        shared_cache[key] = dict(cached)
-        shared_cache["last"] = dict(cached)
-    return cached
-
-
-def prime_receipt_finance_org_write_cache(jab, shared_cache):
-    if not isinstance(shared_cache, dict) or not shared_cache:
-        return
-    try:
-        setattr(jab, "_finance_org_write_path_cache", dict(shared_cache))
-    except AttributeError:
-        pass
-
-
-def cache_receipt_finance_org_write_from_header_steps(jab, shared_cache, steps):
-    for step in steps or []:
-        if step.get("label") != HEADER_SCOPE_ANCHOR_LABEL:
-            continue
-        cached = cache_receipt_finance_org_write_path(jab, shared_cache, step)
-        if cached:
-            return cached
-    return None
-
-
 def select_plan_rows(plan_rows, issues, args):
     issue_rows = {issue.excel_row for issue in issues if issue.excel_row is not None}
     runnable = [row for row in plan_rows if row.row not in issue_rows]
@@ -456,7 +488,6 @@ def run_one_row(
     diagnose_header_after_pause=False,
     diagnose_detail_repair=False,
     header_scope_cache=None,
-    finance_org_write_cache=None,
 ):
     current_stage = {"name": ""}
 
@@ -479,7 +510,6 @@ def run_one_row(
     }
     business = business_from_plan_row(row)
     jab = JABOperator(config)
-    prime_receipt_finance_org_write_cache(jab, finance_org_write_cache)
     jab_lock = threading.RLock()
     pipeline_verifier = None
     modal_events = []
@@ -566,8 +596,12 @@ def run_one_row(
                 if finance_scope.get("ok"):
                     entry_dynamic_index = finance_scope.get("dynamic_index")
                     entry_dynamic_index_source = "finance-org-fast-scope"
+                    finance_semantic_label_path = finance_scope.get("semantic_label_path")
+                    finance_label_path = finance_scope.get("label_path")
                     entry_anchor_path = (
-                        finance_scope.get("label_path") or entry_anchor_path
+                        finance_label_path
+                        or finance_semantic_label_path
+                        or entry_anchor_path
                     )
                     if entry_dynamic_index is not None:
                         cache_receipt_header_scope(
@@ -580,8 +614,16 @@ def run_one_row(
                                 "dynamic_index": entry_dynamic_index,
                                 "dynamic_prefix": finance_scope.get("dynamic_prefix"),
                                 "matched_labels": [HEADER_SCOPE_ANCHOR_LABEL],
-                                "semantic_label_path": entry_anchor_path,
-                                "label_path": entry_anchor_path,
+                                "semantic_label_path": (
+                                    finance_semantic_label_path
+                                    or finance_label_path
+                                    or entry_anchor_path
+                                ),
+                                "label_path": (
+                                    finance_label_path
+                                    or finance_semantic_label_path
+                                    or entry_anchor_path
+                                ),
                                 "text_path": finance_scope.get("text_path"),
                                 "variant": finance_scope.get("variant"),
                             },
@@ -592,10 +634,10 @@ def run_one_row(
         row_report["entry_anchor_path"] = entry_anchor_path
         row_report["locator_policy"] = {
             "header": (
-                "财务组织优先用当前 canvas 动态前缀+稳定后缀 path，失败才控件名兜底；"
-                "其它表头字段优先用动态前缀+稳定后缀 path，path 失败才单字段语义兜底"
+                "财务组织用于确认当前 canvas/scope 并缓存语义锚点；其它表头字段优先复用"
+                "该 scope 做容器内标签定位，失败才单字段语义兜底"
             ),
-            "body": "明细表用校正后的动态前缀直接拼稳定 path，校验失败才现场扫描",
+            "body": "明细表优先复用已定位表格，必要时按表格语义扫描重新定位",
         }
         if not entry_scope_hwnd or entry_dynamic_index is None:
             reason = "当前 canvas 未解析到财务组织(O) 前缀，停止；不走语义兜底"
@@ -669,19 +711,6 @@ def run_one_row(
         if header_pause_reports:
             row_report["header_pause_diagnostics"] = header_pause_reports
         row_report["header_steps"] = header_steps
-        finance_org_write_cached = cache_receipt_finance_org_write_from_header_steps(
-            jab,
-            finance_org_write_cache,
-            header_steps,
-        )
-        if finance_org_write_cached:
-            row_report["finance_org_write_cache"] = {
-                "ok": True,
-                "scope_hwnd": finance_org_write_cached.get("scope_hwnd"),
-                "write_index": finance_org_write_cached.get("write_index"),
-                "path": finance_org_write_cached.get("path"),
-                "source": "header-step",
-            }
         cached_after_header = getattr(jab, "_receipt_header_scope_cache", None) or {}
         if cached_after_header.get("ok"):
             cache_receipt_header_scope(jab, header_scope_cache, cached_after_header)
@@ -689,27 +718,6 @@ def run_one_row(
             header_error = summarize_header_failure(header_steps)
             _event("header-fill-failed", excel_row=row.row, error=header_error)
             return fail(row_report, "header-fill", timings, header_error)
-        customer_name = timings.measure(
-            "header.customer-name-readback",
-            run_with_jab_lock,
-            jab_lock,
-            read_customer_name_after_header,
-            jab,
-            header_steps,
-            entry_dynamic_index,
-            entry_scope_hwnd,
-        )
-        row_report["customer_name_readback"] = customer_name
-        row_report["nc_customer_name"] = str(customer_name.get("value") or "").strip()
-        if not row_report["nc_customer_name"]:
-            reason = customer_name.get("reason") or "客户名称未确认"
-            _event(
-                "header-customer-readback-failed",
-                excel_row=row.row,
-                error=reason,
-            )
-            return fail(row_report, "header-customer-name", timings, reason)
-        _stage("明细主行", excel_row=row.row)
         located = timings.measure(
             "body.locate",
             run_with_jab_lock,
@@ -731,6 +739,75 @@ def run_one_row(
         if not located.get("best"):
             _event("locate-table-failed", excel_row=row.row, error="未定位到明细表")
             return fail(row_report, "locate-body-table", timings, "未定位到明细表")
+        counterparty_report = timings.measure(
+            "header.counterparty-type",
+            run_with_jab_lock,
+            jab_lock,
+            ensure_header_counterparty_customer,
+            jab,
+            entry_dynamic_index,
+            entry_scope_hwnd,
+            located=located,
+            recover_after_failure=recover_modal_after_failure,
+        )
+        row_report["header_counterparty"] = counterparty_report
+        if not counterparty_report.get("ok"):
+            _event(
+                "header-counterparty-failed",
+                excel_row=row.row,
+                error=counterparty_report.get("reason"),
+            )
+            return fail(
+                row_report,
+                "header-counterparty-type",
+                timings,
+                counterparty_report.get("reason") or "往来对象未确认",
+            )
+        extra_text_report = timings.measure(
+            "header.extra-text-fields",
+            run_with_jab_lock,
+            jab_lock,
+            write_extra_text_fields,
+            jab,
+            row.extra_text_fields,
+            entry_dynamic_index,
+            entry_scope_hwnd,
+            recover_after_failure=recover_modal_after_failure,
+        )
+        row_report["extra_text_fields"] = extra_text_report
+        if not extra_text_report.get("ok"):
+            _event(
+                "header-extra-text-failed",
+                excel_row=row.row,
+                error=extra_text_report.get("reason"),
+            )
+            return fail(
+                row_report,
+                "header-extra-text-fields",
+                timings,
+                extra_text_report.get("reason") or "扩展文本字段写入失败",
+            )
+        customer_name = timings.measure(
+            "header.customer-name-readback",
+            run_with_jab_lock,
+            jab_lock,
+            read_customer_name_after_header,
+            jab,
+            header_steps,
+            entry_dynamic_index,
+            entry_scope_hwnd,
+        )
+        row_report["customer_name_readback"] = customer_name
+        row_report["nc_customer_name"] = str(customer_name.get("value") or "").strip()
+        if not row_report["nc_customer_name"]:
+            reason = customer_name.get("reason") or "客户名称未确认"
+            _event(
+                "header-customer-readback-failed",
+                excel_row=row.row,
+                error=reason,
+            )
+            return fail(row_report, "header-customer-name", timings, reason)
+        _stage("明细主行", excel_row=row.row)
         row_report["before_table"] = {
             "ok": True,
             "skipped": True,
@@ -749,6 +826,26 @@ def run_one_row(
         pipeline_text_task_ids = []
         pipeline_snapshot_task_ids = []
         pipeline_row_count_task_id = None
+
+        for field_report in extra_text_report.get("fields") or []:
+            if not field_report.get("ok") or not field_report.get("value"):
+                continue
+            if not field_report.get("path"):
+                return fail(
+                    row_report,
+                    "header-extra-text-fields",
+                    timings,
+                    f"扩展文本字段 {field_report.get('label')!r} 缺少后台验证 path",
+                )
+            pipeline_text_task_ids.append(
+                pipeline_verifier.submit_path_text(
+                    field_report.get("label"),
+                    field_report.get("path"),
+                    field_report.get("value"),
+                    scope_hwnd=entry_scope_hwnd,
+                )
+            )
+        row_report["extra_text_verify_tasks"] = pipeline_text_task_ids
 
         def submit_detail_verify(row_index, field, business_values, _step):
             task_id = pipeline_verifier.submit_field(
@@ -786,49 +883,6 @@ def run_one_row(
         if not all(step.get("ok") for step in detail_steps):
             _event("detail-main-failed", excel_row=row.row, error="明细主行写入失败")
             return fail(row_report, "detail-main-line", timings, "明细主行写入失败")
-        extra_text_report = timings.measure(
-            "detail.extra-text-fields",
-            run_with_jab_lock,
-            jab_lock,
-            write_extra_text_fields,
-            jab,
-            row.extra_text_fields,
-            entry_dynamic_index,
-            entry_scope_hwnd,
-            recover_after_failure=recover_modal_after_failure,
-        )
-        row_report["extra_text_fields"] = extra_text_report
-        if not extra_text_report.get("ok"):
-            _event(
-                "detail-extra-text-failed",
-                excel_row=row.row,
-                error=extra_text_report.get("reason"),
-            )
-            return fail(
-                row_report,
-                "detail-extra-text-fields",
-                timings,
-                extra_text_report.get("reason") or "扩展文本字段写入失败",
-            )
-        for field_report in extra_text_report.get("fields") or []:
-            if not field_report.get("ok") or not field_report.get("value"):
-                continue
-            if not field_report.get("path"):
-                return fail(
-                    row_report,
-                    "detail-extra-text-fields",
-                    timings,
-                    f"扩展文本字段 {field_report.get('label')!r} 缺少后台验证 path",
-                )
-            pipeline_text_task_ids.append(
-                pipeline_verifier.submit_path_text(
-                    field_report.get("label"),
-                    field_report.get("path"),
-                    field_report.get("value"),
-                    scope_hwnd=entry_scope_hwnd,
-                )
-            )
-        row_report["extra_text_verify_tasks"] = pipeline_text_task_ids
         if row.fee > 0:
             _stage("手续费", excel_row=row.row)
             row_report["extra_row_delete"] = {
@@ -1011,6 +1065,30 @@ def run_one_row(
             "skipped": True,
             "reason": "后台 pipeline verifier 已覆盖最后字段与最终行数，跳过同步整表读",
         }
+        guard_source = (
+            row_report.get("detail_pipeline_verify_after_repair")
+            or row_report.get("detail_pipeline_verify")
+        )
+        main_row_cells = latest_snapshot_row_cells(guard_source, row_index=0)
+        exchange_rate_guard = validate_exchange_rate_not_polluted(
+            main_row_cells,
+            row.currency,
+            row.raw_amount,
+            row_index=0,
+        )
+        row_report["detail_exchange_rate_guard"] = exchange_rate_guard
+        if not exchange_rate_guard.get("ok"):
+            _event(
+                "exchange-rate-guard-failed",
+                excel_row=row.row,
+                error=exchange_rate_guard.get("reason"),
+            )
+            return fail(
+                row_report,
+                "detail-exchange-rate-guard",
+                timings,
+                exchange_rate_guard.get("reason") or "汇率列污染守卫未通过",
+            )
         account_check = timings.measure(
             "header.account-readback-after-detail",
             run_with_jab_lock,
@@ -1037,6 +1115,7 @@ def run_one_row(
             )
         if save_enabled:
             _stage("保存", excel_row=row.row)
+            row_report["save_attempted"] = True
             save_result = timings.measure(
                 "save.ctrl-s",
                 run_with_jab_lock,
@@ -1192,6 +1271,32 @@ def force_one_detail_field_pending(report, field_task_ids):
     return forced
 
 
+def latest_snapshot_row_cells(report, row_index=0):
+    for item in reversed((report or {}).get("snapshots") or []):
+        snapshot = item.get("snapshot") or {}
+        if not snapshot.get("ok"):
+            continue
+        for row in snapshot.get("rows") or []:
+            try:
+                current_index = int(row.get("row_index"))
+            except (TypeError, ValueError):
+                continue
+            if current_index == int(row_index):
+                return row.get("cells") or {}
+    for result in reversed(list(((report or {}).get("results") or {}).values())):
+        snapshot = result.get("snapshot") or {}
+        if not snapshot.get("ok"):
+            continue
+        for row in snapshot.get("rows") or []:
+            try:
+                current_index = int(row.get("row_index"))
+            except (TypeError, ValueError):
+                continue
+            if current_index == int(row_index):
+                return row.get("cells") or {}
+    return {}
+
+
 def repair_detail_pipeline_failures(
     jab,
     jab_lock,
@@ -1311,7 +1416,13 @@ def repair_detail_pipeline_failures(
 def build_body_table_cached_path(dynamic_index, scope_hwnd=None):
     if dynamic_index is None:
         return None
-    path = f"{receipt_header_dynamic_prefix(dynamic_index)}.{BODY_TABLE_SUFFIX}"
+    cached = _BODY_TABLE_SUFFIX_CACHE.get(body_table_cache_key(scope_hwnd))
+    if not cached:
+        cached = _BODY_TABLE_SUFFIX_CACHE.get("last")
+    suffix = (cached or {}).get("suffix")
+    if not suffix:
+        return None
+    path = f"{receipt_header_dynamic_prefix(dynamic_index)}.{suffix}"
     return {
         "best": {
             "path": path,
@@ -1325,18 +1436,58 @@ def build_body_table_cached_path(dynamic_index, scope_hwnd=None):
 
 def resolve_body_table_by_dynamic_prefix(jab, dynamic_index, scope_hwnd=None):
     cached = build_body_table_cached_path(dynamic_index, scope_hwnd=scope_hwnd)
+    if cached:
+        located = locate_receipt_body_table_cached(
+            jab,
+            cached=cached,
+            max_rows=5,
+            scope_hwnd=scope_hwnd,
+        )
+        if located.get("cache_hit"):
+            return {
+                **located,
+                "source": "learned-body-table-path",
+                "cached_path": (cached or {}).get("best"),
+            }
+
     located = locate_receipt_body_table_cached(
         jab,
-        cached=cached,
+        cached=None,
         max_rows=5,
         scope_hwnd=scope_hwnd,
     )
-    source = (
-        "dynamic-prefix-body-path"
-        if located.get("cache_hit")
-        else "dynamic-prefix-body-path-fallback-scan"
+    learned = cache_body_table_suffix(
+        dynamic_index,
+        scope_hwnd,
+        ((located or {}).get("best") or {}).get("path"),
     )
-    return {**located, "source": source, "cached_path": (cached or {}).get("best")}
+    return {
+        **located,
+        "source": "semantic-body-table-scan",
+        "cached_path": (cached or {}).get("best"),
+        "learned_suffix": learned,
+    }
+
+
+def cache_body_table_suffix(dynamic_index, scope_hwnd, path):
+    prefix = receipt_header_dynamic_prefix(dynamic_index)
+    if not prefix or not path or not str(path).startswith(f"{prefix}."):
+        return None
+    suffix = str(path)[len(prefix) + 1 :]
+    cached = {
+        "dynamic_index": dynamic_index,
+        "scope_hwnd": scope_hwnd,
+        "suffix": suffix,
+        "path": path,
+        "source": "semantic-body-table-scan",
+    }
+    _BODY_TABLE_SUFFIX_CACHE[body_table_cache_key(scope_hwnd)] = cached
+    _BODY_TABLE_SUFFIX_CACHE["last"] = cached
+    return cached
+
+
+def body_table_cache_key(scope_hwnd):
+    return int(scope_hwnd) if scope_hwnd is not None else None
 
 
 def build_header_scope_for_followup(scope_hwnd, dynamic_index):
@@ -1562,6 +1713,1108 @@ def write_extra_text_fields(
     return {"ok": True, "fields": results}
 
 
+def ensure_header_counterparty_customer(
+    jab,
+    dynamic_index,
+    scope_hwnd=None,
+    located=None,
+    recover_after_failure=None,
+):
+    started_at = time.perf_counter()
+    if dynamic_index is None:
+        return {
+            "ok": False,
+            "label": COUNTERPARTY_LABEL,
+            "expected": COUNTERPARTY_EXPECTED,
+            "dynamic_index": dynamic_index,
+            "reason": "往来对象 dynamic_index 未配置",
+            "seconds": round(time.perf_counter() - started_at, 3),
+        }
+
+    detail = read_detail_counterparty_value(
+        jab,
+        dynamic_index,
+        scope_hwnd=scope_hwnd,
+        located=located,
+        row=0,
+        col=0,
+    )
+    detail_value = normalize_counterparty_value(
+        detail.get("value"),
+        detail.get("text"),
+    )
+    if detail_value == COUNTERPARTY_EXPECTED:
+        return {
+            "ok": True,
+            "skipped": True,
+            "label": COUNTERPARTY_LABEL,
+            "expected": COUNTERPARTY_EXPECTED,
+            "actual": COUNTERPARTY_EXPECTED,
+            "path": None,
+            "dynamic_index": dynamic_index,
+            "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
+            "detail": detail,
+            "state": {
+                "state": COUNTERPARTY_STATE_OK,
+                "actual": detail_value,
+                "source": "detail-row0-col0",
+                "repairable": False,
+            },
+            "source": "detail-row0-col0",
+            "reason": "明细表第 0 行往来对象为客户，跳过",
+            "seconds": round(time.perf_counter() - started_at, 3),
+        }
+    if detail_value in COUNTERPARTY_KNOWN_OPTIONS:
+        snapshot = {
+            "combo": {},
+            "embedded": {},
+            "detail": detail,
+            "selected": "",
+            "combo_text": "",
+            "detail_value": detail_value,
+            "state": {
+                "state": COUNTERPARTY_STATE_CONFLICT,
+                "actual": detail_value,
+                "source": "detail-row0-col0",
+                "repairable": False,
+            },
+        }
+        return {
+            "ok": False,
+            "label": COUNTERPARTY_LABEL,
+            "expected": COUNTERPARTY_EXPECTED,
+            "actual": detail_value,
+            "path": None,
+            "dynamic_index": dynamic_index,
+            "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
+            "before": {},
+            "embedded": {},
+            "detail": detail,
+            "state": snapshot["state"],
+            "readback_trusted": False,
+            "reason": summarize_counterparty_failure(snapshot),
+            "seconds": round(time.perf_counter() - started_at, 3),
+        }
+    if detail.get("ok") is False and not detail_value:
+        reason = str(detail.get("reason") or "")
+        unreadable = any(
+            marker in reason
+            for marker in ("未定位", "命中失败", "行列不足", "异常")
+        )
+        if unreadable:
+            snapshot = {
+                "combo": {},
+                "embedded": {},
+                "detail": detail,
+                "selected": "",
+                "combo_text": "",
+                "detail_value": "",
+                "state": {
+                    "state": COUNTERPARTY_STATE_DETAIL_UNREADABLE,
+                    "actual": "",
+                    "source": "detail-row0-col0",
+                    "repairable": False,
+                },
+            }
+            return {
+                "ok": False,
+                "label": COUNTERPARTY_LABEL,
+                "expected": COUNTERPARTY_EXPECTED,
+                "actual": "",
+                "path": None,
+                "dynamic_index": dynamic_index,
+                "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
+                "before": {},
+                "embedded": {},
+                "detail": detail,
+                "state": snapshot["state"],
+                "readback_trusted": False,
+                "reason": summarize_counterparty_failure(snapshot),
+                "seconds": round(time.perf_counter() - started_at, 3),
+            }
+
+    found = find_counterparty_combo(jab, dynamic_index, scope_hwnd=scope_hwnd)
+    found_path = found.get("path")
+    recovery_after_find = None
+    if not found.get("ok") and recover_after_failure is not None:
+        recovery_after_find = recover_after_failure()
+        if recovery_after_find.get("attempted") and recovery_after_find.get("ok"):
+            found = find_counterparty_combo(jab, dynamic_index, scope_hwnd=scope_hwnd)
+            found_path = found.get("path")
+    if not found.get("ok"):
+        return {
+            **found,
+            "label": COUNTERPARTY_LABEL,
+            "expected": COUNTERPARTY_EXPECTED,
+            "dynamic_index": dynamic_index,
+            "detail": detail,
+            "modal_recovery": recovery_after_find,
+            "seconds": round(time.perf_counter() - started_at, 3),
+        }
+
+    try:
+        combo = read_counterparty_combo_state(
+            jab,
+            found["vm_id"],
+            found["context"],
+        )
+        embedded = read_counterparty_selected_option(
+            jab,
+            found["vm_id"],
+            found["context"],
+        )
+        snapshot = {
+            "combo": combo,
+            "embedded": embedded,
+            "detail": detail,
+            "selected": normalize_counterparty_value(embedded.get("selected")),
+            "combo_text": normalize_counterparty_value(
+                combo.get("description"),
+                combo.get("text"),
+                combo.get("name"),
+            ),
+            "detail_value": detail_value,
+        }
+        state = classify_counterparty_snapshot(snapshot)
+        snapshot["state"] = state
+        if state["state"] == COUNTERPARTY_STATE_OK:
+            return {
+                "ok": True,
+                "skipped": True,
+                "label": COUNTERPARTY_LABEL,
+                "expected": COUNTERPARTY_EXPECTED,
+                "actual": COUNTERPARTY_EXPECTED,
+                "path": found_path,
+                "dynamic_index": dynamic_index,
+                "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
+                "before": snapshot["combo"],
+                "embedded": snapshot["embedded"],
+                "detail": snapshot["detail"],
+                "state": state,
+                "source": "detail-row0-col0",
+                "reason": "明细表第 0 行往来对象为客户，跳过",
+                "seconds": round(time.perf_counter() - started_at, 3),
+            }
+
+        if state["state"] == COUNTERPARTY_STATE_REPAIRABLE:
+            repair = select_counterparty_customer_embedded(
+                jab,
+                found["vm_id"],
+                found["context"],
+                press_enter=True,
+            )
+            time.sleep(0.12)
+            after_detail = read_detail_counterparty_value(
+                jab,
+                dynamic_index,
+                scope_hwnd=scope_hwnd,
+                located=located,
+                row=0,
+                col=0,
+            )
+            after_value = normalize_counterparty_value(
+                after_detail.get("value"),
+                after_detail.get("text"),
+            )
+            if after_value == COUNTERPARTY_EXPECTED:
+                return {
+                    "ok": True,
+                    "repaired": True,
+                    "label": COUNTERPARTY_LABEL,
+                    "expected": COUNTERPARTY_EXPECTED,
+                    "actual": after_value,
+                    "path": found_path,
+                    "dynamic_index": dynamic_index,
+                    "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
+                    "before": snapshot["combo"],
+                    "embedded": snapshot["embedded"],
+                    "detail": snapshot["detail"],
+                    "after_detail": after_detail,
+                    "repair": repair,
+                    "state": state,
+                    "source": "embedded-selection-api",
+                    "reason": "往来对象为空，已通过子列表 selection API 选择客户并验证明细表",
+                    "seconds": round(time.perf_counter() - started_at, 3),
+                }
+            return {
+                "ok": False,
+                "label": COUNTERPARTY_LABEL,
+                "expected": COUNTERPARTY_EXPECTED,
+                "actual": after_value,
+                "path": found_path,
+                "dynamic_index": dynamic_index,
+                "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
+                "before": snapshot["combo"],
+                "embedded": snapshot["embedded"],
+                "detail": snapshot["detail"],
+                "after_detail": after_detail,
+                "repair": repair,
+                "state": state,
+                "readback_trusted": False,
+                "reason": summarize_counterparty_failure(snapshot, after_detail),
+                "seconds": round(time.perf_counter() - started_at, 3),
+            }
+
+        return {
+            "ok": False,
+            "label": COUNTERPARTY_LABEL,
+            "expected": COUNTERPARTY_EXPECTED,
+            "actual": state.get("actual") or "",
+            "path": found_path,
+            "dynamic_index": dynamic_index,
+            "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
+            "before": snapshot["combo"],
+            "embedded": snapshot["embedded"],
+            "detail": snapshot["detail"],
+            "state": state,
+            "readback_trusted": False,
+            "reason": summarize_counterparty_failure(snapshot),
+            "seconds": round(time.perf_counter() - started_at, 3),
+        }
+    finally:
+        jab.release_contexts(found["vm_id"], found["owned_contexts"])
+
+
+def read_counterparty_snapshot_from_found(jab, found, dynamic_index, scope_hwnd=None):
+    combo = read_counterparty_combo_state(
+        jab,
+        found["vm_id"],
+        found["context"],
+    )
+    embedded = read_counterparty_selected_option(
+        jab,
+        found["vm_id"],
+        found["context"],
+    )
+    detail = read_detail_counterparty_value(
+        jab,
+        dynamic_index,
+        scope_hwnd=scope_hwnd,
+        row=0,
+        col=0,
+    )
+    return {
+        "combo": combo,
+        "embedded": embedded,
+        "detail": detail,
+        "selected": normalize_counterparty_value(embedded.get("selected")),
+        "combo_text": normalize_counterparty_value(
+            combo.get("description"),
+            combo.get("text"),
+            combo.get("name"),
+        ),
+        "detail_value": normalize_counterparty_value(
+            detail.get("value"),
+            detail.get("text"),
+        ),
+    }
+
+
+def classify_counterparty_snapshot(snapshot):
+    selected = (snapshot or {}).get("selected") or ""
+    combo_text = (snapshot or {}).get("combo_text") or ""
+    detail_value = (snapshot or {}).get("detail_value") or ""
+    detail = (snapshot or {}).get("detail") or {}
+
+    if detail_value == COUNTERPARTY_EXPECTED:
+        return {
+            "state": COUNTERPARTY_STATE_OK,
+            "actual": detail_value,
+            "source": "detail-row0-col0",
+            "repairable": False,
+        }
+
+    for source, value in (
+        ("detail-row0-col0", detail_value),
+        ("combo-text", combo_text),
+        ("embedded-selected-option", selected),
+    ):
+        if value in COUNTERPARTY_KNOWN_OPTIONS and value != COUNTERPARTY_EXPECTED:
+            return {
+                "state": COUNTERPARTY_STATE_CONFLICT,
+                "actual": value,
+                "source": source,
+                "repairable": False,
+            }
+
+    if detail.get("ok") is False and not detail_value:
+        reason = str(detail.get("reason") or "")
+        unreadable = any(
+            marker in reason
+            for marker in ("未定位", "命中失败", "行列不足", "异常")
+        )
+        if unreadable:
+            return {
+                "state": COUNTERPARTY_STATE_DETAIL_UNREADABLE,
+                "actual": "",
+                "source": "detail-row0-col0",
+                "repairable": False,
+            }
+
+    return {
+        "state": COUNTERPARTY_STATE_REPAIRABLE,
+        "actual": detail_value,
+        "source": "detail-row0-col0",
+        "repairable": True,
+    }
+
+
+def normalize_counterparty_value(*values):
+    for value in values:
+        text = str(value or "").strip()
+        if text in COUNTERPARTY_KNOWN_OPTIONS:
+            return text
+    return ""
+
+
+def select_counterparty_customer_embedded(jab, vm_id, combo_context, press_enter=True):
+    target = find_counterparty_embedded_list(jab, vm_id, combo_context)
+    try:
+        if not target.get("ok"):
+            return {
+                "ok": False,
+                "method": "embedded-selection-api",
+                "reason": target.get("reason") or "往来对象子列表未找到",
+            }
+        if not hasattr(jab.dll, "addAccessibleSelectionFromContext"):
+            return {
+                "ok": False,
+                "method": "embedded-selection-api",
+                "reason": "JAB selection API unavailable",
+                "target": embedded_counterparty_target_summary(target),
+            }
+        list_context = target["list_context"]
+        customer_index = next(
+            (
+                int(item.get("index"))
+                for item in target.get("labels") or []
+                if item.get("name") == COUNTERPARTY_EXPECTED
+            ),
+            None,
+        )
+        if customer_index is None:
+            return {
+                "ok": False,
+                "method": "embedded-selection-api",
+                "reason": "往来对象子列表没有客户选项",
+                "target": embedded_counterparty_target_summary(target),
+            }
+        if hasattr(jab.dll, "clearAccessibleSelectionFromContext"):
+            jab.dll.clearAccessibleSelectionFromContext(vm_id, list_context)
+        selected_ok = bool(
+            jab.dll.addAccessibleSelectionFromContext(
+                vm_id,
+                list_context,
+                customer_index,
+            )
+        )
+        focus_ok = request_focus_context(jab, vm_id, list_context)
+        enter_ok = None
+        if press_enter:
+            enter_ok = press_counterparty_commit_keys(jab)
+        return {
+            "ok": bool(selected_ok),
+            "method": "embedded-selection-api",
+            "selected_index": customer_index,
+            "target": embedded_counterparty_target_summary(target),
+            "request_focus_list": focus_ok,
+            "commit": enter_ok,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "method": "embedded-selection-api",
+            "error": repr(exc),
+        }
+    finally:
+        if target.get("owned_contexts"):
+            jab.release_contexts(vm_id, target["owned_contexts"])
+
+
+def request_focus_context(jab, vm_id, context):
+    if not hasattr(jab, "dll") or not hasattr(jab.dll, "requestFocus"):
+        return {"ok": None, "reason": "requestFocus unavailable"}
+    try:
+        return {"ok": bool(jab.dll.requestFocus(vm_id, context))}
+    except Exception as exc:
+        return {"ok": False, "error": repr(exc)}
+
+
+def press_counterparty_commit_keys(jab):
+    sent = []
+    try:
+        jab.press_key("home", wait=0.02)
+        sent.append("home")
+        jab.press_key("enter", wait=0)
+        sent.append("enter")
+        return {"ok": True, "keys": sent}
+    except Exception as exc:
+        return {"ok": False, "keys": sent, "error": repr(exc)}
+
+
+def embedded_counterparty_target_summary(target):
+    return {
+        "list": target.get("list"),
+        "popup": target.get("popup"),
+        "labels": [
+            {
+                "index": item.get("index"),
+                "name": item.get("name"),
+                "states": item.get("states"),
+            }
+            for item in target.get("labels") or []
+        ],
+    }
+
+
+def first_non_empty_counterparty_text(*values):
+    return normalize_counterparty_value(*values)
+
+
+def read_detail_counterparty_value(
+    jab,
+    dynamic_index,
+    scope_hwnd=None,
+    row=0,
+    col=0,
+    located=None,
+):
+    try:
+        if located is None:
+            located = resolve_body_table_by_dynamic_prefix(
+                jab,
+                dynamic_index,
+                scope_hwnd=scope_hwnd,
+            )
+        best = (located or {}).get("best") or {}
+        path = best.get("path")
+        if not path:
+            return {
+                "ok": False,
+                "source": "detail-row0-col0",
+                "row": row,
+                "col": col,
+                "located": slim_counterparty_located(located),
+                "reason": "明细表 path 未定位",
+            }
+
+        window = best.get("window") or {}
+        context, vm_id, owned, window_info = jab.find_context_by_path_once(
+            path,
+            class_name=window.get("class_name") or "SunAwtCanvas",
+            scope_hwnd=scope_hwnd or window.get("hwnd"),
+            role="table",
+            require_showing=False,
+            require_valid_bounds=False,
+        )
+        if not context:
+            return {
+                "ok": False,
+                "source": "detail-row0-col0",
+                "row": row,
+                "col": col,
+                "path": path,
+                "located": slim_counterparty_located(located),
+                "reason": "明细表 path 命中失败",
+            }
+        try:
+            table_info = jab.get_table_info(vm_id, context)
+            table = {
+                "path": path,
+                "window": window_info or window,
+                "row_count": int(getattr(table_info, "rowCount", 0) or 0)
+                if table_info
+                else None,
+                "col_count": int(getattr(table_info, "columnCount", 0) or 0)
+                if table_info
+                else None,
+            }
+            schema = detail_table_schema_snapshot(best)
+            table["schema"] = schema
+            if table.get("col_count") is not None and table.get("col_count") < 12:
+                return {
+                    "ok": False,
+                    "source": "detail-row0-col0",
+                    "row": row,
+                    "col": col,
+                    "path": path,
+                    "table": table,
+                    "located": slim_counterparty_located(located),
+                    "reason": "明细表列数不足，不像收款单明细表",
+                }
+            if table_info and (
+                int(table_info.rowCount) <= row or int(table_info.columnCount) <= col
+            ):
+                return {
+                    "ok": False,
+                    "source": "detail-row0-col0",
+                    "row": row,
+                    "col": col,
+                    "path": path,
+                    "table": table,
+                    "located": slim_counterparty_located(located),
+                    "reason": "明细表行列不足，无法读取往来对象",
+                }
+            text, is_selected = jab.get_table_cell_text_and_selection(
+                vm_id,
+                context,
+                row,
+                col,
+            )
+            value = first_non_empty_counterparty_text(text)
+            return {
+                "ok": bool(value),
+                "source": "detail-row0-col0",
+                "row": row,
+                "col": col,
+                "value": value,
+                "text": str(text or "").strip(),
+                "is_selected": bool(is_selected),
+                "path": path,
+                "table": table,
+                "located": slim_counterparty_located(located),
+                "reason": None if value else "明细表往来对象单元格为空",
+            }
+        finally:
+            jab.release_contexts(vm_id, owned)
+    except Exception as exc:
+        return {
+            "ok": False,
+            "source": "detail-row0-col0",
+            "row": row,
+            "col": col,
+            "reason": "读取明细表往来对象异常",
+            "error": repr(exc),
+        }
+
+
+def slim_counterparty_located(located):
+    if not located:
+        return None
+    best = (located or {}).get("best") or {}
+    return {
+        "cache_hit": bool(located.get("cache_hit")),
+        "fallback_used": bool(located.get("fallback_used")),
+        "source": located.get("source"),
+        "path": best.get("path"),
+        "window": best.get("window"),
+        "row_count": best.get("row_count"),
+        "col_count": best.get("col_count"),
+        "reason": located.get("reason"),
+    }
+
+
+def detail_table_schema_snapshot(best):
+    rows = (best or {}).get("rows") or []
+    first = rows[0] if rows else {}
+    cells = (first or {}).get("cells") or first.get("values") or first
+    if not isinstance(cells, dict):
+        cells = {}
+    key_cells = {
+        str(index): str(cells.get(str(index), cells.get(index, "")) or "").strip()
+        for index in (0, 1, 2, 3, 4, 5, 7, 11)
+    }
+    return {
+        "row0_key_cells": key_cells,
+        "looks_like_receipt_detail": (
+            key_cells.get("0") in {"", *COUNTERPARTY_KNOWN_OPTIONS}
+            and bool(key_cells.get("1") or key_cells.get("2") or key_cells.get("5"))
+        ),
+    }
+
+
+def summarize_counterparty_failure(snapshot, after_detail=None):
+    snapshot = snapshot or {}
+    detail = after_detail or snapshot.get("detail") or {}
+    detail_value = normalize_counterparty_value(
+        detail.get("value"),
+        detail.get("text"),
+    )
+    raw_detail = (detail or {}).get("text") or ""
+    detail_reason = (detail or {}).get("reason") or ""
+    state = snapshot.get("state") or {}
+    parts = [
+        f"header_selected={snapshot.get('selected') or ''}",
+        f"combo_text={snapshot.get('combo_text') or ''}",
+        f"detail_row0_col0={detail_value}",
+    ]
+    if raw_detail and raw_detail != detail_value:
+        parts.append(f"detail_raw={raw_detail}")
+    if detail_reason:
+        parts.append(f"detail_reason={detail_reason}")
+    if state.get("state"):
+        parts.append(f"state={state.get('state')}")
+    return f"往来对象未确认客户；{'; '.join(parts)}；已禁用旧下拉键盘方案"
+
+
+def read_counterparty_selected_option(jab, vm_id, combo_context):
+    found = find_counterparty_embedded_list(jab, vm_id, combo_context)
+    try:
+        if not found.get("ok"):
+            return found
+        labels = found.get("labels") or []
+        selected = next(
+            (
+                item.get("name")
+                for item in labels
+                if "selected" in str(item.get("states") or "").lower()
+            ),
+            "",
+        )
+        return {
+            "ok": True,
+            "selected": selected,
+            "options": [item.get("name") for item in labels if item.get("name")],
+            "list": found.get("list"),
+            "popup": found.get("popup"),
+        }
+    finally:
+        if found.get("owned_contexts"):
+            jab.release_contexts(vm_id, found["owned_contexts"])
+
+
+def find_counterparty_embedded_list(jab, vm_id, combo_context):
+    result = {
+        "ok": False,
+        "reason": "往来对象子列表未找到",
+        "owned_contexts": [],
+    }
+    best = None
+
+    def visit(context, path, depth, ancestors):
+        nonlocal best
+        info = jab.get_context_info(vm_id, context)
+        if not info:
+            return
+        role = (info.role_en_US.strip() or info.role.strip()).lower()
+        owned = []
+        children = []
+        if depth > 0:
+            for index in range(min(info.childrenCount, getattr(jab, "max_children", 1000))):
+                child = jab.dll.getAccessibleChildFromContext(vm_id, context, index)
+                if not child:
+                    continue
+                owned.append(child)
+                child_info = jab.get_context_info(vm_id, child)
+                if not child_info:
+                    continue
+                child_role = (
+                    child_info.role_en_US.strip() or child_info.role.strip()
+                ).lower()
+                child_name = child_info.name.strip()
+                children.append((index, child, child_info, child_role, child_name))
+
+        if role == "list":
+            label_items = [
+                {
+                    "index": index,
+                    "path": f"{path}.{index}",
+                    "name": child_name,
+                    "description": child_info.description.strip(),
+                    "role": child_info.role_en_US.strip() or child_info.role.strip(),
+                    "states": child_info.states_en_US.strip()
+                    or child_info.states.strip(),
+                    "bounds": [
+                        child_info.x,
+                        child_info.y,
+                        child_info.width,
+                        child_info.height,
+                    ],
+                }
+                for index, _child, child_info, child_role, child_name in children
+                if child_role == "label"
+            ]
+            names = [item["name"] for item in label_items if item.get("name")]
+            if COUNTERPARTY_EXPECTED in names:
+                popup = next(
+                    (
+                        info_to_counterparty_dict(ancestor_info, "ancestor")
+                        for _ancestor_context, ancestor_info in reversed(ancestors)
+                        if (
+                            ancestor_info.role_en_US.strip()
+                            or ancestor_info.role.strip()
+                        ).lower()
+                        == "popup menu"
+                    ),
+                    None,
+                )
+                keep = [context]
+                keep.extend(child for _index, child, *_rest in children)
+                best = {
+                    "ok": True,
+                    "list": info_to_counterparty_dict(info, path),
+                    "list_context": context,
+                    "popup": popup,
+                    "labels": label_items,
+                    "owned_contexts": unique_contexts(keep + owned),
+                }
+                return
+
+        try:
+            if depth > 0 and best is None:
+                next_ancestors = ancestors + [(context, info)]
+                for index, child, _child_info, _child_role, _child_name in children:
+                    visit(child, f"{path}.{index}", depth - 1, next_ancestors)
+                    if best is not None:
+                        break
+        finally:
+            if best is None:
+                jab.release_contexts(vm_id, owned)
+
+    visit(combo_context, "target", 8, [])
+    return best or result
+
+
+def info_to_counterparty_dict(info, path):
+    if not info:
+        return None
+    return {
+        "path": path,
+        "name": info.name.strip(),
+        "description": info.description.strip(),
+        "role": info.role_en_US.strip() or info.role.strip(),
+        "states": info.states_en_US.strip() or info.states.strip(),
+        "bounds": [info.x, info.y, info.width, info.height],
+        "children_count": info.childrenCount,
+    }
+
+
+def unique_contexts(contexts):
+    result = []
+    seen = set()
+    for context in contexts or []:
+        key = context_key(context)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(context)
+    return result
+
+
+def context_key(context):
+    try:
+        value = getattr(context, "value", context)
+        return ("int", int(value))
+    except Exception:
+        return ("repr", repr(context))
+
+
+def find_counterparty_combo(jab, dynamic_index, scope_hwnd=None):
+    prefix = receipt_header_dynamic_prefix(dynamic_index)
+    cached_path = build_cached_counterparty_nearby_path(dynamic_index, scope_hwnd)
+    if cached_path:
+        cached = find_counterparty_combo_by_path(
+            jab,
+            cached_path,
+            scope_hwnd=scope_hwnd,
+        )
+        if cached.get("ok"):
+            return {
+                **cached,
+                "source": "nearby-cache-path",
+                "cached_path": cached_path,
+            }
+
+    nearby = find_counterparty_combo_nearby(
+        jab,
+        dynamic_index,
+        scope_hwnd=scope_hwnd,
+    )
+    if nearby.get("ok"):
+        cache_counterparty_nearby_suffix(
+            dynamic_index,
+            scope_hwnd,
+            prefix,
+            nearby.get("path"),
+        )
+        return nearby
+
+    return {
+        "ok": False,
+        "label": COUNTERPARTY_LABEL,
+        "source": "not-found",
+        "nearby_attempt": slim_found(nearby),
+        "reason": nearby.get("reason") or "往来对象 nearby 定位失败",
+    }
+
+
+def build_cached_counterparty_nearby_path(dynamic_index, scope_hwnd=None):
+    prefix = receipt_header_dynamic_prefix(dynamic_index)
+    if not prefix:
+        return None
+    cached = _COUNTERPARTY_NEARBY_SUFFIX_CACHE.get(counterparty_cache_key(scope_hwnd))
+    if not cached:
+        cached = _COUNTERPARTY_NEARBY_SUFFIX_CACHE.get("last")
+    suffix = (cached or {}).get("suffix")
+    if not suffix:
+        return None
+    return f"{prefix}.{suffix}"
+
+
+def cache_counterparty_nearby_suffix(dynamic_index, scope_hwnd, prefix, path):
+    if not prefix or not path or not str(path).startswith(f"{prefix}."):
+        return None
+    suffix = str(path)[len(prefix) + 1 :]
+    cached = {
+        "dynamic_index": dynamic_index,
+        "scope_hwnd": scope_hwnd,
+        "suffix": suffix,
+        "path": path,
+        "source": "nearby",
+    }
+    _COUNTERPARTY_NEARBY_SUFFIX_CACHE[counterparty_cache_key(scope_hwnd)] = cached
+    _COUNTERPARTY_NEARBY_SUFFIX_CACHE["last"] = cached
+    return cached
+
+
+def counterparty_cache_key(scope_hwnd):
+    return int(scope_hwnd) if scope_hwnd is not None else None
+
+
+def find_counterparty_combo_nearby(jab, dynamic_index, scope_hwnd=None):
+    if scope_hwnd is None:
+        return {
+            "ok": False,
+            "label": COUNTERPARTY_LABEL,
+            "reason": "nearby 定位缺少 scope_hwnd",
+        }
+    dll = getattr(jab, "dll", None)
+    if not dll or not hasattr(dll, "isJavaWindow") or not dll.isJavaWindow(scope_hwnd):
+        return {
+            "ok": False,
+            "label": COUNTERPARTY_LABEL,
+            "scope_hwnd": scope_hwnd,
+            "reason": "nearby scope 不是 Java 窗口",
+        }
+
+    vm_id = ctypes.c_long()
+    root_context = JOBJECT()
+    if not jab.dll.getAccessibleContextFromHWND(
+        int(scope_hwnd),
+        ctypes.byref(vm_id),
+        ctypes.byref(root_context),
+    ):
+        return {
+            "ok": False,
+            "label": COUNTERPARTY_LABEL,
+            "scope_hwnd": scope_hwnd,
+            "reason": "nearby 读取 scope root 失败",
+        }
+
+    controls = []
+    owned = []
+    selected_contexts = set()
+    try:
+        collect_counterparty_controls_for_bounds_scan(
+            jab,
+            vm_id.value,
+            root_context.value,
+            controls,
+            owned,
+            require_showing=True,
+            depth=0,
+        )
+        labels = [
+            (context, info, _path)
+            for context, info, _path in controls
+            if control_role(info) == "label"
+            and info.name.strip() == COUNTERPARTY_LABEL
+            and jab.context_info_has_valid_bounds(info)
+        ]
+        labels.sort(key=lambda item: (item[1].y, item[1].x))
+        prefix = receipt_header_dynamic_prefix(dynamic_index)
+        candidates = []
+        for label_context, label_info, _label_path in labels:
+            label_mid_y = label_info.y + label_info.height / 2
+            label_right = label_info.x + label_info.width
+            row_candidates = []
+            for context, info, control_path in controls:
+                if control_role(info) != "combo box":
+                    continue
+                if not jab.context_info_has_valid_bounds(info):
+                    continue
+                mid_y = info.y + info.height / 2
+                right_distance = info.x - label_right
+                dy = abs(mid_y - label_mid_y)
+                if right_distance <= 0:
+                    continue
+                if dy > COUNTERPARTY_NEARBY_MAX_VERTICAL_DISTANCE:
+                    continue
+                if right_distance > COUNTERPARTY_NEARBY_MAX_RIGHT_DISTANCE:
+                    continue
+                actions = jab.get_action_names(vm_id.value, context)
+                row_candidates.append(
+                    {
+                        "context": context,
+                        "info": info,
+                        "path": control_path,
+                        "score": (right_distance, dy),
+                        "actions": actions,
+                    }
+                )
+            row_candidates.sort(key=lambda item: item["score"])
+            for item in row_candidates:
+                candidates.append(
+                    {
+                        "label": jab.info_to_dict(label_info),
+                        "control": jab.info_to_dict(item["info"]),
+                        "path": item["path"],
+                        "actions": item["actions"],
+                        "score": list(item["score"]),
+                    }
+                )
+            if row_candidates:
+                target = row_candidates[0]
+                selected_contexts = {target["context"], label_context}
+                release = [
+                    context
+                    for context in owned
+                    if context not in selected_contexts
+                ]
+                jab.release_contexts(vm_id.value, release)
+                return {
+                    "ok": True,
+                    "label": COUNTERPARTY_LABEL,
+                    "source": "nearby",
+                    "context": target["context"],
+                    "vm_id": vm_id.value,
+                    "owned_contexts": list(selected_contexts),
+                    "window": {
+                        "hwnd": int(scope_hwnd),
+                        "class_name": "SunAwtCanvas",
+                    },
+                    "path": target["path"],
+                    "dynamic_prefix": prefix,
+                    "target": {
+                        "label": jab.info_to_dict(label_info),
+                        "control": jab.info_to_dict(target["info"]),
+                        "actions": target["actions"],
+                        "score": list(target["score"]),
+                    },
+                    "candidate_count": len(candidates),
+                    "candidates": candidates[:8],
+                }
+    finally:
+        if not selected_contexts:
+            jab.release_contexts(vm_id.value, owned)
+
+    return {
+        "ok": False,
+        "label": COUNTERPARTY_LABEL,
+        "source": "nearby",
+        "scope_hwnd": scope_hwnd,
+        "candidate_count": len(candidates) if "candidates" in locals() else 0,
+        "reason": "未在往来对象标签右侧找到 combo box",
+    }
+
+
+def collect_counterparty_controls_for_bounds_scan(
+    jab,
+    vm_id,
+    context,
+    controls,
+    owned,
+    require_showing=True,
+    depth=0,
+    path="0",
+):
+    info = jab.get_context_info(vm_id, context)
+    if not info:
+        return
+
+    role = control_role(info)
+    if role == "table" or depth >= jab.max_depth:
+        return
+
+    child_count = min(info.childrenCount, jab.max_children)
+    for index in range(child_count):
+        child = jab.dll.getAccessibleChildFromContext(vm_id, context, index)
+        if not child:
+            continue
+        child_path = f"{path}.{index}"
+        child_info = jab.get_context_info(vm_id, child)
+        if not child_info:
+            jab.release_contexts(vm_id, [child])
+            continue
+
+        owned.append(child)
+        states = (
+            child_info.states_en_US.strip() or child_info.states.strip()
+        ).lower()
+        showing = "visible" in states and "showing" in states
+        if not require_showing or showing:
+            controls.append((child, child_info, child_path))
+
+        collect_counterparty_controls_for_bounds_scan(
+            jab,
+            vm_id,
+            child,
+            controls,
+            owned,
+            require_showing=require_showing,
+            depth=depth + 1,
+            path=child_path,
+        )
+
+
+def control_role(info):
+    return (info.role_en_US.strip() or info.role.strip()).lower()
+
+
+def slim_found(found):
+    return {
+        key: value
+        for key, value in (found or {}).items()
+        if key not in {"context", "vm_id", "owned_contexts", "candidates"}
+    }
+
+
+def find_counterparty_combo_by_path(jab, path, scope_hwnd=None):
+    context, vm_id, owned_contexts, window_info = jab.find_context_by_path_once(
+        path,
+        class_name="SunAwtCanvas",
+        scope_hwnd=scope_hwnd,
+        role="combo box",
+        require_showing=True,
+        require_valid_bounds=False,
+    )
+    if not context:
+        return {
+            "ok": False,
+            "label": COUNTERPARTY_LABEL,
+            "path": path,
+            "reason": "往来对象下拉控件未找到",
+        }
+    return {
+        "ok": True,
+        "context": context,
+        "vm_id": vm_id,
+        "owned_contexts": owned_contexts,
+        "window": window_info,
+        "path": path,
+    }
+
+
+def read_counterparty_combo_state(jab, vm_id, context):
+    info = jab.get_context_info(vm_id, context)
+    text = jab.get_text_context_value(vm_id, context)
+    return {
+        "name": info.name.strip() if info else "",
+        "description": info.description.strip() if info else "",
+        "text": str(text or "").strip(),
+        "role": (info.role_en_US.strip() or info.role.strip()) if info else "",
+        "states": (info.states_en_US.strip() or info.states.strip()) if info else "",
+    }
+
+
+def first_non_empty_text(*values):
+    for value in values:
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
 def write_extra_text_field_by_dynamic_path(
     jab,
     label,
@@ -1574,23 +2827,47 @@ def write_extra_text_field_by_dynamic_path(
     recovery_after_find = None
 
     def find_field():
-        path_found = find_receipt_extra_text_field_by_dynamic_path(
-            jab,
-            label,
-            dynamic_index,
-            scope_hwnd=scope_hwnd,
-            require_showing=True,
-            require_valid_bounds=False,
+        path_template = get_receipt_header_path_template(dynamic_index)
+        path_found = (
+            find_receipt_header_field_by_dynamic_path(
+                jab,
+                label,
+                dynamic_index,
+                scope_hwnd=scope_hwnd,
+                require_showing=True,
+                require_valid_bounds=False,
+                path_template=path_template,
+            )
+            if path_template
+            else {
+                "ok": False,
+                "label": label,
+                "dynamic_index": dynamic_index,
+                "reason": "header path template not learned",
+            }
         )
         if path_found.get("ok"):
+            path_found["source"] = "learned-header-template"
             return path_found
-        semantic_found = find_receipt_extra_text_field_by_live_semantic(
+        semantic_found = find_receipt_header_field_by_live_semantic(
             jab,
             label,
-            dynamic_index,
             scope_hwnd=scope_hwnd,
+            include_scoped=False,
         )
         semantic_found["dynamic_path_attempt"] = path_found
+        if semantic_found.get("ok"):
+            semantic_found["source"] = "semantic-live-after-template-miss"
+            semantic_found["dynamic_index"] = dynamic_index
+            semantic_found["dynamic_prefix"] = receipt_header_dynamic_prefix(dynamic_index)
+            inferred_template = infer_header_path_template_from_field(
+                semantic_found.get("path"),
+                dynamic_index,
+                label,
+            )
+            if inferred_template:
+                set_receipt_header_path_template(dynamic_index, inferred_template)
+                semantic_found["header_path_template_learned"] = inferred_template
         return semantic_found
 
     try:
@@ -1647,60 +2924,94 @@ def write_extra_text_field_by_dynamic_path(
     vm_id = found["vm_id"]
     owned_contexts = found["owned_contexts"]
     def write_current_context(initial_recovery=None):
-        write_started_at = time.perf_counter()
-        info_before = jab.get_context_info(vm_id, context)
-        before = jab.get_text_context_value(vm_id, context)
-        paste_started_at = time.perf_counter()
-        paste = guarded_paste_header_value(
-            jab,
-            vm_id,
-            context,
-            found.get("window") or {},
-            value,
-        )
-        paste_seconds = round(time.perf_counter() - paste_started_at, 3)
         modal_recovery = initial_recovery
-        if not paste.get("ok") and recover_after_failure is not None:
-            recovery_after_set = recover_after_failure()
-            modal_recovery = recovery_after_set or modal_recovery
-            if recovery_after_set.get("attempted") and recovery_after_set.get("ok"):
-                paste = guarded_paste_header_value(
-                    jab,
-                    vm_id,
-                    context,
-                    found.get("window") or {},
-                    value,
-                )
-        info_after = jab.get_context_info(vm_id, context)
-        after = jab.get_text_context_value(vm_id, context)
-        ok = bool(paste.get("ok"))
-        backend_state = describe_backend_field_state(info_after, after, value=value)
-        return {
-            "ok": ok,
-            "stage": "write",
-            "label": label,
-            "value": value,
-            "path": found.get("path"),
-            "source": found.get("source") or "dynamic-path",
-            "dynamic_index": dynamic_index,
-            "dynamic_prefix": found.get("dynamic_prefix"),
-            "dynamic_path_attempt": found.get("dynamic_path_attempt") or path_attempt,
-            "inferred_suffix": found.get("inferred_suffix"),
-            "modal_recovery": modal_recovery,
-            "text_before": before,
-            "text_after": after,
-            "description_before": info_before.description.strip() if info_before else "",
-            "description_after": info_after.description.strip() if info_after else "",
-            "post_write_snapshot": backend_state,
-            "guarded_paste": paste,
-            "enter_ok": bool(paste.get("enter_ok")),
-            "timing": {
-                "paste_seconds": paste_seconds,
-                "write_seconds": round(time.perf_counter() - write_started_at, 3),
-                "total_seconds": round(time.perf_counter() - started_at, 3),
-            },
-            "seconds": round(time.perf_counter() - started_at, 3),
-        }
+        attempts = []
+        max_attempts = 2
+        for attempt_no in range(1, max_attempts + 1):
+            write_started_at = time.perf_counter()
+            info_before = jab.get_context_info(vm_id, context)
+            before = jab.get_text_context_value(vm_id, context)
+            paste_started_at = time.perf_counter()
+            paste = guarded_paste_header_value(
+                jab,
+                vm_id,
+                context,
+                found.get("window") or {},
+                value,
+            )
+            paste_seconds = round(time.perf_counter() - paste_started_at, 3)
+            if not paste.get("ok") and recover_after_failure is not None:
+                recovery_after_set = recover_after_failure()
+                modal_recovery = recovery_after_set or modal_recovery
+                if recovery_after_set.get("attempted") and recovery_after_set.get("ok"):
+                    paste_started_at = time.perf_counter()
+                    paste = guarded_paste_header_value(
+                        jab,
+                        vm_id,
+                        context,
+                        found.get("window") or {},
+                        value,
+                    )
+                    paste_seconds = round(time.perf_counter() - paste_started_at, 3)
+            info_after = jab.get_context_info(vm_id, context)
+            after = jab.get_text_context_value(vm_id, context)
+            backend_state = describe_backend_field_state(info_after, after, value=value)
+            accepted = bool(
+                backend_state.get("accepted") or backend_state.get("written")
+            )
+            ok = bool(paste.get("ok") and accepted)
+            attempt = {
+                "ok": ok,
+                "input_ok": bool(paste.get("ok")),
+                "attempt": attempt_no,
+                "stage": "write",
+                "label": label,
+                "value": value,
+                "path": found.get("path"),
+                "source": found.get("source") or "dynamic-path",
+                "dynamic_index": dynamic_index,
+                "dynamic_prefix": found.get("dynamic_prefix"),
+                "dynamic_path_attempt": found.get("dynamic_path_attempt")
+                or path_attempt,
+                "inferred_suffix": found.get("inferred_suffix"),
+                "modal_recovery": modal_recovery,
+                "text_before": before,
+                "text_after": after,
+                "description_before": info_before.description.strip()
+                if info_before
+                else "",
+                "description_after": info_after.description.strip()
+                if info_after
+                else "",
+                "post_write_snapshot": backend_state,
+                "guarded_paste": paste,
+                "enter_ok": bool(paste.get("enter_ok")),
+                "reason": None
+                if ok
+                else (
+                    paste.get("reason")
+                    or f"写入后未读回目标文本字段值：{label}={value!r}"
+                ),
+                "timing": {
+                    "paste_seconds": paste_seconds,
+                    "write_seconds": round(time.perf_counter() - write_started_at, 3),
+                    "total_seconds": round(time.perf_counter() - started_at, 3),
+                },
+                "seconds": round(time.perf_counter() - started_at, 3),
+            }
+            attempts.append(attempt)
+            if ok or not paste.get("ok"):
+                final = dict(attempt)
+                final["attempts"] = attempts
+                final["rewrites"] = attempts[1:]
+                return final
+            if attempt_no < max_attempts:
+                time.sleep(0.1)
+
+        final = dict(attempts[-1])
+        final["attempts"] = attempts
+        final["rewrites"] = attempts[1:]
+        return final
 
     try:
         try:
@@ -1951,6 +3262,42 @@ def post_query_skip_reason(rows, exit_code):
     return "后验查询条件未满足"
 
 
+def should_retry_row_by_cancel_reopen(row_report):
+    if not row_report or row_report.get("ok"):
+        return False
+    if (row_report.get("circuit_breaker") or {}).get("triggered"):
+        return False
+    if row_report.get("save_attempted"):
+        return False
+    failed_step = str(row_report.get("failed_step") or "")
+    if failed_step not in CIRCUIT_BREAKER_RETRY_STEPS:
+        return False
+    save_report = row_report.get("save") or {}
+    if save_report and not save_report.get("skipped"):
+        return False
+    return True
+
+
+def summarize_retry_attempt(row_report):
+    return {
+        "ok": bool((row_report or {}).get("ok")),
+        "excel_row": (row_report or {}).get("excel_row"),
+        "failed_step": (row_report or {}).get("failed_step"),
+        "reason": (row_report or {}).get("reason"),
+        "slow_steps": (row_report or {}).get("slow_steps") or [],
+        "detail_exchange_rate_guard": (row_report or {}).get(
+            "detail_exchange_rate_guard"
+        ),
+        "extra_text_verify_failures": (row_report or {}).get(
+            "extra_text_verify_failures"
+        ),
+        "detail_pipeline_verify": (row_report or {}).get("detail_pipeline_verify"),
+        "detail_pipeline_verify_after_repair": (row_report or {}).get(
+            "detail_pipeline_verify_after_repair"
+        ),
+    }
+
+
 def format_row_failure_reason(report):
     failed_step = str(report.get("failed_step") or "").strip()
     reason = str(report.get("reason") or "").strip()
@@ -2006,67 +3353,35 @@ def save_receipt_by_ctrl_s(
             "scope_hwnd": scope_hwnd,
             "target_hwnd": target_hwnd,
         }
-    started = time.perf_counter()
-    last_state = None
-    last_parent_new_state = None
-    samples = []
-    strong_success_streak = 0
-    while True:
-        sample_started = time.perf_counter()
-        windows = collect_receipt_new_windows(jab)
-        state = detect_self_made_entry_state(windows)
-        last_state = state
-        parent_new_state = detect_receipt_parent_new_ready(windows)
-        last_parent_new_state = parent_new_state
-        strong_success = bool(parent_new_state.get("ok")) and not state.get("ok")
-        strong_success_streak = strong_success_streak + 1 if strong_success else 0
-        sample = {
-            "sample_index": len(samples) + 1,
-            "t": round(time.perf_counter() - started, 3),
-            "collect_seconds": round(time.perf_counter() - sample_started, 3),
-            "new_candidate_count": parent_new_state.get("candidate_count"),
-            "new_usable_count": parent_new_state.get("usable_new_button_count"),
-            "entry_ok": bool(state.get("ok")),
-            "entry_partial_ok": bool(state.get("partial_ok")),
-            "strong_success": strong_success,
-            "strong_success_streak": strong_success_streak,
+    wait_parent = wait_receipt_parent_new_ready_after_entry_exit(
+        jab,
+        timeout=timeout,
+        interval=interval,
+        success_samples=success_samples,
+    )
+    wait_parent.setdefault("oracle", {})["name"] = "receipt_parent_new_ready_after_save"
+    if wait_parent.get("ok"):
+        return {
+            "ok": True,
+            "triggered": True,
+            "hotkey": {"ok": True, "mode": "send_input", "key": "Ctrl+S"},
+            "precondition": {
+                "page": page,
+                "maximize": maximize,
+                "foreground_guard": guard,
+                "scope_hwnd": scope_hwnd,
+                "target_hwnd": target_hwnd,
+            },
+            "seconds": wait_parent.get("seconds"),
+            "samples": wait_parent.get("samples") or [],
+            "min_samples": int(min_samples),
+            "success_samples": int(success_samples),
+            "timeout": float(timeout),
+            "min_observe_seconds": float(min_observe_seconds),
+            "oracle": wait_parent.get("oracle"),
+            "entry_state": wait_parent.get("entry_state"),
+            "parent_new_state": wait_parent.get("parent_new_state"),
         }
-        samples.append(sample)
-        if strong_success_streak >= int(success_samples or 1):
-            return {
-                "ok": True,
-                "triggered": True,
-                "hotkey": {"ok": True, "mode": "send_input", "key": "Ctrl+S"},
-                "precondition": {
-                    "page": page,
-                    "maximize": maximize,
-                    "foreground_guard": guard,
-                    "scope_hwnd": scope_hwnd,
-                    "target_hwnd": target_hwnd,
-                },
-                "seconds": round(time.perf_counter() - started, 3),
-                "samples": samples,
-                "min_samples": int(min_samples),
-                "success_samples": int(success_samples),
-                "timeout": float(timeout),
-                "min_observe_seconds": float(min_observe_seconds),
-                "oracle": {
-                    "name": "receipt_parent_new_ready_after_save",
-                    "ok": True,
-                    "evidence": "保存后检测到收款单录入父页前台【新增】按钮可用，且保存/暂存/取消三按钮不再同时存在",
-                    "parent_new_state": parent_new_state,
-                    "self_made_entry_state": state,
-                },
-                "entry_state": state,
-                "parent_new_state": parent_new_state,
-            }
-        elapsed = time.perf_counter() - started
-        enough_samples = len(samples) >= int(min_samples or 0)
-        enough_observe = elapsed >= float(min_observe_seconds or 0)
-        timed_out = elapsed >= float(timeout or 0)
-        if (enough_samples and enough_observe) or timed_out:
-            break
-        time.sleep(float(interval or 0))
     return {
         "ok": False,
         "triggered": True,
@@ -2078,23 +3393,250 @@ def save_receipt_by_ctrl_s(
             "scope_hwnd": scope_hwnd,
             "target_hwnd": target_hwnd,
         },
-        "seconds": round(time.perf_counter() - started, 3),
-        "samples": samples,
+        "seconds": wait_parent.get("seconds"),
+        "samples": wait_parent.get("samples") or [],
         "min_samples": int(min_samples),
         "success_samples": int(success_samples),
         "timeout": float(timeout),
         "min_observe_seconds": float(min_observe_seconds),
         "reason": "保存后未确认收款单父页【新增】已恢复，不能证明保存成功",
-        "oracle": {
-            "name": "receipt_parent_new_ready_after_save",
-            "ok": False,
-            "evidence": "需要同时满足：前台收款单父页【新增】按钮可用，且保存/暂存/取消三按钮不再同时存在",
-            "parent_new_state": last_parent_new_state,
-            "self_made_entry_state": last_state,
-        },
-        "entry_state": last_state,
-        "parent_new_state": last_parent_new_state,
+        "oracle": wait_parent.get("oracle"),
+        "entry_state": wait_parent.get("entry_state"),
+        "parent_new_state": wait_parent.get("parent_new_state"),
     }
+
+
+def cancel_current_receipt_entry(
+    config,
+    timeout=3.0,
+    interval=0.1,
+    confirm_wait=0.8,
+):
+    jab = JABOperator(config)
+    jab.hide_blank_awt_windows_enabled = False
+    report = {
+        "ok": False,
+        "method": "ctrl-q-confirm-alt-y",
+        "triggered": False,
+        "confirmed": False,
+    }
+    try:
+        jab.ensure_started()
+        before_windows = collect_receipt_new_windows(jab)
+        before_entry_state = detect_self_made_entry_state(before_windows)
+        report["entry_state_before"] = before_entry_state
+        if not before_entry_state.get("ok"):
+            report["reason"] = "取消前未检测到保存/暂存/取消录入态按钮"
+            return report
+        target_hwnd = current_receipt_root_from_entry_state(before_entry_state)
+        if not target_hwnd:
+            report["reason"] = "取消前未取得当前收款单窗口句柄"
+            return report
+        report["target_hwnd"] = target_hwnd
+        maximize = jab.maximize_window_by_handle(target_hwnd)
+        guard = foreground_matches_window({"hwnd": target_hwnd})
+        report["precondition"] = {
+            "maximize": maximize,
+            "foreground_guard": guard,
+        }
+        if not guard.get("ok"):
+            report["reason"] = guard.get("reason") or "当前前台窗口不是目标 NC 窗口"
+            return report
+        dialogs_before = collect_visible_java_dialogs(jab)
+        report["dialogs_before_count"] = len(dialogs_before)
+        try:
+            send_hotkey_ctrl_q()
+        except Exception as exc:
+            report["reason"] = f"Ctrl+Q SendInput 触发失败：{type(exc).__name__}: {exc}"
+            return report
+        report["triggered"] = True
+        dialog_wait = wait_confirm_cancel_dialog(
+            jab,
+            dialogs_before,
+            timeout=float(confirm_wait or 0.8),
+            interval=0.08,
+        )
+        report["confirm_dialog"] = dialog_wait
+        dialog = dialog_wait.get("dialog")
+        if not dialog_wait.get("ok") or not dialog:
+            report["reason"] = dialog_wait.get("reason") or "未检测到确认取消弹窗"
+            return report
+        focus = focus_window(dialog.get("hwnd"))
+        report["confirm_focus"] = focus
+        try:
+            send_hotkey_alt_y()
+        except Exception as exc:
+            report["reason"] = f"Alt+Y SendInput 确认失败：{type(exc).__name__}: {exc}"
+            return report
+        report["confirmed"] = True
+        wait_parent = wait_receipt_parent_new_ready_after_entry_exit(
+            jab,
+            timeout=timeout,
+            interval=interval,
+        )
+        report["parent_ready_after_cancel"] = wait_parent
+        report["ok"] = bool(wait_parent.get("ok"))
+        if not report["ok"]:
+            report["reason"] = wait_parent.get("reason") or "取消后未确认父页新增可用"
+        return report
+    finally:
+        jab.close()
+
+
+def current_receipt_root_from_entry_state(entry_state):
+    hits = (entry_state or {}).get("hits") or []
+    for hit in hits:
+        window = hit.get("window") or {}
+        hwnd = window.get("hwnd")
+        if hwnd:
+            return root_hwnd(hwnd) or hwnd
+    return None
+
+
+def wait_confirm_cancel_dialog(jab, before_dialogs, timeout=0.8, interval=0.08):
+    started = time.perf_counter()
+    before_keys = {dialog_key(item) for item in before_dialogs or []}
+    attempts = []
+    while True:
+        dialogs = collect_visible_java_dialogs(jab)
+        matching = [
+            item
+            for item in dialogs
+            if is_confirm_cancel_dialog(item)
+            and (
+                dialog_key(item) not in before_keys
+                or not before_keys
+            )
+        ]
+        attempts.append(
+            {
+                "t": round(time.perf_counter() - started, 3),
+                "dialog_count": len(dialogs),
+                "matching_count": len(matching),
+            }
+        )
+        if matching:
+            return {
+                "ok": True,
+                "seconds": round(time.perf_counter() - started, 3),
+                "attempts": attempts,
+                "dialog": summarize_dialog_for_report(matching[0]),
+            }
+        if time.perf_counter() - started >= float(timeout or 0):
+            return {
+                "ok": False,
+                "seconds": round(time.perf_counter() - started, 3),
+                "attempts": attempts,
+                "reason": "未发现标题为【确认取消】且包含【是(Y)/否(N)】的确认弹窗",
+                "last_dialogs": [summarize_dialog_for_report(item) for item in dialogs],
+            }
+        time.sleep(float(interval or 0.08))
+
+
+def dialog_key(dialog):
+    return (
+        (dialog or {}).get("hwnd"),
+        (dialog or {}).get("title"),
+        (dialog or {}).get("class_name"),
+    )
+
+
+def is_confirm_cancel_dialog(dialog):
+    if (dialog or {}).get("class_name") != "SunAwtDialog":
+        return False
+    if (dialog or {}).get("title") != "确认取消":
+        return False
+    names = {button.get("name") for button in (dialog or {}).get("buttons") or []}
+    return {"是(Y)", "否(N)"} <= names
+
+
+def summarize_dialog_for_report(dialog):
+    if not dialog:
+        return None
+    return {
+        "hwnd": dialog.get("hwnd"),
+        "title": dialog.get("title"),
+        "class_name": dialog.get("class_name"),
+        "pid": dialog.get("pid"),
+        "visible": dialog.get("visible"),
+        "root_hwnd": dialog.get("root_hwnd"),
+        "buttons": [
+            {
+                "path": button.get("path"),
+                "name": button.get("name"),
+                "description": button.get("description"),
+                "bounds": button.get("bounds"),
+            }
+            for button in (dialog.get("buttons") or [])
+        ],
+    }
+
+
+def wait_receipt_parent_new_ready_after_entry_exit(
+    jab,
+    timeout=3.0,
+    interval=0.1,
+    success_samples=1,
+):
+    started = time.perf_counter()
+    samples = []
+    strong_success_streak = 0
+    last_state = None
+    last_parent_new_state = None
+    while True:
+        sample_started = time.perf_counter()
+        windows = collect_receipt_new_windows(jab)
+        state = detect_self_made_entry_state(windows)
+        parent_new_state = detect_receipt_parent_new_ready(windows)
+        last_state = state
+        last_parent_new_state = parent_new_state
+        strong_success = bool(parent_new_state.get("ok")) and not state.get("ok")
+        strong_success_streak = strong_success_streak + 1 if strong_success else 0
+        samples.append(
+            {
+                "sample_index": len(samples) + 1,
+                "t": round(time.perf_counter() - started, 3),
+                "collect_seconds": round(time.perf_counter() - sample_started, 3),
+                "new_candidate_count": parent_new_state.get("candidate_count"),
+                "new_usable_count": parent_new_state.get("usable_new_button_count"),
+                "entry_ok": bool(state.get("ok")),
+                "entry_partial_ok": bool(state.get("partial_ok")),
+                "strong_success": strong_success,
+                "strong_success_streak": strong_success_streak,
+            }
+        )
+        if strong_success_streak >= int(success_samples or 1):
+            return {
+                "ok": True,
+                "seconds": round(time.perf_counter() - started, 3),
+                "samples": samples,
+                "oracle": {
+                    "name": "receipt_parent_new_ready_after_entry_exit",
+                    "ok": True,
+                    "evidence": "检测到收款单父页【新增】按钮可用，且保存/暂存/取消三按钮不再同时存在",
+                    "parent_new_state": parent_new_state,
+                    "self_made_entry_state": state,
+                },
+                "entry_state": state,
+                "parent_new_state": parent_new_state,
+            }
+        if time.perf_counter() - started >= float(timeout or 0):
+            return {
+                "ok": False,
+                "seconds": round(time.perf_counter() - started, 3),
+                "samples": samples,
+                "reason": "未确认收款单父页【新增】已恢复",
+                "oracle": {
+                    "name": "receipt_parent_new_ready_after_entry_exit",
+                    "ok": False,
+                    "evidence": "需要同时满足：前台收款单父页【新增】按钮可用，且保存/暂存/取消三按钮不再同时存在",
+                    "parent_new_state": last_parent_new_state,
+                    "self_made_entry_state": last_state,
+                },
+                "entry_state": last_state,
+                "parent_new_state": last_parent_new_state,
+            }
+        time.sleep(float(interval or 0.1))
 
 
 def detect_receipt_parent_new_ready(windows):

@@ -14,6 +14,9 @@ DETAIL_FIELDS = [
         "name": "收款业务类型",
         "value_key": "main_business_type",
         "input_mode": "paste",
+        "immediate_verify": True,
+        "immediate_verify_attempts": 2,
+        "immediate_verify_wait": 0.15,
     },
     {
         "col": 4,
@@ -23,6 +26,12 @@ DETAIL_FIELDS = [
         "edit_mode": "selected",
         "input_mode": "paste",
         "pre_commit_wait": 0.1,
+        "focus_via_col": 5,
+        "pre_write_stabilize": True,
+        "pre_write_stabilize_wait": 0.08,
+        "immediate_verify": True,
+        "immediate_verify_attempts": 2,
+        "immediate_verify_wait": 0.15,
     },
     {
         "col": 5,
@@ -30,6 +39,10 @@ DETAIL_FIELDS = [
         "value_key": "main_subject",
         "kind": "code_prefix",
         "input_mode": "paste",
+        "sensitive_neighbor_cols": [4, 6, 7, 8],
+        "immediate_verify": True,
+        "immediate_verify_attempts": 2,
+        "immediate_verify_wait": 0.15,
     },
     {
         "col": 7,
@@ -37,6 +50,10 @@ DETAIL_FIELDS = [
         "value_key": "amount",
         "kind": "amount",
         "input_mode": "paste",
+        "sensitive_neighbor_cols": [6, 8],
+        "immediate_verify": True,
+        "immediate_verify_attempts": 2,
+        "immediate_verify_wait": 0.15,
     },
     {
         "col": 11,
@@ -44,6 +61,11 @@ DETAIL_FIELDS = [
         "value_key": "settlement",
         "commit_key": "Enter",
         "input_mode": "paste",
+        "pre_write_stabilize": True,
+        "pre_write_stabilize_wait": 0.08,
+        "immediate_verify": True,
+        "immediate_verify_attempts": 2,
+        "immediate_verify_wait": 0.15,
     },
 ]
 FEE_FIELDS = [
@@ -52,6 +74,9 @@ FEE_FIELDS = [
         "name": "收款业务类型",
         "value_key": "fee_business_type",
         "input_mode": "paste",
+        "immediate_verify": True,
+        "immediate_verify_attempts": 2,
+        "immediate_verify_wait": 0.15,
     },
     {
         "col": 4,
@@ -59,6 +84,10 @@ FEE_FIELDS = [
         "value_key": "fee_account",
         "kind": "blank",
         "edit_mode": "selected",
+        "focus_via_col": 5,
+        "immediate_verify": True,
+        "immediate_verify_attempts": 2,
+        "immediate_verify_wait": 0.15,
     },
     {
         "col": 5,
@@ -66,6 +95,10 @@ FEE_FIELDS = [
         "value_key": "fee_subject",
         "kind": "code_prefix",
         "input_mode": "paste",
+        "sensitive_neighbor_cols": [4, 6, 7, 8],
+        "immediate_verify": True,
+        "immediate_verify_attempts": 2,
+        "immediate_verify_wait": 0.15,
     },
     {
         "col": 7,
@@ -73,6 +106,10 @@ FEE_FIELDS = [
         "value_key": "fee_amount",
         "kind": "amount",
         "input_mode": "paste",
+        "sensitive_neighbor_cols": [6, 8],
+        "immediate_verify": True,
+        "immediate_verify_attempts": 2,
+        "immediate_verify_wait": 0.15,
     },
     {
         "col": 11,
@@ -80,11 +117,17 @@ FEE_FIELDS = [
         "value_key": "settlement",
         "commit_key": "Enter",
         "input_mode": "paste",
+        "pre_write_stabilize": True,
+        "pre_write_stabilize_wait": 0.08,
+        "immediate_verify": True,
+        "immediate_verify_attempts": 2,
+        "immediate_verify_wait": 0.15,
     },
 ]
 ACCOUNT_COL = 4
 BUSINESS_TYPE_COL = 1
 SUBJECT_COL = 5
+EXCHANGE_RATE_COL = 6
 AMOUNT_COL = 7
 
 
@@ -102,6 +145,16 @@ def normalize_amount_text(value):
         return normalize_text(value)
 
 
+def parse_decimal_text(value):
+    text = normalize_text(value).replace(",", "")
+    if not text:
+        return None
+    try:
+        return Decimal(text)
+    except (InvalidOperation, ValueError):
+        return None
+
+
 def field_matches(actual, expected, kind=None):
     if kind == "blank":
         return normalize_text(actual) == ""
@@ -114,6 +167,70 @@ def field_matches(actual, expected, kind=None):
             f"{expected_text}\\"
         )
     return normalize_text(actual) == normalize_text(expected)
+
+
+def normalize_currency_name(value):
+    text = normalize_text(value).upper()
+    if text in {"USD", "美元"}:
+        return "USD"
+    if text in {"CNY", "RMB", "人民币"}:
+        return "CNY"
+    return text
+
+
+def validate_exchange_rate_not_polluted(cells, currency, amount, row_index=0):
+    actual = normalize_text((cells or {}).get(str(EXCHANGE_RATE_COL)))
+    if not actual:
+        return {
+            "ok": False,
+            "row": row_index,
+            "col": EXCHANGE_RATE_COL,
+            "currency": currency,
+            "actual": actual,
+            "reason": "汇率列为空，无法确认明细金额未误写入汇率列",
+        }
+    actual_decimal = parse_decimal_text(actual)
+    if actual_decimal is None:
+        return {
+            "ok": False,
+            "row": row_index,
+            "col": EXCHANGE_RATE_COL,
+            "currency": currency,
+            "actual": actual,
+            "reason": f"汇率列不是有效数字：{actual!r}",
+        }
+    expected_amount = parse_decimal_text(amount)
+    if expected_amount is not None and actual_decimal == expected_amount:
+        return {
+            "ok": False,
+            "row": row_index,
+            "col": EXCHANGE_RATE_COL,
+            "currency": currency,
+            "actual": actual,
+            "amount": normalize_amount_text(amount),
+            "reason": "汇率列值等于本次录入金额，疑似金额误写入汇率列",
+        }
+    normalized_currency = normalize_currency_name(currency)
+    if normalized_currency == "USD":
+        ok = Decimal("6") < actual_decimal < Decimal("10")
+        reason = None if ok else f"美元汇率列异常：{actual!r}，应大于 6 且小于 10"
+    elif normalized_currency == "CNY":
+        ok = actual_decimal == Decimal("1")
+        reason = None if ok else f"人民币汇率列异常：{actual!r}，应等于 1"
+    else:
+        ok = True
+        reason = None
+    return {
+        "ok": ok,
+        "row": row_index,
+        "col": EXCHANGE_RATE_COL,
+        "currency": currency,
+        "normalized_currency": normalized_currency,
+        "actual": actual,
+        "amount": normalize_amount_text(amount),
+        "reason": reason,
+        "policy": "只检测汇率列污染，不写入或修正汇率",
+    }
 
 
 def field_expected_value(field, business):

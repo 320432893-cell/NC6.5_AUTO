@@ -9,13 +9,13 @@ from decimal import Decimal
 import pytest
 
 from core.receipt_models import ReceiptPlanIssue, ReceiptPlanRow
+from tools import receipt_full_flow_entry as full_flow
 from tools.receipt_full_flow_entry import (
     build_console_report_lines,
     business_from_plan_row,
-    cache_receipt_finance_org_write_from_header_steps,
-    prime_receipt_finance_org_write_cache,
     cache_receipt_header_scope,
     confirm_save,
+    ensure_header_counterparty_customer,
     extract_entry_anchor_path,
     extract_entry_dynamic_index,
     extract_entry_scope_hwnd,
@@ -28,9 +28,12 @@ from tools.receipt_full_flow_entry import (
     save_receipt_by_ctrl_s,
     select_plan_rows,
     wait_receipt_header_anchor_in_current_canvas,
+    write_extra_text_field_by_dynamic_path,
 )
 from tools.receipt_post_save_query import target_to_match_row
 from tools.receipt_post_save_query import format_query_exception
+
+REAL_ENSURE_HEADER_COUNTERPARTY_CUSTOMER = ensure_header_counterparty_customer
 
 
 def plan_row(row, fee=Decimal("0.00"), extra_text_fields=None):
@@ -81,15 +84,37 @@ class FakeInfo:
     role_en_US = "text"
     states = "enabled,visible,showing,editable"
     states_en_US = "enabled,visible,showing,editable"
+    childrenCount = 0
 
     def __init__(self, name="", description=""):
         self.name = name
         self.description = description
 
 
+class FakeComboInfo(FakeInfo):
+    role = "combo box"
+    role_en_US = "combo box"
+    states = "enabled,focusable,visible,showing,opaque,collapsed"
+    states_en_US = "enabled,focusable,visible,showing,opaque,collapsed"
+
+
 class Args:
     start_row: int | None = None
     limit: int | None = None
+
+
+@pytest.fixture(autouse=True)
+def default_counterparty_header_ok(monkeypatch):
+    monkeypatch.setattr(
+        full_flow,
+        "ensure_header_counterparty_customer",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "skipped": True,
+            "actual": "客户",
+            "path": "counterparty.path",
+        },
+    )
 
 
 def test_extract_header_accepted_text_rejects_java_object_string():
@@ -771,7 +796,26 @@ def test_run_one_row_uses_detail_pipeline_verifier(monkeypatch):
 
         def wait(self, task_ids, timeout=2.0):
             calls["wait"].append((list(task_ids), timeout))
-            return {"ok": True, "submitted": list(task_ids), "done": len(task_ids)}
+            return {
+                "ok": True,
+                "submitted": list(task_ids),
+                "done": len(task_ids),
+                "snapshots": [
+                    {
+                        "id": "snapshot-0",
+                        "ok": True,
+                        "snapshot": {
+                            "ok": True,
+                            "rows": [
+                                {
+                                    "row_index": 0,
+                                    "cells": {"6": "1", "7": "1090.00"},
+                                }
+                            ],
+                        },
+                    }
+                ],
+            }
 
         def close(self, timeout=1.0):
             calls["closed"] = timeout
@@ -888,14 +932,7 @@ def test_run_one_row_uses_detail_pipeline_verifier(monkeypatch):
         == "0.0.1.0.0.0.0.5.0.0.0.1.1.0.0.0.1.1.1.0"
     )
     assert calls["body_locate_kwargs"][0]["scope_hwnd"] == 2002
-    assert (
-        calls["body_locate_kwargs"][0]["cached"]["best"]["path"]
-        == "0.0.1.0.0.0.0.5.0.0.0.1.1.0.0.0.0.1.0.2.1.0.0.0.0.0"
-    )
-    assert calls["body_locate_kwargs"][0]["cached"]["best"]["window"] == {
-        "hwnd": 2002,
-        "class_name": "SunAwtCanvas",
-    }
+    assert calls["body_locate_kwargs"][0]["cached"] is None
     assert calls["account_scope"][0]["scope_hwnd"] == 2002
     assert calls["account_scope"][0]["dynamic_index"] == 5
     assert report["before_table"]["skipped"] is True
@@ -1042,10 +1079,821 @@ def test_run_one_row_verifies_extra_text_fields_in_pipeline(monkeypatch):
     assert report["extra_text_verify_tasks"] == ["text-0"]
 
 
+def test_write_extra_text_field_rewrites_when_first_paste_does_not_land(monkeypatch):
+    descriptions = iter(["", "", "", "PI-001"])
+    paste_values = []
+
+    class FakeJAB:
+        def get_context_info(self, _vm_id, _context):
+            return FakeInfo(description=next(descriptions))
+
+        def get_text_context_value(self, _vm_id, _context):
+            return ""
+
+        def release_contexts(self, _vm_id, _contexts):
+            pass
+
+    monkeypatch.setattr(
+        full_flow,
+        "get_receipt_header_path_template",
+        lambda dynamic_index: {"text_suffix_template": "memo.{index}.0"},
+    )
+    monkeypatch.setattr(
+        full_flow,
+        "find_receipt_header_field_by_dynamic_path",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "context": object(),
+            "vm_id": 1,
+            "owned_contexts": [],
+            "window": {"hwnd": 2002},
+            "path": "memo.path",
+            "dynamic_prefix": "0.0.1.0.0.0.0.5",
+            "source": "dynamic-path",
+        },
+    )
+
+    def fake_paste(_jab, _vm_id, _context, _window, value):
+        paste_values.append(value)
+        return {"ok": True, "enter_ok": True}
+
+    monkeypatch.setattr(full_flow, "guarded_paste_header_value", fake_paste)
+    monkeypatch.setattr(full_flow.time, "sleep", lambda *_args, **_kwargs: None)
+
+    result = write_extra_text_field_by_dynamic_path(
+        FakeJAB(),
+        "商务领款备忘",
+        "PI-001",
+        5,
+        scope_hwnd=2002,
+    )
+
+    assert result["ok"] is True
+    assert paste_values == ["PI-001", "PI-001"]
+    assert len(result["attempts"]) == 2
+    assert len(result["rewrites"]) == 1
+    assert result["description_after"] == "PI-001"
+
+
+def test_write_extra_text_field_fails_when_rewrite_still_does_not_land(monkeypatch):
+    class FakeJAB:
+        def get_context_info(self, _vm_id, _context):
+            return FakeInfo(description="")
+
+        def get_text_context_value(self, _vm_id, _context):
+            return ""
+
+        def release_contexts(self, _vm_id, _contexts):
+            pass
+
+    monkeypatch.setattr(
+        full_flow,
+        "get_receipt_header_path_template",
+        lambda dynamic_index: {"text_suffix_template": "memo.{index}.0"},
+    )
+    monkeypatch.setattr(
+        full_flow,
+        "find_receipt_header_field_by_dynamic_path",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "context": object(),
+            "vm_id": 1,
+            "owned_contexts": [],
+            "window": {"hwnd": 2002},
+            "path": "memo.path",
+            "source": "dynamic-path",
+        },
+    )
+    monkeypatch.setattr(
+        full_flow,
+        "guarded_paste_header_value",
+        lambda *_args: {"ok": True, "enter_ok": True},
+    )
+    monkeypatch.setattr(full_flow.time, "sleep", lambda *_args, **_kwargs: None)
+
+    result = write_extra_text_field_by_dynamic_path(
+        FakeJAB(),
+        "商务领款备忘",
+        "PI-001",
+        5,
+        scope_hwnd=2002,
+    )
+
+    assert result["ok"] is False
+    assert len(result["attempts"]) == 2
+    assert result["reason"] == "写入后未读回目标文本字段值：商务领款备忘='PI-001'"
+
+
+def test_ensure_header_counterparty_customer_skips_when_already_customer(monkeypatch):
+    class FakeJAB:
+        def __init__(self):
+            self.actions = []
+
+        def find_context_by_path_once(self, path, **_kwargs):
+            return object(), 1, [], {"hwnd": 2002}
+
+        def get_context_info(self, _vm_id, _context):
+            return FakeComboInfo(description="客户")
+
+        def get_text_context_value(self, _vm_id, _context):
+            return ""
+
+        def do_action(self, *_args, **_kwargs):
+            self.actions.append(_kwargs.get("action_name"))
+            return True
+
+        def release_contexts(self, _vm_id, _contexts):
+            pass
+
+    jab = FakeJAB()
+    monkeypatch.setattr(
+        full_flow,
+        "read_detail_counterparty_value",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "source": "detail-row0-col0",
+            "row": 0,
+            "col": 0,
+            "value": "客户",
+            "text": "客户",
+        },
+    )
+
+    result = REAL_ENSURE_HEADER_COUNTERPARTY_CUSTOMER(jab, 5, scope_hwnd=2002)
+
+    assert result["ok"] is True
+    assert result["skipped"] is True
+    assert result["actual"] == "客户"
+    assert jab.actions == []
+
+
+def test_ensure_header_counterparty_customer_skips_when_embedded_selected_customer(monkeypatch):
+    class FakeNode:
+        def __init__(
+            self,
+            role,
+            name="",
+            description="",
+            states="enabled,visible,showing",
+            children=None,
+            bounds=(0, 0, 10, 10),
+        ):
+            self.name = name
+            self.description = description
+            self.role = role
+            self.role_en_US = role
+            self.states = states
+            self.states_en_US = states
+            self.children = children or []
+            self.childrenCount = len(self.children)
+            self.x, self.y, self.width, self.height = bounds
+
+    class FakeJAB:
+        def __init__(self):
+            self.actions = []
+            self.customer = FakeNode(
+                "label",
+                name="客户",
+                states="enabled,focusable,visible,opaque,selectable,selected,showing",
+                bounds=(-31998, -31998, 196, 20),
+            )
+            self.department = FakeNode(
+                "label",
+                name="部门",
+                states="enabled,focusable,visible,opaque,selectable,showing",
+                bounds=(-31998, -31978, 196, 20),
+            )
+            self.list_node = FakeNode(
+                "list",
+                description="客户",
+                states="enabled,visible,showing,opaque",
+                children=[self.customer, self.department],
+                bounds=(-31998, -31998, 196, 80),
+            )
+            self.popup = FakeNode(
+                "popup menu",
+                states="enabled,visible,showing,selectable,selected",
+                children=[self.list_node],
+                bounds=(-32000, -32000, 200, 84),
+            )
+            self.combo = FakeNode(
+                "combo box",
+                states="enabled,focusable,visible,showing,opaque,expanded",
+                children=[self.popup],
+                bounds=(998, 232, 198, 22),
+            )
+            self.dll = self
+
+        def find_context_by_path_once(self, path, **_kwargs):
+            return self.combo, 1, [], {"hwnd": 2002}
+
+        def get_context_info(self, _vm_id, _context):
+            return _context
+
+        def get_text_context_value(self, _vm_id, _context):
+            return "翸" if _context is self.combo else ""
+
+        def getAccessibleChildFromContext(self, _vm_id, context, index):
+            return context.children[index]
+
+        def do_action(self, *_args, **_kwargs):
+            self.actions.append(_kwargs.get("action_name"))
+            return True
+
+        def release_contexts(self, _vm_id, _contexts):
+            pass
+
+    jab = FakeJAB()
+    monkeypatch.setattr(
+        full_flow,
+        "read_detail_counterparty_value",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "source": "detail-row0-col0",
+            "row": 0,
+            "col": 0,
+            "value": "客户",
+            "text": "客户",
+        },
+    )
+
+    result = REAL_ENSURE_HEADER_COUNTERPARTY_CUSTOMER(jab, 5, scope_hwnd=2002)
+
+    assert result["ok"] is True
+    assert result["skipped"] is True
+    assert result["actual"] == "客户"
+    assert result["source"] == "detail-row0-col0"
+    assert jab.actions == []
+
+
+def test_ensure_header_counterparty_customer_fails_when_detail_conflicts_with_stale_header(
+    monkeypatch,
+):
+    class FakeNode:
+        def __init__(
+            self,
+            role,
+            name="",
+            description="",
+            states="enabled,visible,showing",
+            children=None,
+            bounds=(0, 0, 10, 10),
+        ):
+            self.name = name
+            self.description = description
+            self.role = role
+            self.role_en_US = role
+            self.states = states
+            self.states_en_US = states
+            self.children = children or []
+            self.childrenCount = len(self.children)
+            self.x, self.y, self.width, self.height = bounds
+
+    class FakeJAB:
+        def __init__(self):
+            self.customer = FakeNode(
+                "label",
+                name="客户",
+                states="enabled,focusable,visible,opaque,selectable,selected,showing",
+            )
+            self.department = FakeNode(
+                "label",
+                name="部门",
+                states="enabled,focusable,visible,opaque,selectable,showing",
+            )
+            self.list_node = FakeNode(
+                "list",
+                description="客户",
+                children=[self.customer, self.department],
+            )
+            self.popup = FakeNode("popup menu", children=[self.list_node])
+            self.combo = FakeNode("combo box", children=[self.popup])
+            self.dll = self
+
+        def find_context_by_path_once(self, path, **_kwargs):
+            return self.combo, 1, [], {"hwnd": 2002}
+
+        def get_context_info(self, _vm_id, _context):
+            return _context
+
+        def get_text_context_value(self, _vm_id, _context):
+            return ""
+
+        def getAccessibleChildFromContext(self, _vm_id, context, index):
+            return context.children[index]
+
+        def release_contexts(self, _vm_id, _contexts):
+            pass
+
+    monkeypatch.setattr(
+        full_flow,
+        "read_detail_counterparty_value",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "source": "detail-row0-col0",
+            "row": 0,
+            "col": 0,
+            "value": "部门",
+            "text": "部门",
+        },
+    )
+
+    result = REAL_ENSURE_HEADER_COUNTERPARTY_CUSTOMER(FakeJAB(), 5, scope_hwnd=2002)
+
+    assert result["ok"] is False
+    assert result["actual"] == "部门"
+    assert result["embedded"] == {}
+    assert result["detail"]["value"] == "部门"
+    assert "detail_row0_col0=部门" in result["reason"]
+
+
+def test_ensure_header_counterparty_customer_repairs_blank_detail_with_embedded_selection(
+    monkeypatch,
+):
+    class FakeNode:
+        def __init__(
+            self,
+            role,
+            name="",
+            description="",
+            states="enabled,visible,showing",
+            children=None,
+            bounds=(0, 0, 10, 10),
+        ):
+            self.name = name
+            self.description = description
+            self.role = role
+            self.role_en_US = role
+            self.states = states
+            self.states_en_US = states
+            self.children = children or []
+            self.childrenCount = len(self.children)
+            self.x, self.y, self.width, self.height = bounds
+
+    class FakeJAB:
+        def __init__(self):
+            self.customer = FakeNode(
+                "label",
+                name="客户",
+                states="enabled,focusable,visible,opaque,selectable,selected,showing",
+            )
+            self.department = FakeNode(
+                "label",
+                name="部门",
+                states="enabled,focusable,visible,opaque,selectable,showing",
+            )
+            self.list_node = FakeNode(
+                "list",
+                description="客户",
+                children=[self.customer, self.department],
+            )
+            self.popup = FakeNode("popup menu", children=[self.list_node])
+            self.combo = FakeNode("combo box", children=[self.popup])
+            self.dll = self
+            self.selection_calls = []
+            self.keys = []
+
+        def find_context_by_path_once(self, path, **_kwargs):
+            return self.combo, 1, [], {"hwnd": 2002}
+
+        def get_context_info(self, _vm_id, _context):
+            return _context
+
+        def get_text_context_value(self, _vm_id, _context):
+            return "翸" if _context is self.combo else ""
+
+        def getAccessibleChildFromContext(self, _vm_id, context, index):
+            return context.children[index]
+
+        def clearAccessibleSelectionFromContext(self, vm_id, context):
+            self.selection_calls.append(("clear", vm_id, context))
+            return True
+
+        def addAccessibleSelectionFromContext(self, vm_id, context, index):
+            self.selection_calls.append(("add", vm_id, context, index))
+            return True
+
+        def requestFocus(self, vm_id, context):
+            self.selection_calls.append(("focus", vm_id, context))
+            return True
+
+        def press_key(self, key, wait=0):
+            self.keys.append((key, wait))
+            return True
+
+        def release_contexts(self, _vm_id, _contexts):
+            pass
+
+    reads = iter(
+        [
+            {
+                "ok": False,
+                "source": "detail-row0-col0",
+                "row": 0,
+                "col": 0,
+                "value": "",
+                "text": "翸",
+                "reason": "明细表往来对象单元格为空",
+            },
+            {
+                "ok": True,
+                "source": "detail-row0-col0",
+                "row": 0,
+                "col": 0,
+                "value": "客户",
+                "text": "客户",
+            },
+        ]
+    )
+    monkeypatch.setattr(
+        full_flow,
+        "read_detail_counterparty_value",
+        lambda *_args, **_kwargs: next(reads),
+    )
+    monkeypatch.setattr(full_flow.time, "sleep", lambda *_args, **_kwargs: None)
+
+    jab = FakeJAB()
+    monkeypatch.setattr(
+        full_flow,
+        "find_counterparty_combo",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "source": "nearby",
+            "context": jab.combo,
+            "vm_id": 1,
+            "owned_contexts": [],
+            "window": {"hwnd": 2002},
+            "path": "0.0.1.0.0.0.0.5.nearby.suffix",
+        },
+    )
+    result = REAL_ENSURE_HEADER_COUNTERPARTY_CUSTOMER(jab, 5, scope_hwnd=2002)
+
+    assert result["ok"] is True
+    assert result["repaired"] is True
+    assert result["source"] == "embedded-selection-api"
+    assert result["after_detail"]["value"] == "客户"
+    assert ("add", 1, jab.list_node, 0) in jab.selection_calls
+    assert jab.keys == [("home", 0.02), ("enter", 0)]
+
+
+def test_ensure_header_counterparty_customer_skips_when_detail_row0_col0_customer(monkeypatch):
+    class FakeJAB:
+        def __init__(self):
+            self.actions = []
+
+        def find_context_by_path_once(self, path, **_kwargs):
+            return object(), 1, [], {"hwnd": 2002}
+
+        def get_context_info(self, _vm_id, _context):
+            return FakeComboInfo(description="")
+
+        def get_text_context_value(self, _vm_id, _context):
+            return "翸"
+
+        def do_action(self, *_args, **_kwargs):
+            self.actions.append(_kwargs.get("action_name"))
+            return True
+
+        def release_contexts(self, _vm_id, _contexts):
+            pass
+
+    monkeypatch.setattr(
+        full_flow,
+        "read_detail_counterparty_value",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "source": "detail-row0-col0",
+            "row": 0,
+            "col": 0,
+            "value": "客户",
+            "text": "客户",
+            "is_selected": True,
+        },
+    )
+
+    jab = FakeJAB()
+
+    result = REAL_ENSURE_HEADER_COUNTERPARTY_CUSTOMER(jab, 5, scope_hwnd=2002)
+
+    assert result["ok"] is True
+    assert result["skipped"] is True
+    assert result["actual"] == "客户"
+    assert result["source"] == "detail-row0-col0"
+    assert result["detail"]["value"] == "客户"
+    assert jab.actions == []
+
+
+def test_ensure_header_counterparty_customer_skips_lower_detail_without_header_lookup(
+    monkeypatch,
+):
+    class FakeJAB:
+        def __init__(self):
+            self.actions = []
+
+        def get_context_info(self, _vm_id, _context):
+            return FakeComboInfo(description="客户")
+
+        def get_text_context_value(self, _vm_id, _context):
+            return ""
+
+        def do_action(self, *_args, **_kwargs):
+            self.actions.append(_kwargs.get("action_name"))
+            return True
+
+        def release_contexts(self, _vm_id, _contexts):
+            pass
+
+    monkeypatch.setattr(full_flow, "_COUNTERPARTY_NEARBY_SUFFIX_CACHE", {})
+    monkeypatch.setattr(
+        full_flow,
+        "find_counterparty_combo",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("lower detail 已是客户时不应定位上方往来对象")
+        ),
+    )
+    monkeypatch.setattr(
+        full_flow,
+        "receipt_header_dynamic_prefix",
+        lambda dynamic_index: "0.0.1.0.0.0.0.5",
+    )
+    monkeypatch.setattr(
+        full_flow,
+        "read_detail_counterparty_value",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "source": "detail-row0-col0",
+            "row": 0,
+            "col": 0,
+            "value": "客户",
+            "text": "客户",
+        },
+    )
+
+    result = REAL_ENSURE_HEADER_COUNTERPARTY_CUSTOMER(FakeJAB(), 5, scope_hwnd=2002)
+
+    assert result["ok"] is True
+    assert result["path"] is None
+    assert full_flow._COUNTERPARTY_NEARBY_SUFFIX_CACHE == {}
+
+
+def test_find_counterparty_combo_uses_cached_nearby_suffix(monkeypatch):
+    calls = []
+
+    class FakeJAB:
+        pass
+
+    monkeypatch.setattr(full_flow, "_COUNTERPARTY_NEARBY_SUFFIX_CACHE", {})
+    monkeypatch.setattr(
+        full_flow,
+        "receipt_header_dynamic_prefix",
+        lambda dynamic_index: "0.0.1.0.0.0.0.5",
+    )
+    full_flow._COUNTERPARTY_NEARBY_SUFFIX_CACHE[2002] = {
+        "suffix": "nearby.suffix",
+        "path": "old",
+    }
+
+    def fake_find_by_path(_jab, path, **_kwargs):
+        calls.append(path)
+        return {
+            "ok": True,
+            "context": object(),
+            "vm_id": 1,
+            "owned_contexts": [],
+            "window": {"hwnd": 2002},
+            "path": path,
+        }
+
+    monkeypatch.setattr(full_flow, "find_counterparty_combo_by_path", fake_find_by_path)
+    monkeypatch.setattr(
+        full_flow,
+        "find_counterparty_combo_nearby",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("nearby should not run when cached path works")
+        ),
+    )
+
+    result = full_flow.find_counterparty_combo(FakeJAB(), 5, scope_hwnd=2002)
+
+    assert result["ok"] is True
+    assert result["source"] == "nearby-cache-path"
+    assert calls == ["0.0.1.0.0.0.0.5.nearby.suffix"]
+
+
+def test_find_counterparty_combo_nearby_handles_label_path_triples(monkeypatch):
+    class Node:
+        def __init__(
+            self,
+            role,
+            name="",
+            description="",
+            children=None,
+            bounds=(0, 0, 10, 10),
+            states="enabled,visible,showing",
+        ):
+            self.role = role
+            self.role_en_US = role
+            self.name = name
+            self.description = description
+            self.states = states
+            self.states_en_US = states
+            self.children = children or []
+            self.childrenCount = len(self.children)
+            self.x, self.y, self.width, self.height = bounds
+
+    class FakeDLL:
+        def __init__(self, nodes):
+            self.nodes = nodes
+
+        def isJavaWindow(self, _hwnd):
+            return True
+
+        def getAccessibleContextFromHWND(self, _hwnd, vm_id_ref, root_context_ref):
+            vm_id_ref._obj.value = 1
+            root_context_ref._obj.value = 100
+            return True
+
+        def getAccessibleChildFromContext(self, _vm_id, context, index):
+            return self.nodes[int(context)].children[index]
+
+    class FakeJAB:
+        def __init__(self):
+            self.nodes = {
+                100: Node("panel", children=[101, 102]),
+                101: Node("label", name="往来对象", bounds=(914, 232, 74, 22)),
+                102: Node(
+                    "combo box",
+                    children=[],
+                    bounds=(998, 232, 198, 22),
+                    states="enabled,focusable,visible,showing,opaque,collapsed",
+                ),
+            }
+            self.dll = FakeDLL(self.nodes)
+            self.max_depth = 8
+            self.max_children = 120
+            self.released = []
+
+        def get_context_info(self, _vm_id, context):
+            return self.nodes[int(context)]
+
+        def context_info_has_valid_bounds(self, info):
+            return info.width > 0 and info.height > 0 and info.x >= 0 and info.y >= 0
+
+        def get_action_names(self, _vm_id, context):
+            return ["togglePopup"] if int(context) == 102 else []
+
+        def info_to_dict(self, info):
+            return {
+                "name": info.name,
+                "description": info.description,
+                "role": info.role,
+                "states": info.states,
+                "x": info.x,
+                "y": info.y,
+                "width": info.width,
+                "height": info.height,
+            }
+
+        def release_contexts(self, _vm_id, contexts):
+            self.released.extend(contexts or [])
+
+    monkeypatch.setattr(
+        full_flow,
+        "receipt_header_dynamic_prefix",
+        lambda dynamic_index: "0.0.1.0.0.0.0.2",
+    )
+
+    result = full_flow.find_counterparty_combo_nearby(
+        FakeJAB(),
+        2,
+        scope_hwnd=2002,
+    )
+
+    assert result["ok"] is True
+    assert result["source"] == "nearby"
+    assert result["path"] == "0.1"
+    assert result["target"]["label"]["name"] == "往来对象"
+
+
+def test_ensure_header_counterparty_customer_fails_when_existing_non_target_value(monkeypatch):
+    class FakeJAB:
+        def __init__(self):
+            self.actions = []
+
+        def find_context_by_path_once(self, path, **_kwargs):
+            return object(), 1, [], {"hwnd": 2002}
+
+        def get_context_info(self, _vm_id, _context):
+            return FakeComboInfo(description="供应商")
+
+        def get_text_context_value(self, _vm_id, _context):
+            return ""
+
+        def press_key(self, key, wait=0):
+            self.actions.append((key, wait))
+            return True
+
+        def release_contexts(self, _vm_id, _contexts):
+            pass
+
+    monkeypatch.setattr(
+        full_flow,
+        "read_detail_counterparty_value",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "source": "detail-row0-col0",
+            "row": 0,
+            "col": 0,
+            "value": "供应商",
+            "text": "供应商",
+        },
+    )
+
+    result = REAL_ENSURE_HEADER_COUNTERPARTY_CUSTOMER(FakeJAB(), 5, scope_hwnd=2002)
+
+    assert result["ok"] is False
+    assert result["actual"] == "供应商"
+    assert "往来对象未确认客户" in result["reason"]
+    assert "combo_text=" in result["reason"]
+    assert "detail_row0_col0=供应商" in result["reason"]
+    assert "已禁用旧下拉键盘方案" in result["reason"]
+    assert result["before"] == {}
+
+
+def test_ensure_header_counterparty_customer_trusts_detail_over_stale_header_text(
+    monkeypatch,
+):
+    class FakeJAB:
+        def find_context_by_path_once(self, path, **_kwargs):
+            return object(), 1, [], {"hwnd": 2002}
+
+        def get_context_info(self, _vm_id, _context):
+            return FakeComboInfo(description="供应商")
+
+        def get_text_context_value(self, _vm_id, _context):
+            return ""
+
+        def release_contexts(self, _vm_id, _contexts):
+            pass
+
+    monkeypatch.setattr(
+        full_flow,
+        "read_detail_counterparty_value",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "source": "detail-row0-col0",
+            "row": 0,
+            "col": 0,
+            "value": "客户",
+            "text": "客户",
+        },
+    )
+
+    result = REAL_ENSURE_HEADER_COUNTERPARTY_CUSTOMER(FakeJAB(), 5, scope_hwnd=2002)
+
+    assert result["ok"] is True
+    assert result["actual"] == "客户"
+    assert result["source"] == "detail-row0-col0"
+    assert result["detail"]["value"] == "客户"
+
+
+def test_ensure_header_counterparty_customer_failure_includes_detail_diagnostic(
+    monkeypatch,
+):
+    class FakeJAB:
+        def find_context_by_path_once(self, path, **_kwargs):
+            return object(), 1, [], {"hwnd": 2002}
+
+        def get_context_info(self, _vm_id, _context):
+            return FakeComboInfo(description="")
+
+        def get_text_context_value(self, _vm_id, _context):
+            return ""
+
+        def release_contexts(self, _vm_id, _contexts):
+            pass
+
+    monkeypatch.setattr(
+        full_flow,
+        "read_detail_counterparty_value",
+        lambda *_args, **_kwargs: {"ok": False, "value": "", "text": "", "reason": "明细表 path 未定位"},
+    )
+    result = REAL_ENSURE_HEADER_COUNTERPARTY_CUSTOMER(FakeJAB(), 5, scope_hwnd=2002)
+
+    assert result["ok"] is False
+    assert result["actual"] == ""
+    assert result["detail"]["reason"] == "明细表 path 未定位"
+    assert "header_selected=" in result["reason"]
+    assert "combo_text=" in result["reason"]
+    assert "detail_row0_col0=" in result["reason"]
+    assert "detail_reason=明细表 path 未定位" in result["reason"]
+
+
 def test_run_one_row_resolves_header_scope_by_finance_org_fast_path(monkeypatch):
     calls = {
         "finance_scope": [],
         "fill_header_kwargs": [],
+        "fill_header_scope_cache": [],
         "body_locate_kwargs": [],
     }
 
@@ -1109,7 +1957,8 @@ def test_run_one_row_resolves_header_scope_by_finance_org_fast_path(monkeypatch)
                 "scope_hwnd": hwnd,
                 "dynamic_index": 5,
                 "dynamic_prefix": "0.0.1.0.0.0.0.5",
-                "label_path": "0.fast.label",
+                "semantic_label_path": "0.fast.semantic.label",
+                "label_path": "0.fast.visible.label",
                 "text_path": "0.fast.text",
                 "variant": "observed-compact",
             }
@@ -1117,8 +1966,11 @@ def test_run_one_row_resolves_header_scope_by_finance_org_fast_path(monkeypatch)
     )
     monkeypatch.setattr(
         "tools.receipt_full_flow_entry.fill_header",
-        lambda _jab, _business, **kwargs: (
+        lambda jab, _business, **kwargs: (
             calls["fill_header_kwargs"].append(kwargs)
+            or calls["fill_header_scope_cache"].append(
+                getattr(jab, "_receipt_header_scope_cache", None)
+            )
             or [{"ok": True, "label": "客户", "accepted_text": "ACME LTD"}]
         ),
     )
@@ -1167,11 +2019,14 @@ def test_run_one_row_resolves_header_scope_by_finance_org_fast_path(monkeypatch)
     assert report["entry_dynamic_index_source"] == "finance-org-fast-scope"
     assert calls["fill_header_kwargs"][0]["scope_hwnd"] == 919586
     assert calls["fill_header_kwargs"][0]["dynamic_index"] == 5
-    assert calls["body_locate_kwargs"][0]["scope_hwnd"] == 919586
-    assert (
-        calls["body_locate_kwargs"][0]["cached"]["best"]["path"]
-        == "0.0.1.0.0.0.0.5.0.0.0.1.1.0.0.0.0.1.0.2.1.0.0.0.0.0"
+    assert calls["fill_header_scope_cache"][0]["semantic_label_path"] == (
+        "0.fast.semantic.label"
     )
+    assert calls["fill_header_scope_cache"][0]["label_path"] == (
+        "0.fast.visible.label"
+    )
+    assert calls["body_locate_kwargs"][0]["scope_hwnd"] == 919586
+    assert calls["body_locate_kwargs"][0]["cached"] is None
 
 
 def test_header_scope_cache_can_be_shared_between_row_jab_instances():
@@ -1197,36 +2052,6 @@ def test_header_scope_cache_can_be_shared_between_row_jab_instances():
     assert shared_cache["scope_hwnd"] == 919586
     assert shared_cache["dynamic_index"] == 5
     assert first_jab._receipt_header_scope_cache == shared_cache
-
-
-def test_finance_org_write_cache_can_be_shared_between_row_jab_instances():
-    class FakeJAB:
-        pass
-
-    shared_cache = {}
-    first_jab = FakeJAB()
-
-    cached = cache_receipt_finance_org_write_from_header_steps(
-        first_jab,
-        shared_cache,
-        [
-            {
-                "ok": True,
-                "label": "财务组织",
-                "scope_hwnd": 919586,
-                "path": "0.write.5",
-                "path_attempt": {"write_index": 5, "path": "0.write.5"},
-            }
-        ],
-    )
-
-    second_jab = FakeJAB()
-    prime_receipt_finance_org_write_cache(second_jab, shared_cache)
-
-    assert cached["write_index"] == 5
-    assert shared_cache[919586]["write_index"] == 5
-    assert shared_cache["last"]["write_index"] == 5
-    assert second_jab._finance_org_write_path_cache["last"]["write_index"] == 5
 
 
 def test_run_one_row_stops_when_current_canvas_header_scope_missing(monkeypatch):

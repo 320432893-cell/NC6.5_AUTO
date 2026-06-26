@@ -1,7 +1,7 @@
 # 生命周期：T0 一次性（删除条件：明细表单元格写入路径确认后删除）
 # 覆盖的业务阶段：收款单自制录入-明细主行单元格写入探测
 # 依赖的服务/环境：Windows Python、NC 收款单自制录入界面、Java Access Bridge
-# 运行方式：python tools/tmp_receipt_cell_probe_run.py
+# 运行方式：python tools/archive/tmp_receipt_cell_probe_run.py
 
 import argparse
 import ctypes
@@ -11,7 +11,7 @@ import time
 import traceback
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 

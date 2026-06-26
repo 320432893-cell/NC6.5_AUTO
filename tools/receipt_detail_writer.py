@@ -4,11 +4,15 @@
 # 谁不应该 import：配置校验、Sheet 写入、收款匹配模块不应 import
 
 import time
+from decimal import Decimal, InvalidOperation
 
 from tools.receipt_detail_fields import (
     DETAIL_FIELDS,
+    field_expected_value,
+    field_matches,
     make_detail_step,
 )
+from tools.receipt_detail_reader import read_row_cells
 from tools.receipt_detail_screen_writer import (
     KEYBOARD_INPUT_COMMIT_KEY,
     focus_detail_cell,
@@ -16,6 +20,8 @@ from tools.receipt_detail_screen_writer import (
     move_selected_cell_by_arrows,
 )
 from tools.receipt_keyboard_utils import STOP_HOTKEY, is_stop_hotkey_pressed
+
+DETAIL_DIAGNOSTIC_COLS = (4, 5, 6, 7, 8, 11)
 
 
 def write_field_once(
@@ -34,38 +40,78 @@ def write_field_once(
     value = str(business[field["value_key"]])
     attempt_start = time.perf_counter()
     target_col = int(field["col"])
-    if current_col is None:
-        focus = focus_detail_cell(
-            jab,
-            located,
-            row_index,
-            target_col,
-        )
-        navigation = {
+    focus, navigation = focus_entry_for_field(
+        jab,
+        located,
+        table_window,
+        row_index,
+        field,
+        current_col=current_col,
+    )
+    if focus.get("ok") and navigation.get("ok"):
+        activation = activate_field_before_write(jab, located, row_index, field)
+        if activation.get("ok"):
+            pre_write_stabilize = stabilize_field_before_write(
+                jab,
+                located,
+                table_window,
+                row_index,
+                field,
+                previous_focus=focus,
+                previous_navigation=navigation,
+            )
+        else:
+            pre_write_stabilize = {
+                "ok": True,
+                "skipped": True,
+                "reason": "字段激活失败，未执行写前稳定",
+            }
+        if activation.get("ok") and pre_write_stabilize.get("ok"):
+            neighbor_guard_before = capture_sensitive_neighbors(
+                jab,
+                located,
+                row_index,
+                field,
+            )
+        else:
+            neighbor_guard_before = {
+                "ok": True,
+                "skipped": True,
+                "reason": "字段激活或写前稳定失败，未执行敏感邻列哨兵",
+            }
+        if (
+            activation.get("ok")
+            and pre_write_stabilize.get("ok")
+            and neighbor_guard_before.get("ok")
+        ):
+            screen = write_field_value_to_focused_cell(
+                table_window,
+                value,
+                field,
+                recover_after_failure=recover_after_failure,
+            )
+        else:
+            screen = {
+                "ok": False,
+                "reason": activation.get("reason")
+                or pre_write_stabilize.get("reason")
+                or neighbor_guard_before.get("reason"),
+                "activation": activation,
+                "pre_write_stabilize": pre_write_stabilize,
+                "neighbor_guard_before": neighbor_guard_before,
+            }
+    else:
+        activation = {"ok": False, "skipped": True, "reason": "定位或导航失败，未激活"}
+        pre_write_stabilize = {
             "ok": True,
             "skipped": True,
-            "reason": "首个字段直接定位",
-            "from_col": target_col,
-            "to_col": target_col,
+            "reason": "定位或导航失败，未执行写前稳定",
         }
-    else:
-        focus = {"ok": True, "skipped": True, "reason": "沿用当前选中单元格"}
-        navigation = move_selected_cell_by_arrows(table_window, current_col, target_col)
-    if focus.get("ok") and navigation.get("ok"):
-        commit_key = field.get("commit_key") or KEYBOARD_INPUT_COMMIT_KEY
-        screen = keyboard_write_selected_cell(
-            table_window,
-            value,
-            commit_key=commit_key,
-            clear_only=field.get("kind") == "blank",
-            accept_key=field.get("accept_key"),
-            typing_interval=field.get("typing_interval", 0.0),
-            edit_mode=field.get("edit_mode", "editor"),
-            input_mode=field.get("input_mode", "paste"),
-            pre_commit_wait=field.get("pre_commit_wait", 0.025),
-            recover_after_failure=recover_after_failure,
-        )
-    else:
+        neighbor_guard_before = {
+            "ok": True,
+            "skipped": True,
+            "reason": "定位或导航失败，未执行敏感邻列哨兵",
+        }
         screen = {
             "ok": False,
             "reason": focus.get("reason") or navigation.get("reason"),
@@ -84,12 +130,17 @@ def write_field_once(
         "cell_height": None,
         "focus": focus,
         "navigation": navigation,
+        "activation": activation,
+        "pre_write_stabilize": pre_write_stabilize,
+        "neighbor_guard_before": neighbor_guard_before,
         "commit_ok": bool(screen.get("ok")),
         "commit_key": field.get("commit_key") or KEYBOARD_INPUT_COMMIT_KEY,
         "accept_key": field.get("accept_key"),
         "typing_interval": field.get("typing_interval", 0.0),
         "edit_mode": field.get("edit_mode", "editor"),
         "input_mode": field.get("input_mode", "paste"),
+        "pre_input_key": field.get("pre_input_key"),
+        "pre_input_wait": field.get("pre_input_wait", 0.0),
         "pre_commit_wait": field.get("pre_commit_wait", 0.025),
         "commit_col": current_col_after_commit(target_col, field.get("commit_key")),
         "commit_target": {
@@ -107,6 +158,258 @@ def write_field_once(
     }
 
 
+def focus_entry_for_field(
+    jab,
+    located,
+    table_window,
+    row_index,
+    field,
+    current_col=None,
+):
+    target_col = int(field["col"])
+    via_col = field.get("focus_via_col")
+    if via_col is None:
+        focus = focus_detail_cell(jab, located, row_index, target_col)
+        return focus, {
+            "ok": True,
+            "skipped": True,
+            "reason": "每个字段按明细表 path 重新定位到目标单元格",
+            "from_col": current_col,
+            "to_col": target_col,
+        }
+
+    entry_col = int(via_col)
+    focus = focus_detail_cell(jab, located, row_index, entry_col)
+    if not focus.get("ok"):
+        return focus, {
+            "ok": False,
+            "from_col": entry_col,
+            "to_col": target_col,
+            "reason": focus.get("reason") or "字段入口列定位失败",
+        }
+    navigation = move_selected_cell_by_arrows(table_window, entry_col, target_col)
+    navigation["via_col"] = entry_col
+    if navigation.get("ok") and not navigation.get("reason"):
+        navigation["reason"] = (
+            f"{field['name']} 先按 path 定位入口列 {entry_col}，再方向键进入目标列 {target_col}"
+        )
+    return focus, navigation
+
+
+def activate_field_before_write(jab, located, row_index, field):
+    return {
+        "ok": True,
+        "skipped": True,
+        "method": "keyboard-only",
+        "target": {"row": row_index, "col": int(field["col"])},
+        "reason": "正式明细写入不使用鼠标 bounds；已按 path/键盘定位目标单元格",
+    }
+
+
+def stabilize_field_before_write(
+    jab,
+    located,
+    table_window,
+    row_index,
+    field,
+    previous_focus=None,
+    previous_navigation=None,
+):
+    if not field.get("pre_write_stabilize"):
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "字段未启用写前稳定",
+        }
+
+    started_at = time.perf_counter()
+    wait_seconds = max(float(field.get("pre_write_stabilize_wait") or 0.0), 0.0)
+    if wait_seconds:
+        time.sleep(wait_seconds)
+    if (
+        not field.get("pre_write_stabilize_refocus")
+        and (previous_focus or {}).get("ok")
+        and (previous_navigation or {}).get("ok")
+    ):
+        return {
+            "ok": True,
+            "skipped": False,
+            "method": "reuse-current-focus",
+            "seconds": round(time.perf_counter() - started_at, 3),
+            "wait_seconds": wait_seconds,
+            "row": int(row_index),
+            "col": int(field["col"]),
+            "focus": previous_focus,
+            "navigation": previous_navigation,
+            "reason": "已复用刚完成的目标单元格定位，未重复请求 JAB 选中",
+        }
+    focus, navigation = focus_entry_for_field(
+        jab,
+        located,
+        table_window,
+        row_index,
+        field,
+    )
+    ok = bool(focus.get("ok")) and bool(navigation.get("ok"))
+    return {
+        "ok": ok,
+        "skipped": False,
+        "method": "refocus-only",
+        "seconds": round(time.perf_counter() - started_at, 3),
+        "wait_seconds": wait_seconds,
+        "row": int(row_index),
+        "col": int(field["col"]),
+        "focus": focus,
+        "navigation": navigation,
+        "reason": None
+        if ok
+        else (
+            focus.get("reason")
+            or navigation.get("reason")
+            or "写前稳定后重新定位目标单元格失败"
+        ),
+    }
+
+
+def write_field_value_to_focused_cell(
+    table_window,
+    value,
+    field,
+    recover_after_failure=None,
+):
+    commit_key = field.get("commit_key") or KEYBOARD_INPUT_COMMIT_KEY
+    return keyboard_write_selected_cell(
+        table_window,
+        value,
+        commit_key=commit_key,
+        clear_only=field.get("kind") == "blank",
+        accept_key=field.get("accept_key"),
+        typing_interval=field.get("typing_interval", 0.0),
+        edit_mode=field.get("edit_mode", "editor"),
+        input_mode=field.get("input_mode", "paste"),
+        pre_input_key=field.get("pre_input_key"),
+        pre_input_wait=field.get("pre_input_wait", 0.0),
+        pre_commit_wait=field.get("pre_commit_wait", 0.025),
+        recover_after_failure=recover_after_failure,
+    )
+
+
+def sensitive_neighbor_cols(field):
+    cols = []
+    for col in field.get("sensitive_neighbor_cols") or []:
+        try:
+            cols.append(int(col))
+        except (TypeError, ValueError):
+            continue
+    return cols
+
+
+def capture_sensitive_neighbors(jab, located, row_index, field):
+    cols = sensitive_neighbor_cols(field)
+    if not cols:
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "字段未配置敏感邻列哨兵",
+        }
+    started_at = time.perf_counter()
+    snapshot, cells = read_row_cells(jab, row_index, located)
+    if not snapshot.get("ok"):
+        return {
+            "ok": False,
+            "skipped": False,
+            "seconds": round(time.perf_counter() - started_at, 3),
+            "cols": cols,
+            "reason": snapshot.get("reason") or "敏感邻列写前快照读取失败",
+            "snapshot": {
+                "ok": snapshot.get("ok"),
+                "fast_path": snapshot.get("fast_path"),
+                "semantic_fallback_used": snapshot.get("semantic_fallback_used"),
+                "path": snapshot.get("path"),
+                "row_count": snapshot.get("row_count"),
+                "col_count": snapshot.get("col_count"),
+                "reason": snapshot.get("reason"),
+            },
+        }
+    values = {str(col): cells.get(str(col)) for col in cols}
+    values[str(field["col"])] = cells.get(str(field["col"]))
+    return {
+        "ok": True,
+        "skipped": False,
+        "method": "sensitive-neighbor-snapshot",
+        "seconds": round(time.perf_counter() - started_at, 3),
+        "row": int(row_index),
+        "target_col": int(field["col"]),
+        "cols": cols,
+        "values": values,
+        "snapshot": {
+            "ok": snapshot.get("ok"),
+            "fast_path": snapshot.get("fast_path"),
+            "semantic_fallback_used": snapshot.get("semantic_fallback_used"),
+            "path": snapshot.get("path"),
+            "row_count": snapshot.get("row_count"),
+            "col_count": snapshot.get("col_count"),
+            "reason": snapshot.get("reason"),
+        },
+    }
+
+
+def validate_sensitive_neighbors_after_write(field, before_guard, cells):
+    cols = sensitive_neighbor_cols(field)
+    if not cols:
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "字段未配置敏感邻列哨兵",
+        }
+    if not before_guard or not before_guard.get("ok") or before_guard.get("skipped"):
+        return {
+            "ok": False,
+            "skipped": False,
+            "reason": "敏感邻列缺少写前快照，不能确认邻列未被污染",
+            "before": before_guard,
+        }
+    before_values = before_guard.get("values") or {}
+    changes = []
+    for col in cols:
+        key = str(col)
+        before = before_values.get(key)
+        after = cells.get(key)
+        if not cell_text_equivalent(before, after):
+            changes.append(
+                {"col": col, "before": before_values.get(key), "after": cells.get(key)}
+            )
+    return {
+        "ok": not changes,
+        "skipped": False,
+        "method": "sensitive-neighbor-compare",
+        "cols": cols,
+        "changes": changes,
+        "reason": None if not changes else f"敏感邻列疑似被写入/改动：{changes}",
+    }
+
+
+def detail_diagnostic_cells(cells, cols=DETAIL_DIAGNOSTIC_COLS):
+    return {str(col): (cells or {}).get(str(col)) for col in cols}
+
+
+def normalize_cell_text(value):
+    return str(value or "").strip()
+
+
+def cell_text_equivalent(left, right):
+    left_text = normalize_cell_text(left).replace(",", "")
+    right_text = normalize_cell_text(right).replace(",", "")
+    if left_text == right_text:
+        return True
+    if left_text and right_text:
+        try:
+            return Decimal(left_text) == Decimal(right_text)
+        except (InvalidOperation, ValueError):
+            return False
+    return False
+
+
 def current_col_after_commit(target_col, commit_key):
     key = commit_key or KEYBOARD_INPUT_COMMIT_KEY
     if str(key).lower() in {"enter", "right"}:
@@ -114,6 +417,157 @@ def current_col_after_commit(target_col, commit_key):
     if str(key).lower() == "left":
         return max(int(target_col) - 1, 0)
     return int(target_col)
+
+
+def verify_detail_field_now(jab, located, row_index, field, business):
+    started_at = time.perf_counter()
+    snapshot, cells = read_row_cells(jab, row_index, located)
+    actual = cells.get(str(field["col"]))
+    expected = field_expected_value(field, business)
+    ok = bool(snapshot.get("ok")) and field_matches(
+        actual,
+        str(business[field["value_key"]]),
+        field.get("kind"),
+    )
+    return {
+        "ok": ok,
+        "seconds": round(time.perf_counter() - started_at, 3),
+        "row": int(row_index),
+        "col": field["col"],
+        "name": field["name"],
+        "expected": expected,
+        "actual": actual,
+        "snapshot": {
+            "ok": snapshot.get("ok"),
+            "fast_path": snapshot.get("fast_path"),
+            "semantic_fallback_used": snapshot.get("semantic_fallback_used"),
+            "path": snapshot.get("path"),
+            "row_count": snapshot.get("row_count"),
+            "col_count": snapshot.get("col_count"),
+            "reason": snapshot.get("reason"),
+        },
+        "reason": None
+        if ok
+        else (
+            snapshot.get("reason")
+            or f"即时校验未匹配：字段={field['name']}，期望={expected!r}，实际={actual!r}"
+        ),
+        "cells": cells,
+    }
+
+
+def ensure_field_immediate_verified(
+    jab,
+    located,
+    table_window,
+    row_index,
+    field,
+    business,
+    first_attempt,
+    recover_after_failure=None,
+):
+    if not field.get("immediate_verify") or not first_attempt.get("ok"):
+        return first_attempt, None
+    max_attempts = max(int(field.get("immediate_verify_attempts") or 1), 1)
+    wait_seconds = max(float(field.get("immediate_verify_wait") or 0.0), 0.0)
+    verifications = []
+    rewrites = []
+    for attempt_index in range(max_attempts):
+        if wait_seconds:
+            time.sleep(wait_seconds)
+        verification = verify_detail_field_now(jab, located, row_index, field, business)
+        verification["attempt_index"] = attempt_index + 1
+        verification_cells = verification.pop("cells", {}) or {}
+        neighbor_guard_after = validate_sensitive_neighbors_after_write(
+            field,
+            first_attempt.get("neighbor_guard_before"),
+            verification_cells,
+        )
+        verification["neighbor_guard_after"] = neighbor_guard_after
+        if verification.get("ok") and not neighbor_guard_after.get("ok"):
+            verification["ok"] = False
+            verification["reason"] = neighbor_guard_after.get("reason")
+        if not verification.get("ok"):
+            verification["diagnostic_cells"] = detail_diagnostic_cells(
+                verification_cells
+            )
+        verifications.append(verification)
+        if verification.get("ok"):
+            return first_attempt, {
+                "ok": True,
+                "verified": True,
+                "field": field["name"],
+                "verifications": verifications,
+                "rewrites": rewrites,
+            }
+        if attempt_index >= max_attempts - 1:
+            break
+        focus, navigation = focus_entry_for_field(
+            jab,
+            located,
+            table_window,
+            row_index,
+            field,
+        )
+        activation = (
+            activate_field_before_write(jab, located, row_index, field)
+            if focus.get("ok") and navigation.get("ok")
+            else {"ok": False, "skipped": True, "reason": "定位或导航失败，未激活"}
+        )
+        if not focus.get("ok") or not navigation.get("ok") or not activation.get("ok"):
+            rewrites.append(
+                {
+                    "ok": False,
+                    "stage": "focus_or_navigation",
+                    "focus": focus,
+                    "navigation": navigation,
+                    "activation": activation,
+                    "reason": (
+                        focus.get("reason")
+                        or navigation.get("reason")
+                        or activation.get("reason")
+                    ),
+                }
+            )
+            break
+        screen = write_field_value_to_focused_cell(
+            table_window,
+            str(business[field["value_key"]]),
+            field,
+            recover_after_failure=recover_after_failure,
+        )
+        rewrites.append(
+            {
+                "ok": bool(screen.get("ok")),
+                "stage": "rewrite",
+                "focus": focus,
+                "navigation": navigation,
+                "activation": activation,
+                "screen_timing": screen.get("screen_timing"),
+                "screen_commit": screen.get("commit"),
+                "reason": screen.get("reason"),
+            }
+        )
+        if not screen.get("ok"):
+            break
+    failed = dict(first_attempt)
+    failed["ok"] = False
+    failed["input_ok"] = False
+    failed["commit_ok"] = False
+    failed["input_reason"] = (
+        (verifications[-1] if verifications else {}).get("reason")
+        or (rewrites[-1] if rewrites else {}).get("reason")
+        or f"{field['name']} 即时校验失败"
+    )
+    failed["commit_reason"] = failed["input_reason"]
+    return failed, {
+        "ok": False,
+        "verified": False,
+        "field": field["name"],
+        "verifications": verifications,
+        "rewrites": rewrites,
+        "reason": failed["input_reason"],
+    }
 
 
 def write_detail_line_by_screen(
@@ -177,6 +631,18 @@ def write_detail_line_by_screen(
             commit_col = attempt.get("commit_col")
             if commit_col is not None:
                 current_col = int(commit_col)
+        attempt, immediate_verify = ensure_field_immediate_verified(
+            jab,
+            located,
+            table_window,
+            row_index,
+            field,
+            business,
+            attempt,
+            recover_after_failure=recover_after_failure,
+        )
+        if immediate_verify is not None:
+            step["immediate_verify"] = immediate_verify
         step["attempts"].append(attempt)
         step["input_ok"] = bool(attempt.get("input_ok"))
         step["target"] = attempt.get("target")
@@ -200,7 +666,14 @@ def write_detail_line_by_screen(
         if not attempt.get("ok"):
             break
     for step in steps:
-        step["ok"] = bool(step.get("input_ok"))
+        immediate_verify = step.get("immediate_verify")
+        if immediate_verify is not None:
+            step_ok = bool(step.get("input_ok")) and bool(immediate_verify.get("ok"))
+            if not step_ok and not step.get("reason"):
+                step["reason"] = immediate_verify.get("reason")
+        else:
+            step_ok = bool(step.get("input_ok"))
+        step["ok"] = step_ok
         step["blocked"] = not step["ok"]
         step["reason"] = None if step["ok"] else step.get("reason")
         step["actual"] = None

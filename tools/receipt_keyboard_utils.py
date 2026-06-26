@@ -22,9 +22,12 @@ VK_CONTROL = 0x11
 VK_A = 0x41
 VK_D = 0x44
 VK_I = 0x49
+VK_N = 0x4E
+VK_Q = 0x51
 VK_C = 0x43
 VK_S = 0x53
 VK_V = 0x56
+VK_Y = 0x59
 VK_MENU = 0x12
 
 
@@ -190,10 +193,31 @@ def send_hotkey_ctrl_s():
     send_virtual_key(VK_CONTROL, key_up=True)
 
 
+def send_hotkey_ctrl_q():
+    send_virtual_key(VK_CONTROL, key_up=False)
+    send_virtual_key(VK_Q, key_up=False)
+    send_virtual_key(VK_Q, key_up=True)
+    send_virtual_key(VK_CONTROL, key_up=True)
+
+
 def send_hotkey_alt_c():
     send_virtual_key(VK_MENU, key_up=False)
     send_virtual_key(VK_C, key_up=False)
     send_virtual_key(VK_C, key_up=True)
+    send_virtual_key(VK_MENU, key_up=True)
+
+
+def send_hotkey_alt_y():
+    send_virtual_key(VK_MENU, key_up=False)
+    send_virtual_key(VK_Y, key_up=False)
+    send_virtual_key(VK_Y, key_up=True)
+    send_virtual_key(VK_MENU, key_up=True)
+
+
+def send_hotkey_alt_n():
+    send_virtual_key(VK_MENU, key_up=False)
+    send_virtual_key(VK_N, key_up=False)
+    send_virtual_key(VK_N, key_up=True)
     send_virtual_key(VK_MENU, key_up=True)
 
 

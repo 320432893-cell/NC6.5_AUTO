@@ -1,7 +1,7 @@
 # 生命周期：T0 一次性（删除条件：确认多窗口收款单表头 scope 规则后删除）
 # 覆盖的业务阶段：收款单自制页多窗口 JAB scope 只读探测
 # 依赖的服务/环境：Windows Python、NC 前台、多窗口/多页签现场、Java Access Bridge
-# 运行方式：python tools/probe_receipt_header_scopes.py
+# 运行方式：python tools/archive/probe_receipt_header_scopes.py
 
 import ctypes
 import json
@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any, cast
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 

@@ -250,6 +250,8 @@ def keyboard_write_selected_cell(
     typing_interval=0.0,
     edit_mode="editor",
     input_mode="paste",
+    pre_input_key=None,
+    pre_input_wait=0.0,
     pre_commit_wait=0.025,
     recover_after_failure=None,
     _recovery_retry=False,
@@ -258,6 +260,7 @@ def keyboard_write_selected_cell(
         "guard_seconds": 0.0,
         "edit_prepare_seconds": 0.0,
         "clear_seconds": 0.0,
+        "pre_input_seconds": 0.0,
         "clipboard_read_seconds": 0.0,
         "clipboard_set_seconds": 0.0,
         "paste_send_seconds": 0.0,
@@ -295,6 +298,8 @@ def keyboard_write_selected_cell(
             typing_interval=typing_interval,
             edit_mode=edit_mode,
             input_mode=input_mode,
+            pre_input_key=pre_input_key,
+            pre_input_wait=pre_input_wait,
             pre_commit_wait=pre_commit_wait,
             recover_after_failure=recover_after_failure,
             _recovery_retry=True,
@@ -319,6 +324,29 @@ def keyboard_write_selected_cell(
             timing["edit_prepare_seconds"] = round(
                 time.perf_counter() - edit_started, 4
             )
+        pre_input = None
+        if pre_input_key:
+            pre_input_started = time.perf_counter()
+            pre_input = guarded_press_virtual_key(table_window, pre_input_key)
+            if pre_input.get("ok") and float(pre_input_wait or 0) > 0:
+                time.sleep(float(pre_input_wait or 0))
+            timing["pre_input_seconds"] = round(
+                time.perf_counter() - pre_input_started, 4
+            )
+            if not pre_input.get("ok"):
+                return retry_current_cell_after_failure(
+                    {
+                        **guard,
+                        "ok": False,
+                        "mode": "keyboard",
+                        "clear_only": clear_only,
+                        "pre_input": pre_input,
+                        "accept_key": accept_key,
+                        "commit_key": commit_key,
+                        "screen_timing": timing,
+                        "reason": pre_input.get("reason"),
+                    }
+                )
         clear = None
         if clear_only:
             clear_started = time.perf_counter()
@@ -438,10 +466,13 @@ def keyboard_write_selected_cell(
         "typing_interval": float(typing_interval or 0),
         "edit_mode": edit_mode,
         "input_mode": input_mode,
+        "pre_input_key": pre_input_key,
+        "pre_input_wait": float(pre_input_wait or 0),
         "pre_commit_wait": float(pre_commit_wait or 0),
         "retry_modal_recovery": retry_recovery,
         "clipboard_restored": clipboard_restored,
         "accept": accept,
+        "pre_input": pre_input,
         "commit_key": commit_key,
         "commit": commit,
         "screen_timing": timing,

@@ -33,8 +33,6 @@ FINANCE_ORG_LABEL_SUFFIX_VARIANTS = (
     ("observed-compact", FINANCE_ORG_COMPACT_LABEL_SUFFIX),
     ("configured-builder", FINANCE_ORG_LABEL_SUFFIX),
 )
-FINANCE_ORG_WRITE_PREFIX_BASE = "0.0.0.0.1.0.0.0.0"
-FINANCE_ORG_WRITE_TEXT_SUFFIX = "0.0.0.1.1.0.0.0.0.1.1.1.0"
 HEADER_LIVE_SEMANTIC_FALLBACK_TIMEOUT = 0.35
 HEADER_FORM_TEXT_INDEXES = {
     "单据日期": 5,
@@ -42,9 +40,8 @@ HEADER_FORM_TEXT_INDEXES = {
     "收款银行账户": 15,
     "客户": 17,
     "结算方式": 31,
-}
-RECEIPT_EXTRA_TEXT_FIELD_SUFFIXES = {
-    "商务领款备忘": "0.0.0.1.1.0.0.0.0.1.0.2.0.0.0.0.0.0.0.49.0",
+    "备注": 45,
+    "商务领款备忘": 49,
 }
 HEADER_REQUIRED_LABELS = ("财务组织", "客户", "单据日期", "币种", "结算方式")
 HEADER_LABEL_ALIASES = {
@@ -226,9 +223,7 @@ def fill_header(
         ]
     dynamic_index = scope.get("dynamic_index")
     scope_hwnd = scope.get("scope_hwnd")
-    learned_header_template = get_receipt_header_path_template(
-        dynamic_index
-    ) or receipt_header_default_path_template()
+    learned_header_template = get_receipt_header_path_template(dynamic_index)
     header_currency = business.get("header_currency_code") or business.get("currency")
     header_currency_accepts = currency_acceptance_texts(
         header_currency,
@@ -277,6 +272,7 @@ def fill_header(
                 accepted_text=field.get("accepted_text"),
                 recover_after_failure=recover_after_failure,
                 path_template=learned_header_template,
+                header_scope=scope,
             )
             ok = bool(result.get("ok"))
             if ok and label != HEADER_SCOPE_ANCHOR_LABEL:
@@ -628,27 +624,12 @@ def find_finance_org_header_scope_by_paths(
                 }
             finally:
                 jab.release_contexts(text_vm_id, text_owned_contexts)
-            correction = correct_header_dynamic_index_by_customer_paths(
-                jab,
-                scope_hwnd,
-                dynamic_index,
-            )
-            header_dynamic_index = (
-                correction.get("dynamic_index")
-                if correction.get("ok")
-                else dynamic_index
-            )
-            corrected = bool(header_dynamic_index != dynamic_index)
             return {
                 "ok": True,
                 "scope_hwnd": scope_hwnd,
-                "mode": (
-                    "finance-org-dynamic-path-corrected-by-customer"
-                    if corrected
-                    else "finance-org-dynamic-path-scan"
-                ),
-                "dynamic_index": header_dynamic_index,
-                "dynamic_prefix": receipt_header_dynamic_prefix(header_dynamic_index),
+                "mode": "finance-org-dynamic-path-scan",
+                "dynamic_index": dynamic_index,
+                "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
                 "finance_org_dynamic_index": dynamic_index,
                 "finance_org_dynamic_prefix": receipt_header_dynamic_prefix(
                     dynamic_index
@@ -663,7 +644,11 @@ def find_finance_org_header_scope_by_paths(
                 "variant": variant,
                 "attempts": attempts,
                 "shallow_semantic_attempt": shallow,
-                "customer_index_correction": correction,
+                "customer_index_correction": {
+                    "ok": True,
+                    "skipped": True,
+                    "reason": "正式链路不再用客户 path 猜测校正财务组织 dynamic_index",
+                },
                 "seconds": round(time.perf_counter() - started_at, 3),
                 "preferred_dynamic_index": preferred_dynamic_index,
             }
@@ -688,7 +673,8 @@ def find_finance_org_header_scope_by_shallow_semantic(
     max_nodes=800,
 ):
     started_at = time.perf_counter()
-    if not scope_hwnd or not hasattr(jab.dll, "getAccessibleContextFromHWND"):
+    dll = getattr(jab, "dll", None)
+    if not scope_hwnd or not dll or not hasattr(dll, "getAccessibleContextFromHWND"):
         return {
             "ok": False,
             "mode": "finance-org-shallow-semantic",
@@ -753,28 +739,13 @@ def find_finance_org_header_scope_by_shallow_semantic(
                     HEADER_SCOPE_ANCHOR_LABEL,
                     canonical_label_path or path,
                 )
-                correction = correct_header_dynamic_index_by_customer_paths(
-                    jab,
-                    scope_hwnd,
-                    dynamic_index,
-                )
-                header_dynamic_index = (
-                    correction.get("dynamic_index")
-                    if correction.get("ok")
-                    else dynamic_index
-                )
-                corrected = bool(header_dynamic_index != dynamic_index)
                 return {
                     "ok": True,
                     "scope_hwnd": scope_hwnd,
-                    "mode": (
-                        "finance-org-shallow-semantic-corrected-by-customer"
-                        if corrected
-                        else "finance-org-shallow-semantic"
-                    ),
-                    "dynamic_index": header_dynamic_index,
+                    "mode": "finance-org-shallow-semantic",
+                    "dynamic_index": dynamic_index,
                     "dynamic_prefix": receipt_header_dynamic_prefix(
-                        header_dynamic_index
+                        dynamic_index
                     ),
                     "finance_org_dynamic_index": dynamic_index,
                     "finance_org_dynamic_prefix": receipt_header_dynamic_prefix(
@@ -791,7 +762,11 @@ def find_finance_org_header_scope_by_shallow_semantic(
                         ).strip(),
                     },
                     "variant": "shallow-semantic",
-                    "customer_index_correction": correction,
+                    "customer_index_correction": {
+                        "ok": True,
+                        "skipped": True,
+                        "reason": "正式链路不再用客户 path 猜测校正财务组织 dynamic_index",
+                    },
                     "scanned_nodes": scanned,
                     "max_nodes": max_nodes,
                     "max_depth": max_depth,
@@ -1090,28 +1065,11 @@ def set_receipt_header_dynamic_field(
     accepted_text=None,
     recover_after_failure=None,
     path_template=None,
+    header_scope=None,
 ):
     total_started_at = time.perf_counter()
     legacy_control_name_attempt = None
     if label == HEADER_SCOPE_ANCHOR_LABEL:
-        dynamic_write_attempt = set_finance_org_by_write_path(
-            jab,
-            value,
-            scope_hwnd=scope_hwnd,
-            accepted_text=accepted_text,
-            recover_after_failure=recover_after_failure,
-            preferred_write_index=dynamic_index,
-        )
-        if dynamic_write_attempt.get("ok"):
-            return {
-                **dynamic_write_attempt,
-                "dynamic_index": dynamic_index,
-                "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
-                "timing": {
-                    **(dynamic_write_attempt.get("timing") or {}),
-                    "total_seconds": round(time.perf_counter() - total_started_at, 3),
-                },
-            }
         legacy_control_name_attempt = set_finance_org_by_legacy_control_name(
             jab,
             value,
@@ -1122,7 +1080,6 @@ def set_receipt_header_dynamic_field(
             **legacy_control_name_attempt,
             "dynamic_index": dynamic_index,
             "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
-            "dynamic_write_attempt": dynamic_write_attempt,
             "timing": {
                 **(legacy_control_name_attempt.get("timing") or {}),
                 "total_seconds": round(time.perf_counter() - total_started_at, 3),
@@ -1130,17 +1087,44 @@ def set_receipt_header_dynamic_field(
         }
 
     def find_by_path():
-        path_found = find_receipt_header_field_by_dynamic_path(
-            jab,
-            label,
-            dynamic_index,
-            scope_hwnd=scope_hwnd,
-            require_showing=False,
-            require_valid_bounds=False,
-            path_template=path_template,
-        )
-        if path_found.get("ok"):
-            return path_found
+        path_found = None
+        if path_template:
+            path_found = find_receipt_header_field_by_dynamic_path(
+                jab,
+                label,
+                dynamic_index,
+                scope_hwnd=scope_hwnd,
+                require_showing=False,
+                require_valid_bounds=False,
+                path_template=path_template,
+            )
+            if path_found.get("ok"):
+                return path_found
+        elif label != "客户":
+            path_found = find_receipt_header_field_by_dynamic_path(
+                jab,
+                label,
+                dynamic_index,
+                scope_hwnd=scope_hwnd,
+                require_showing=False,
+                require_valid_bounds=False,
+                path_template=None,
+            )
+            if path_found.get("ok"):
+                return path_found
+
+        container_found = None
+        if label == "客户" and not path_template:
+            container_found = find_receipt_header_field_by_finance_org_container(
+                jab,
+                label,
+                dynamic_index,
+                scope_hwnd=scope_hwnd,
+                header_scope=header_scope,
+            )
+            if container_found.get("ok"):
+                return container_found
+
         live_found = find_receipt_header_field_by_live_semantic(
             jab,
             label,
@@ -1150,12 +1134,17 @@ def set_receipt_header_dynamic_field(
         )
         if live_found.get("ok"):
             live_found["dynamic_path_attempt"] = path_found
+            if container_found is not None:
+                live_found["container_attempt"] = slim_locator_attempt(container_found)
             return live_found
-        return {
+        result = {
             **live_found,
             "dynamic_path_attempt": path_found,
             "live_semantic_timeout": HEADER_LIVE_SEMANTIC_FALLBACK_TIMEOUT,
         }
+        if container_found is not None:
+            result["container_attempt"] = slim_locator_attempt(container_found)
+        return result
 
     recovery_after_find = None
     resolve_started_at = time.perf_counter()
@@ -1193,6 +1182,7 @@ def set_receipt_header_dynamic_field(
             "ok": False,
             "stage": "resolve",
             "path_attempt": path_attempt,
+            "container_attempt": found.get("container_attempt"),
             "modal_recovery": recovery_after_find,
             "legacy_control_name_attempt": legacy_control_name_attempt,
         }
@@ -1414,239 +1404,6 @@ def write_header_context_with_guarded_paste(
     }
 
 
-def set_finance_org_by_write_path(
-    jab,
-    value,
-    scope_hwnd=None,
-    accepted_text=None,
-    recover_after_failure=None,
-    preferred_write_index=None,
-):
-    total_started_at = time.perf_counter()
-    accepted_text = accepted_text or FINANCE_ORG_ACCEPTED_TEXT
-    resolve_started_at = time.perf_counter()
-    found = find_finance_org_write_field_by_path(
-        jab,
-        scope_hwnd=scope_hwnd,
-        preferred_write_index=preferred_write_index,
-        require_showing=False,
-        require_valid_bounds=False,
-    )
-    resolve_seconds = round(time.perf_counter() - resolve_started_at, 3)
-    if not found.get("ok"):
-        return {
-            "ok": False,
-            "method": "finance-org-write-path-guarded-paste-enter",
-            "source": "finance-org-write-path",
-            "stage": "resolve",
-            "reason": found.get("reason") or "finance org write path not found",
-            "scope_hwnd": scope_hwnd,
-            "preferred_write_index": preferred_write_index,
-            "path_attempt": found,
-            "timing": {
-                "resolve_seconds": resolve_seconds,
-                "total_seconds": round(time.perf_counter() - total_started_at, 3),
-            },
-        }
-    context = found["context"]
-    vm_id = found["vm_id"]
-    owned_contexts = found["owned_contexts"]
-    try:
-        result = write_header_context_with_guarded_paste(
-            jab,
-            vm_id,
-            context,
-            found.get("window"),
-            value,
-            accepted_text=accepted_text,
-            found=found,
-            path_attempt=found,
-            resolve_seconds=resolve_seconds,
-            total_started_at=total_started_at,
-            recover_after_failure=recover_after_failure,
-        )
-        result["method"] = "finance-org-write-path-guarded-paste-enter"
-        result["control_name"] = HEADER_SCOPE_ANCHOR_TEXT
-        result["scope_hwnd"] = scope_hwnd
-        result["preferred_write_index"] = preferred_write_index
-        if result.get("ok"):
-            cache_finance_org_write_path(
-                jab,
-                scope_hwnd,
-                found.get("write_index"),
-                found.get("path"),
-            )
-        return result
-    finally:
-        jab.release_contexts(vm_id, owned_contexts)
-
-
-def build_finance_org_write_path(write_index):
-    if write_index is None:
-        return None
-    return (
-        f"{FINANCE_ORG_WRITE_PREFIX_BASE}.{int(write_index)}."
-        f"{FINANCE_ORG_WRITE_TEXT_SUFFIX}"
-    )
-
-
-def get_finance_org_write_path_cache(jab):
-    cache = getattr(jab, "_finance_org_write_path_cache", None)
-    if isinstance(cache, dict):
-        return cache
-    cache = {}
-    try:
-        setattr(jab, "_finance_org_write_path_cache", cache)
-    except AttributeError:
-        pass
-    return cache
-
-
-def cache_finance_org_write_path(jab, scope_hwnd, write_index, path):
-    if write_index is None:
-        return None
-    cache = get_finance_org_write_path_cache(jab)
-    key = int(scope_hwnd) if scope_hwnd is not None else None
-    value = {
-        "ok": True,
-        "scope_hwnd": scope_hwnd,
-        "write_index": int(write_index),
-        "path": path,
-        "dynamic_prefix": f"{FINANCE_ORG_WRITE_PREFIX_BASE}.{int(write_index)}",
-    }
-    cache[key] = value
-    cache["last"] = value
-    return value
-
-
-def finance_org_write_text_info_matches(info):
-    if not info:
-        return False
-    role = (
-        str(getattr(info, "role_en_US", "") or "").strip()
-        or str(getattr(info, "role", "") or "").strip()
-    ).lower()
-    if role != "text":
-        return False
-    states = (
-        str(getattr(info, "states_en_US", "") or "").strip()
-        or str(getattr(info, "states", "") or "").strip()
-    ).lower()
-    if "editable" not in states:
-        return False
-    return finance_org_label_info_matches(info)
-
-
-def find_finance_org_write_field_by_path(
-    jab,
-    scope_hwnd=None,
-    preferred_write_index=None,
-    min_index=1,
-    max_index=10,
-    require_showing=True,
-    require_valid_bounds=True,
-):
-    attempts = []
-    scope_pid = get_window_pid(jab, scope_hwnd)
-    cache = get_finance_org_write_path_cache(jab)
-    cache_key = int(scope_hwnd) if scope_hwnd is not None else None
-    cached = cache.get(cache_key) or cache.get("last") or cache.get(None) or {}
-    indexes = []
-    nearby_candidates = []
-    try:
-        preferred_int = int(preferred_write_index)
-    except (TypeError, ValueError):
-        preferred_int = None
-    try:
-        cached_int = int(cached.get("write_index"))
-    except (TypeError, ValueError):
-        cached_int = None
-    for seed in (cached_int, preferred_int):
-        if seed is not None:
-            nearby_candidates.extend([seed, seed + 1, seed + 2, seed - 1, seed - 2])
-    for candidate in (cached.get("write_index"), preferred_write_index, *nearby_candidates):
-        if candidate is None:
-            continue
-        try:
-            value = int(candidate)
-        except (TypeError, ValueError):
-            continue
-        if value not in indexes:
-            indexes.append(value)
-    for index in range(int(min_index), int(max_index) + 1):
-        if index not in indexes:
-            indexes.append(index)
-    for write_index in indexes:
-        path = build_finance_org_write_path(write_index)
-        context, vm_id, owned_contexts, window_info = jab.find_context_by_path_once(
-            path,
-            scope_hwnd=None,
-            role="text",
-            require_showing=require_showing,
-            require_valid_bounds=require_valid_bounds,
-        )
-        info = None
-        matches = False
-        pid_matches = bool(
-            scope_pid is None
-            or not (window_info or {}).get("pid")
-            or int((window_info or {}).get("pid")) == int(scope_pid)
-        )
-        if context:
-            try:
-                info = jab.get_context_info(vm_id, context)
-                matches = bool(pid_matches and finance_org_write_text_info_matches(info))
-                if matches:
-                    return {
-                        "ok": True,
-                        "context": context,
-                        "vm_id": vm_id,
-                        "owned_contexts": owned_contexts,
-                        "path": path,
-                        "label_path": None,
-                        "window": window_info,
-                        "dynamic_index": write_index,
-                        "dynamic_prefix": f"{FINANCE_ORG_WRITE_PREFIX_BASE}.{write_index}",
-                        "write_index": write_index,
-                        "source": "finance-org-write-path",
-                        "attempts": attempts
-                        + [
-                            {
-                                "write_index": write_index,
-                                "path": path,
-                                "found": True,
-                                "matches": True,
-                            }
-                        ],
-                    }
-            finally:
-                if not matches:
-                    jab.release_contexts(vm_id, owned_contexts)
-        attempts.append(
-            {
-                "write_index": write_index,
-                "path": path,
-                "found": bool(context),
-                "matches": bool(matches),
-                "pid_matches": bool(pid_matches),
-                "window": window_info,
-                "name": str(getattr(info, "name", "") or "").strip()
-                if info
-                else "",
-                "description": str(getattr(info, "description", "") or "").strip()
-                if info
-                else "",
-            }
-        )
-    return {
-        "ok": False,
-        "reason": "finance org write path not found",
-        "scope_hwnd": scope_hwnd,
-        "attempts": attempts,
-        "cached": cached,
-    }
-
-
 def get_window_pid(jab, hwnd):
     if hwnd is None or os.name != "nt":
         return None
@@ -1671,6 +1428,17 @@ def find_receipt_header_field_by_live_semantic(
     timeout=HEADER_LIVE_SEMANTIC_FALLBACK_TIMEOUT,
     include_scoped=False,
 ):
+    scoped_fast = None
+    if scope_hwnd is not None:
+        scoped_fast = find_receipt_header_field_by_scoped_label(
+            jab,
+            label,
+            scope_hwnd=scope_hwnd,
+        )
+        if scoped_fast.get("ok"):
+            scoped_fast["source"] = "scoped-label-fast-before-semantic"
+            return scoped_fast
+
     found = find_receipt_header_field_by_semantic_label(
         jab,
         label,
@@ -1679,12 +1447,15 @@ def find_receipt_header_field_by_live_semantic(
     )
     if found.get("ok"):
         found["source"] = "semantic-live-after-path-miss"
+        if scoped_fast is not None:
+            found["scoped_fast_attempt"] = scoped_fast
         return found
     if not include_scoped:
         return {
             **found,
             "source": "semantic-live-after-path-miss",
             "timeout": timeout,
+            "scoped_fast_attempt": scoped_fast,
         }
     scoped_found = find_receipt_header_field_by_scoped_label(
         jab,
@@ -1699,6 +1470,7 @@ def find_receipt_header_field_by_live_semantic(
         **scoped_found,
         "source": "semantic-live-after-path-miss",
         "semantic_label_attempt": found,
+        "scoped_fast_attempt": scoped_fast,
     }
 
 
@@ -2035,6 +1807,144 @@ def find_receipt_header_field_by_semantic_label(
     }
 
 
+def find_receipt_header_field_by_finance_org_container(
+    jab,
+    label,
+    dynamic_index,
+    scope_hwnd=None,
+    header_scope=None,
+):
+    anchor_paths = []
+    for key in ("semantic_label_path", "label_path"):
+        value = (header_scope or {}).get(key)
+        if value and value not in anchor_paths:
+            anchor_paths.append(value)
+    if not anchor_paths:
+        return {
+            "ok": False,
+            "label": label,
+            "source": "finance-org-container-label-following-text",
+            "reason": "finance org label path missing",
+            "dynamic_index": dynamic_index,
+            "scope_hwnd": scope_hwnd,
+        }
+    attempts = []
+    for anchor_path in anchor_paths:
+        for container_path in header_container_candidates_from_anchor(anchor_path):
+            if any(item.get("container_path") == container_path for item in attempts):
+                continue
+            attempt = find_label_following_text_from_container(
+                jab,
+                label,
+                container_path,
+                dynamic_index,
+                scope_hwnd=scope_hwnd,
+            )
+            attempts.append(attempt)
+            if attempt.get("ok"):
+                return {
+                    **attempt,
+                    "source": "finance-org-container-label-following-text",
+                    "anchor_paths": anchor_paths,
+                    "attempts": [slim_locator_attempt(item) for item in attempts],
+                }
+    return {
+        "ok": False,
+        "label": label,
+        "source": "finance-org-container-label-following-text",
+        "reason": "finance org container label-following text not found",
+        "dynamic_index": dynamic_index,
+        "scope_hwnd": scope_hwnd,
+        "anchor_paths": anchor_paths,
+        "attempts": [slim_locator_attempt(item) for item in attempts],
+    }
+
+
+def header_container_candidates_from_anchor(anchor_path):
+    parts = split_header_path(anchor_path)
+    if len(parts) < 4:
+        return []
+    candidates = []
+    for keep in (2, 3, 4, 5, 6):
+        if len(parts) > keep:
+            path = ".".join(str(part) for part in parts[:-keep])
+            if path and path not in candidates:
+                candidates.append(path)
+    return candidates
+
+
+def find_label_following_text_from_container(
+    jab,
+    label,
+    container_path,
+    dynamic_index,
+    scope_hwnd=None,
+):
+    context, vm_id, owned_contexts, window_info = jab.find_context_by_path_once(
+        container_path,
+        class_name="SunAwtCanvas",
+        scope_hwnd=scope_hwnd,
+        require_showing=False,
+        require_valid_bounds=False,
+    )
+    if not context:
+        return {
+            "ok": False,
+            "label": label,
+            "container_path": container_path,
+            "reason": "container path not found",
+        }
+    result = find_label_following_text(
+        jab,
+        vm_id,
+        context,
+        label,
+        container_path,
+        depth=0,
+        owned_contexts=list(owned_contexts or []),
+    )
+    if not result:
+        jab.release_contexts(vm_id, owned_contexts)
+        return {
+            "ok": False,
+            "label": label,
+            "container_path": container_path,
+            "reason": "label-following text not found in container",
+        }
+    text_context, owned, text_path, label_path = result
+    return {
+        "ok": True,
+        "label": label,
+        "context": text_context,
+        "vm_id": vm_id,
+        "owned_contexts": owned,
+        "path": text_path,
+        "label_path": label_path,
+        "window": window_info,
+        "dynamic_index": dynamic_index,
+        "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
+        "container_path": container_path,
+    }
+
+
+def slim_locator_attempt(found):
+    if not isinstance(found, dict):
+        return found
+    keys = (
+        "ok",
+        "source",
+        "reason",
+        "label",
+        "path",
+        "label_path",
+        "container_path",
+        "dynamic_index",
+        "dynamic_prefix",
+        "scope_hwnd",
+    )
+    return {key: found.get(key) for key in keys if key in found}
+
+
 def find_header_label_context_with_window(
     jab,
     label,
@@ -2246,14 +2156,6 @@ def receipt_header_dynamic_prefix(dynamic_index):
     return f"{HEADER_DYNAMIC_PREFIX_BASE}.{dynamic_index}"
 
 
-def receipt_header_default_path_template():
-    return {
-        "source": "default-header-template",
-        "text_suffix_template": HEADER_COMMON_SUFFIX_TEMPLATE,
-        "label_suffix_template": HEADER_COMMON_LABEL_SUFFIX_TEMPLATE,
-    }
-
-
 def set_receipt_header_path_template(dynamic_index, template):
     if dynamic_index is None or not template:
         return None
@@ -2441,10 +2343,7 @@ def find_finance_org_field_by_dynamic_path(
 
 
 def build_receipt_extra_text_field_path(dynamic_index, label):
-    suffix = RECEIPT_EXTRA_TEXT_FIELD_SUFFIXES.get(label)
-    if dynamic_index is None or not suffix:
-        return None
-    return f"{receipt_header_dynamic_prefix(dynamic_index)}.{suffix}"
+    return build_receipt_header_dynamic_path(dynamic_index, label)
 
 
 def find_receipt_extra_text_field_by_dynamic_path(
@@ -2455,43 +2354,17 @@ def find_receipt_extra_text_field_by_dynamic_path(
     require_showing=True,
     require_valid_bounds=True,
 ):
-    text_path = build_receipt_extra_text_field_path(dynamic_index, label)
-    if not text_path:
-        return {
-            "ok": False,
-            "reason": "extra text field dynamic path not configured",
-            "label": label,
-            "dynamic_index": dynamic_index,
-        }
-    context, vm_id, owned_contexts, window_info = jab.find_context_by_path_once(
-        text_path,
-        class_name="SunAwtCanvas",
+    found = find_receipt_header_field_by_dynamic_path(
+        jab,
+        label,
+        dynamic_index,
         scope_hwnd=scope_hwnd,
-        role="text",
         require_showing=require_showing,
         require_valid_bounds=require_valid_bounds,
     )
-    if not context:
-        return {
-            "ok": False,
-            "reason": "extra text field dynamic path not found",
-            "label": label,
-            "path": text_path,
-            "dynamic_index": dynamic_index,
-            "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
-        }
-    return {
-        "ok": True,
-        "label": label,
-        "context": context,
-        "vm_id": vm_id,
-        "owned_contexts": owned_contexts,
-        "path": text_path,
-        "window": window_info,
-        "dynamic_index": dynamic_index,
-        "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
-        "source": "dynamic-path",
-    }
+    if found.get("ok"):
+        found["source"] = "dynamic-path"
+    return found
 
 
 def infer_receipt_extra_text_field_suffix(path, dynamic_index):

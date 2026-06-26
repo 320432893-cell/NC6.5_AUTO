@@ -10,6 +10,7 @@ from core.receipt_parsing import normalize_lookup_key, parse_date
 
 DEFAULT_EXCEL_TEXT_FIELD_MAPPINGS = (
     {"excel_column": "🔷订单PI匹配", "nc_field": "商务领款备忘"},
+    {"excel_column": "🔹NC备注", "nc_field": "备注"},
 )
 ALLOWED_EXCEL_TEXT_FIELD_NC_FIELDS = {
     item["nc_field"] for item in DEFAULT_EXCEL_TEXT_FIELD_MAPPINGS

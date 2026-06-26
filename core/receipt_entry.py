@@ -1,3 +1,6 @@
+import os
+from pathlib import Path
+
 import openpyxl
 
 from core.errors import ExcelLockedError, WorkflowStateError
@@ -73,7 +76,33 @@ class ReceiptEntryWorkbook:
         workbook_path = excel_path or self.config.excel_cfg.get("path")
         if not workbook_path:
             raise WorkflowStateError("receipt_entry.excel.path is required")
-        self.excel_path = str(workbook_path)
+        self.excel_path = str(self._resolve_workbook_path(workbook_path))
+
+    @staticmethod
+    def _resolve_workbook_path(workbook_path):
+        path = Path(str(workbook_path))
+        if path.exists():
+            return path
+        if path.is_absolute():
+            return path
+
+        name = path.name
+        candidates = [Path.cwd() / path]
+        downloads_roots = []
+        home = Path.home()
+        downloads_roots.append(home / "Downloads")
+        userprofile = os.environ.get("USERPROFILE")
+        if userprofile:
+            downloads_roots.append(Path(userprofile) / "Downloads")
+        if os.environ.get("HOME", "").startswith("/home/"):
+            username = Path(os.environ["HOME"]).name
+            downloads_roots.append(Path("/mnt/c/Users") / username / "Downloads")
+        for root in downloads_roots:
+            candidates.append(root / name)
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        return path
 
     def preview_rows(self, today=None):
         wb = openpyxl.load_workbook(self.excel_path, read_only=False, data_only=True)

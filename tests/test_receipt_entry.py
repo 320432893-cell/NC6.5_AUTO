@@ -294,6 +294,68 @@ def test_build_local_plan_reads_extra_text_field_mapping(tmp_path):
     assert rows[1].extra_text_fields == {}
 
 
+def test_build_local_plan_reads_default_remark_extra_text_mapping(tmp_path):
+    path = tmp_path / "payments.xlsx"
+    config = receipt_config(path)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "💸Payments来款通知"
+    ws.append(
+        [
+            "到款日期",
+            "🟪银行来款名",
+            "🟪原始金额",
+            "银行",
+            "币种",
+            "客户编码",
+            "手续费",
+            "🔹NC备注",
+        ]
+    )
+    ws.append([date(2026, 6, 1), "OK INC", 100, "Paypal", "USD", "YW001", 0, "R-001"])
+    wb.save(path)
+    wb.close()
+
+    rows, issues, _summary = ReceiptEntryWorkbook(config).build_local_plan()
+
+    assert issues == []
+    assert rows[0].extra_text_fields == {"备注": "R-001"}
+
+
+def test_receipt_entry_workbook_resolves_relative_missing_excel_from_downloads(
+    tmp_path, monkeypatch
+):
+    downloads = tmp_path / "Downloads"
+    downloads.mkdir()
+    excel = downloads / "sample.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "💸Payments来款通知"
+    ws.append(
+        [
+            "到款日期",
+            "🟪银行来款名",
+            "🟪原始金额",
+            "银行",
+            "币种",
+            "客户编码",
+            "手续费",
+        ]
+    )
+    ws.append([date(2026, 6, 1), "OK INC", 100, "Paypal", "USD", "YW001", 0])
+    wb.save(excel)
+    wb.close()
+
+    monkeypatch.setattr("core.receipt_entry.Path.home", lambda: tmp_path)
+
+    workbook = ReceiptEntryWorkbook(
+        receipt_config("sample.xlsx"),
+        excel_path="sample.xlsx",
+    )
+
+    assert workbook.excel_path == str(excel)
+
+
 def test_build_local_plan_writes_machine_sheet2(tmp_path):
     path = tmp_path / "payments.xlsx"
     wb = Workbook()

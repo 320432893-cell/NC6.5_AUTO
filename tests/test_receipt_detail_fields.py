@@ -9,6 +9,7 @@ from tools.receipt_detail_fields import (
     cells_from_steps,
     field_matches,
     make_detail_step,
+    validate_exchange_rate_not_polluted,
     validate_step_from_cells,
 )
 
@@ -72,3 +73,22 @@ def test_apply_readback_to_steps_and_cells_from_steps_keep_column_values():
         "7": "1,090.00",
         "11": "网银",
     }
+
+
+def test_exchange_rate_guard_accepts_currency_expected_values():
+    assert validate_exchange_rate_not_polluted({"6": "7.12"}, "美元", "1090")["ok"] is True
+    assert validate_exchange_rate_not_polluted({"6": "1"}, "人民币", "1090")["ok"] is True
+
+
+def test_exchange_rate_guard_blocks_amount_pollution():
+    result = validate_exchange_rate_not_polluted({"6": "1,090.00"}, "美元", "1090")
+
+    assert result["ok"] is False
+    assert "金额误写入汇率列" in result["reason"]
+
+
+def test_exchange_rate_guard_blocks_invalid_usd_rate():
+    result = validate_exchange_rate_not_polluted({"6": "1090"}, "USD", "1090.01")
+
+    assert result["ok"] is False
+    assert "美元汇率列异常" in result["reason"]

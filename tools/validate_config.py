@@ -342,7 +342,7 @@ def _validate_receipt_detail_entry_policy(policy, errors):
 
 def _validate_receipt_excel_text_field_mappings(mappings, errors):
     prefix = "receipt_entry.excel_text_field_mappings"
-    allowed_nc_fields = {"商务领款备忘"}
+    allowed_nc_fields = {"商务领款备忘", "备注"}
     if not isinstance(mappings, list):
         errors.append(f"{prefix} must be a list")
         return
