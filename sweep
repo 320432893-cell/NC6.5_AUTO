@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# 每日大体检入口:跑机械引擎,产出 logs/sweep-report.md。判断/动手见 .ai-config rules/review/daily.md。
+exec python3 "$(dirname "$0")/tools/sweep.py" "$@"

@@ -40,7 +40,15 @@ AUDIT_CHECKS = (
 
 DEEP_CHECKS = (
     ("radon", [sys.executable, "-m", "radon", "cc", "core", "tools", "-s", "-a"]),
-    ("vulture", [sys.executable, "-m", "vulture", "core", "tools", "tests"]),
+    (
+        "vulture",
+        [
+            sys.executable, "-m", "vulture",
+            "core", "tools", "tests", ".vulture_whitelist.py",
+            "--exclude", "*/archive/*",
+            "--min-confidence", "60",
+        ],
+    ),
 )
 
 RULE_TOOL_CONTRACT_CHECKS = (
