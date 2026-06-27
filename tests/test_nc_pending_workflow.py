@@ -130,164 +130,38 @@ def test_generate_stops_before_page_guard_when_excel_preflight_fails(monkeypatch
     assert processor.data_handler.split_saved == []
 
 
-@pytest.mark.skip(
-    reason=(
-        "duplicate/匹配issue 处理已从 generate 迁到「预检查」步骤(写 voucher_precheck_plan.json);本测试针对旧的 generate 现场匹配流程、断言已删的 handle_generate_match_issues 行为,待按预检查缓存流程重写。注:该「重复→停手」业务规则目前在预检查层缺独立测试,是待补缺口。"
-    )
-)
-def test_generate_stops_before_nc_clicks_on_duplicate_match(monkeypatch):
-    monkeypatch.setattr("core.nc_pending_workflow.check_abort", lambda: None)
-    duplicate_item = make_item(2)
-    unique_item = make_item(3, amount="2.00", partner="上海公司")
-    match = PendingMatch(item=unique_item, nc_row=7, row_data={})
-    duplicate = MatchIssue(item=duplicate_item, reason="重复2条", rows=[1, 17])
-    processor = FakeProcessor(
-        [duplicate_item, unique_item],
-        matches=[match],
-        issues=[duplicate],
-    )
-    workflow = NCPendingWorkflow(processor)
-    processed_matches = []
-
-    def fake_process_full_selection(matches, max_save_batches=None):
-        processed_matches.extend(matches)
-        return matches, 1
-
-    monkeypatch.setattr(workflow, "process_full_selection", fake_process_full_selection)
-
-    with pytest.raises(TableMatchError, match="匹配不唯一"):
-        workflow.generate_and_save()
-
-    assert processed_matches == []
-    assert processor.data_handler.result_updates == []
-    assert processor.run_state.events[-1] == (
-        "duplicate_match_issues",
-        {
-            "policy": "stop",
-            "count": 1,
-            "issues": [
-                {
-                    "excel_row": 2,
-                    "amount": "1.00",
-                    "partner": "深圳公司",
-                    "nc_rows": [1, 17],
-                },
-            ],
-        },
-    )
+# ---- 直测「重复/未全量 → 停手」规则(规则已迁到纯方法,不再经旧 generate 现场匹配)----
+def _pending_wf(duplicate_policy="stop"):
+    return NCPendingWorkflow(FakeProcessor([], matches=[], issues=[], duplicate_policy=duplicate_policy))
 
 
-@pytest.mark.skip(
-    reason=(
-        "duplicate/匹配issue 处理已从 generate 迁到「预检查」步骤(写 voucher_precheck_plan.json);本测试针对旧的 generate 现场匹配流程、断言已删的 handle_generate_match_issues 行为,待按预检查缓存流程重写。注:该「重复→停手」业务规则目前在预检查层缺独立测试,是待补缺口。"
-    )
-)
-def test_generate_stops_before_nc_clicks_on_any_pending_match_issue(monkeypatch):
-    monkeypatch.setattr("core.nc_pending_workflow.check_abort", lambda: None)
-    missing_item = make_item(2)
-    unique_item = make_item(3, amount="2.00", partner="上海公司")
-    match = PendingMatch(item=unique_item, nc_row=7, row_data={})
-    issue = MatchIssue(item=missing_item, reason="未找到", rows=[])
-    processor = FakeProcessor(
-        [missing_item, unique_item],
-        matches=[match],
-        issues=[issue],
-    )
-    workflow = NCPendingWorkflow(processor)
-    processed_matches = []
-
-    def fake_process_full_selection(matches, max_save_batches=None):
-        processed_matches.extend(matches)
-        return matches, 1
-
-    monkeypatch.setattr(workflow, "process_full_selection", fake_process_full_selection)
-
-    with pytest.raises(TableMatchError, match="待生成表未全量匹配"):
-        workflow.generate_and_save()
-
-    assert processed_matches == []
-    assert processor.data_handler.result_updates == []
+def test_ensure_full_pending_match_raises_on_issue():
+    item = make_item(2)
+    issue = MatchIssue(item=item, reason="重复2条", rows=[1, 17])
+    with pytest.raises(TableMatchError, match="未全量匹配"):
+        _pending_wf().ensure_full_pending_match([item], [], [issue])
 
 
-@pytest.mark.skip(
-    reason=(
-        "duplicate/匹配issue 处理已从 generate 迁到「预检查」步骤(写 voucher_precheck_plan.json);本测试针对旧的 generate 现场匹配流程、断言已删的 handle_generate_match_issues 行为,待按预检查缓存流程重写。注:该「重复→停手」业务规则目前在预检查层缺独立测试,是待补缺口。"
-    )
-)
-def test_generate_can_skip_duplicate_match_and_process_unique_matches(monkeypatch):
-    monkeypatch.setattr("core.nc_pending_workflow.check_abort", lambda: None)
-    duplicate_item = make_item(2)
-    unique_item = make_item(3, amount="2.00", partner="上海公司")
-    match = PendingMatch(item=unique_item, nc_row=7, row_data={})
-    duplicate = MatchIssue(item=duplicate_item, reason="重复2条", rows=[1, 17])
-    processor = FakeProcessor(
-        [duplicate_item, unique_item],
-        matches=[match],
-        issues=[duplicate],
-        duplicate_policy="skip",
-    )
-    workflow = NCPendingWorkflow(processor)
-    processed_matches = []
-
-    def fake_process_full_selection(matches, max_save_batches=None):
-        processed_matches.extend(matches)
-        return matches, 1
-
-    monkeypatch.setattr(workflow, "process_full_selection", fake_process_full_selection)
-
-    assert workflow.generate_and_save() == 1
-
-    assert processed_matches == [match]
-    assert processor.data_handler.result_updates == [
-        {2: "重复2条-NC行1,17"},
-    ]
-    assert processor.run_state.events[-1] == (
-        "duplicate_match_issues",
-        {
-            "policy": "skip",
-            "count": 1,
-            "issues": [
-                {
-                    "excel_row": 2,
-                    "amount": "1.00",
-                    "partner": "深圳公司",
-                    "nc_rows": [1, 17],
-                },
-            ],
-        },
-    )
+def test_ensure_full_pending_match_raises_on_missing_row():
+    item = make_item(2)
+    with pytest.raises(TableMatchError, match="未全量匹配"):
+        _pending_wf().ensure_full_pending_match([item], [], [])
 
 
-@pytest.mark.skip(
-    reason=(
-        "duplicate/匹配issue 处理已从 generate 迁到「预检查」步骤(写 voucher_precheck_plan.json);本测试针对旧的 generate 现场匹配流程、断言已删的 handle_generate_match_issues 行为,待按预检查缓存流程重写。注:该「重复→停手」业务规则目前在预检查层缺独立测试,是待补缺口。"
-    )
-)
-def test_process_full_selection_stops_when_voucher_match_count_is_short(monkeypatch):
-    monkeypatch.setattr("core.nc_pending_workflow.check_abort", lambda: None)
-    first_item = make_item(2)
-    second_item = make_item(3, amount="2.00", partner="上海公司")
-    first_match = PendingMatch(item=first_item, nc_row=1, row_data={})
-    second_match = PendingMatch(item=second_item, nc_row=2, row_data={})
-    processor = FakeProcessor([first_item, second_item], matches=[], issues=[])
-    workflow = NCPendingWorkflow(processor)
-    saved = []
+def test_ensure_full_pending_match_passes_when_all_matched():
+    item = make_item(2)
+    match = PendingMatch(item=item, nc_row=7, row_data={})
+    _pending_wf().ensure_full_pending_match([item], [match], [])  # 无异常即通过
 
-    class FakeVoucherWorkflow:
-        def match_voucher_table(self, pending):
-            return [pending[0]], []
 
-        def save_current_voucher_matches(self, voucher_matches):
-            saved.extend(voucher_matches)
-            return voucher_matches, 1
+def test_ensure_full_pending_match_skip_policy_bypasses_stop():
+    item = make_item(2)
+    issue = MatchIssue(item=item, reason="重复2条", rows=[1, 17])
+    _pending_wf("skip").ensure_full_pending_match([item], [], [issue])  # skip 策略不停
 
-        def close_voucher_window_after_save(self, voucher_batch):
-            return True
 
-    processor.voucher_workflow = FakeVoucherWorkflow()
-    processor.save_wait = 0
-
-    with pytest.raises(TableMatchError, match="制单表未全量匹配"):
-        workflow.process_full_selection([first_match, second_match])
-
-    assert saved == []
+def test_ensure_full_voucher_match_stops_when_count_short():
+    item = make_item(2)
+    pending = [PendingMatch(item=item, nc_row=7, row_data={})]
+    with pytest.raises(TableMatchError, match="未全量匹配"):
+        _pending_wf().ensure_full_voucher_match(pending, [])
