@@ -129,9 +129,9 @@ GUI 解析 stdout **最后一段** JSON 判定结果(命令可在前面打人类
 
 | 命令 | 用途 | 非交互现状 | 结果现状 | 进度现状 |
 |---|---|---|---|---|
-| `receipt-full-flow`(完整流程入口) | 开单→表头→明细→(可选)保存→(可选)后验查询 | `--save` 有确认闸,**带 `--yes-i-understand` 即非交互** `[现状符合]` | **JSON 完整 + 三档退出码,标杆** `[现状符合]` | **未接状态文件** `[需改:中]` |
-| `receipt-detail`(明细入口) | 写明细主行 / 手续费行 / 删多余行 | **收尾硬等回车、无开关可绕** `[需改:小,但必须改]` | 无 JSON `[需改:小]` | 未接 `[需改:中]` |
-| `receipt-query`(查询 CLI) | 填 F3 条件→查→读结果→(可选)写回 | `[现状符合]` | 部分 JSON `[需改:小]` | 未接 `[需改:中]` |
+| `receipt-full-flow`(完整流程入口) | 开单→表头→明细→(可选)保存→(可选)后验查询 | `--save` 有确认闸,**带 `--yes-i-understand` 即非交互** `[现状符合]` | **JSON 完整 + 三档退出码,标杆** `[现状符合]` | **已接状态文件** `[现状符合]` |
+| `receipt-detail`(明细入口) | 写明细主行 / 手续费行 / 删多余行 | **收尾硬等回车、无开关可绕** `[需改:小,但必须改]` | 无 JSON `[需改:小]` | 已接 `[现状符合]` |
+| `receipt-query`(查询 CLI) | 填 F3 条件→查→读结果→(可选)写回 | `[现状符合]` | 部分 JSON `[需改:小]` | 已接 `[现状符合]` |
 | `receipt-entry-check`(本地预检) | Excel 本地合规预检,不碰 NC | `[现状符合]` | 无 JSON `[需改:小]` | 不涉及长流程 |
 
 **关键输入**:完整流程 `--config --excel-path --start-row --limit --validation-mode --save --yes-i-understand --query-after-save --write-(selected-)plan-sheet --start-delay --json`;明细 `--fee-only --fee-amount --bank-label --cleanup-extra-rows-only --config --start-delay`(待加 `--no-wait`);查询 `--config --org-code(必填) --date-from --date-to --confirm --read-results --dry-run-match ...`。

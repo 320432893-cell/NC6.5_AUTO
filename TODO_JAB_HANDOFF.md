@@ -214,7 +214,7 @@
 - 稳定条件看两个信号：分页 label 不变，候选结果表 row/col 摘要不变。
 - 坐标点击、bounds 中心点点击、截图找坐标在 NC 自动化里彻底禁用；JAB 动作接口找不到控件时，必须继续探测 path/窗口/状态，不能做坐标回退。
 - `ok=True` 只代表 JAB 动作返回成功，业务上必须做后置状态验证。
-- 控件探索工具本身也可能截断真相；`tools/jab_probe.py --inspect-path` 曾经固定只展开 1 层，导致右侧查询条件区被误判为空。遇到“控件不存在/为空”时，先核查 `--depth`、`--max-children`、窗口 title/class、visible/showing 过滤是否真的生效。
+- 控件探索工具本身也可能截断真相；`core/jab_probe.py --inspect-path` 曾经固定只展开 1 层，导致右侧查询条件区被误判为空。遇到“控件不存在/为空”时，先核查 `--depth`、`--max-children`、窗口 title/class、visible/showing 过滤是否真的生效。
 - `--inspect-path` 输出里的 `path=0...` 是相对目标节点的路径，不是完整窗口路径；写入配置前必须用完整 path 再只读验证一次。
 - 主查询入口默认走 F3；用 JAB action 点主界面查询按钮曾触发 Access Bridge 不稳定。F3 触发必须走 `pyautogui.press("f3")` 重试并用 Win32 `查询条件/SunAwtDialog` 判定弹窗，不要只用裸 SendInput。
 - 查询窗口内部 `正式单据` / `确定` 可走 JAB AccessibleAction，日期框走 `setTextContents`。

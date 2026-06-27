@@ -14,9 +14,9 @@
 
 - 配置编辑：`config.json` 的 `receipt_entry.schema_version=2`，尤其是 `finance_organizations`、`banks`、`accounts`、账户候选值、录入策略和明细/手续费策略。
 - 本地预检：`core/receipt_entry.py`、`core/receipt_plan.py`、`core/receipt_plan_issue.py`、`core/receipt_sheet.py` 和 `tools/receipt_entry_check.py`。
-- 完整录入测试：`tools/receipt_full_flow_entry.py` 是正式业务入口；现场测试只直接用 `tools/receipt_full_flow_save_query_write_test.py`，在同一个文件内选择保存、不保存、故障恢复或 verify 审查。
+- 完整录入测试：`tools/receipt_full_flow_entry.py` 是正式业务入口（编排层）；其按职责拆分的子模块为 `tools/receipt_counterparty.py`（往来对象）、`tools/receipt_save_cancel.py`（保存/取消熔断）、`tools/receipt_report.py`（结果汇总/摘要）、`tools/receipt_locator_cache.py`（定位缓存）、`tools/receipt_row_stages.py`（表头 scope 解析）。现场测试只直接用 `tools/receipt_full_flow_save_query_write_test.py`，在同一个文件内选择保存、不保存、故障恢复或 verify 审查。
 - 查询与后验：`tools/receipt_query_fill.py` 及拆分出的 `tools/receipt_query_*` 模块。
-- JAB 底层边界：`core/jab_operator.py`、`core/jab_window.py`、`core/jab_*` mixin/helper；全局键盘、前台窗口和 pyautogui 只能留在这里。
+- JAB 底层边界：`core/jab_operator.py`、`core/jab_window.py`、`core/jab_probe.py`、`core/jab_environment.py`、`core/jab_*` mixin/helper；全局键盘、前台窗口和 pyautogui 只能留在这里。`jab_probe`/`jab_environment` 是最底层 JAB 原语，住 core（`.importlinter` 守 `core 不反依赖 tools`）。
 - 工程检查：`tools/check.py`、`tools/validate_config.py`、`tools/check_architecture.py` 和对应测试。
 
 前端页面优先级：
@@ -71,7 +71,7 @@
 
 辅助探测工具：
 
-- `tools/jab_probe.py`
+- `core/jab_probe.py`（JAB 原语，2026-06-27 从 tools/ 下沉 core/）
 - `tools/receipt_body_table_locator.py`
 - `tools/receipt_full_flow_entry.py`：收款单完整流程正式业务入口，消费 `ReceiptPlanRow`。桌面正式入口默认传 `--save --query-after-save`，底层 CLI 的 `--save` 是真实保存安全闸。
 - `tools/receipt_full_flow_save_query_write_test.py`：现场测试入口，一个文件内选择完整流程保存、不保存、故障恢复诊断或 verify 审查；默认保存、后验查询并写 Sheet2 本批结果。
@@ -574,7 +574,7 @@ JAB 查询入口现状：
 ## JAB 注意事项
 
 - JAB 只能在 Windows Python 下连接 NC UI。
-- 老版 JAB 使用 `Windows_run()`；不要随手改 `tools/jab_probe.py` 和 `core/jab_operator.py` 的消息泵/初始化方式。
+- 老版 JAB 使用 `Windows_run()`；不要随手改 `core/jab_probe.py` 和 `core/jab_operator.py` 的消息泵/初始化方式。
 - 不要硬编码 JAB path 或 hwnd，窗口重开后会变。
 - 不要信 `bounds` 做坐标点击，很多控件会返回负坐标或 `-1,-1,-1,-1`。
 - NC 自动化彻底禁用坐标点击、bounds 中心点点击和截图找坐标；只能用 JAB action、语义快捷键、JAB 文本/表格 API。
