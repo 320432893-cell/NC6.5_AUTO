@@ -4,6 +4,7 @@
 #       2) vulture 假阳性(dataclass 字段经序列化用、openpyxl 属性、__exit__ 协议参数——静态看不见)。
 # 纪律:加条目=一次放行登记;真死码直接删勿塞此。重生成:
 #   vulture core tools tests --exclude '*/archive/*' --min-confidence 60 --make-whitelist
+# 基线已批:2026-06-27(用户"继续排除"全收,含 8 个预留API函数);此后新增条目=待批 pending,不自动生效。
 
 _.collect_page_controls  # unused method (core/jab_batch_processor.py:192)
 _.collect_window_controls  # unused method (core/jab_batch_processor.py:197)
