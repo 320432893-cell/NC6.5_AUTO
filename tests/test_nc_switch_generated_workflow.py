@@ -22,6 +22,10 @@ class FakeJAB:
     def activate_window_by_title(self, title, class_name=None, timeout=5):
         self.activated.append((title, class_name, timeout))
 
+    def maximize_window_by_title(self, title, class_name=None, timeout=5):
+        self.activated.append((title, class_name, timeout))
+        return True
+
     def press_key(self, key, wait=0):
         self.keys.append((key, wait))
 

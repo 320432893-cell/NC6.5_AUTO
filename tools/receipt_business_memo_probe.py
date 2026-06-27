@@ -13,13 +13,20 @@ from core.paths import logs_dir  # noqa: E402
 from core.utils import load_config  # noqa: E402
 from tools.receipt_self_made_fill_trial import (  # noqa: E402
     extract_receipt_header_dynamic_index,
-    find_receipt_extra_text_field_by_dynamic_path,
-    find_receipt_extra_text_field_by_live_semantic,
+    find_receipt_header_field_by_dynamic_path,
+    find_receipt_header_field_by_semantic_label,
     find_header_label_context_with_window,
-    infer_receipt_extra_text_field_suffix,
     receipt_header_dynamic_prefix,
     split_header_path,
 )
+
+
+def _suffix_from_path(path, dynamic_index):
+    # 原 infer_receipt_extra_text_field_suffix(已删)的等价内联:从动态 prefix 后截 suffix
+    prefix = f"{receipt_header_dynamic_prefix(dynamic_index)}."
+    if not path or dynamic_index is None or not str(path).startswith(prefix):
+        return None
+    return str(path)[len(prefix):]
 
 
 def main():
@@ -106,10 +113,9 @@ def print_text_summary(report):
 
 
 def probe_path(jab, args):
-    semantic = find_receipt_extra_text_field_by_live_semantic(
+    semantic = find_receipt_header_field_by_semantic_label(
         jab,
         args.label,
-        dynamic_index=None,
         scope_hwnd=args.hwnd,
         timeout=1.2,
     )
@@ -122,9 +128,9 @@ def probe_path(jab, args):
         }
     path = semantic.get("path")
     dynamic_index = extract_receipt_header_dynamic_index(path)
-    suffix = infer_receipt_extra_text_field_suffix(path, dynamic_index)
+    suffix = _suffix_from_path(path, dynamic_index)
     dynamic = (
-        find_receipt_extra_text_field_by_dynamic_path(
+        find_receipt_header_field_by_dynamic_path(
             jab,
             args.label,
             dynamic_index,
@@ -198,7 +204,7 @@ def probe_label_sibling_controls(jab, args):
             )
             continue
         item["index"] = index
-        item["suffix"] = infer_receipt_extra_text_field_suffix(path, dynamic_index)
+        item["suffix"] = _suffix_from_path(path, dynamic_index)
         candidates.append(item)
 
     visible_right_controls = [

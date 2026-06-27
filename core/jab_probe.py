@@ -7,7 +7,7 @@ import threading
 import time
 from ctypes import wintypes
 
-from tools.jab_environment import (
+from core.jab_environment import (
     access_bridge_dll_name,
     find_jabswitch,
     uclient_jre_bin_dirs,

@@ -1,6 +1,6 @@
 # 职责：封装基于 JAB context path 的控件定位、动作触发和文本读写
 # 不做什么：不做 near-label 搜索，不读取表格，不管理业务保存流程，不发送全局键盘输入
-# 允许依赖层：标准库 ctypes/threading/time、JABOperator 暴露的 dll/上下文/动作能力、tools.jab_probe 基础结构
+# 允许依赖层：标准库 ctypes/threading/time、JABOperator 暴露的 dll/上下文/动作能力、core.jab_probe 基础结构
 # 谁不应该 import：Excel/Sheet 读写、收款匹配、配置解析模块不应 import
 
 import ctypes
@@ -9,7 +9,7 @@ import time
 
 from core.logger import log
 from core.utils import check_abort
-from tools.jab_probe import AccessibleTextInfo, JOBJECT, enum_windows
+from core.jab_probe import AccessibleTextInfo, JOBJECT, enum_windows
 
 
 def do_action_by_path(

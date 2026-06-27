@@ -1,11 +1,11 @@
 # 职责：封装 JAB context 信息读取、控件匹配、树递归查找和 context 释放
 # 不做什么：不枚举窗口，不执行控件 action，不读取表格单元格，不处理业务字段
-# 允许依赖层：标准库 ctypes、JABOperator 暴露的 dll/max_depth/max_children、tools.jab_probe 基础结构
+# 允许依赖层：标准库 ctypes、JABOperator 暴露的 dll/max_depth/max_children、core.jab_probe 基础结构
 # 谁不应该 import：Excel/Sheet 读写、收款匹配、配置解析模块不应 import
 
 import ctypes
 
-from tools.jab_probe import AccessibleContextInfo
+from core.jab_probe import AccessibleContextInfo
 
 
 def find_in_tree(

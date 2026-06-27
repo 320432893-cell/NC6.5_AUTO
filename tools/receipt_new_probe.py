@@ -14,7 +14,7 @@ if str(ROOT) not in sys.path:
 
 from core.jab_operator import JABOperator  # noqa: E402
 from core.utils import load_config  # noqa: E402
-from tools.jab_probe import AccessibleActions, JOBJECT, enum_windows  # noqa: E402
+from core.jab_probe import AccessibleActions, JOBJECT, enum_windows  # noqa: E402
 from tools.receipt_query_guard import (  # noqa: E402
     ReceiptPageGuardError,
     guard_receipt_parent_page,
@@ -795,97 +795,6 @@ def describe_popup_visibility(hwnd):
     return describe_hwnd(ctypes.windll.user32, wintypes.HWND(int(hwnd)))
 
 
-def resolve_foreground_canvas_header_anchor(jab, foreground):
-    fg_root = (foreground or {}).get("root")
-    candidates = []
-    if os.name != "nt" or not hasattr(ctypes, "WinDLL") or not fg_root:
-        return {"ok": False, "reason": "foreground root not available"}
-    for hwnd, title, class_name, pid, visible in enum_windows(include_children=True):
-        if class_name != "SunAwtCanvas" or not visible:
-            continue
-        if root_hwnd(hwnd) != fg_root:
-            continue
-        if not jab.dll.isJavaWindow(hwnd):
-            continue
-        window = {
-            "hwnd": int(hwnd),
-            "title": title,
-            "class_name": class_name,
-            "pid": pid,
-            "visible": visible,
-            "is_java": True,
-            "root_hwnd": fg_root,
-            "is_foreground_root": True,
-            "root": None,
-            "controls": [],
-            "all_controls": [],
-        }
-        candidates.append(window)
-        attempt = resolve_canvas_header_anchor(jab, int(hwnd), window, timeout=0.12)
-        if attempt.get("ok"):
-            return {**attempt, "candidates": candidates}
-    return {
-        "ok": False,
-        "reason": "foreground SunAwtCanvas 财务组织(O) anchor not resolved",
-        "foreground": foreground,
-        "candidates": candidates,
-    }
-
-
-def resolve_current_canvas_header_anchor(jab, windows, foreground=None):
-    canvas_hwnds = [
-        (int(window["hwnd"]), window)
-        for window in windows or []
-        if window.get("is_java")
-        and window.get("visible")
-        and window.get("hwnd")
-        and window.get("class_name") == "SunAwtCanvas"
-    ]
-    if not canvas_hwnds:
-        return {"ok": False, "reason": "current SunAwtCanvas not found"}
-    fg_root = (foreground or {}).get("root")
-    canvas_hwnds.sort(
-        key=lambda item: (
-            0
-            if fg_root
-            and (item[1].get("root_hwnd") or root_hwnd(item[0])) == fg_root
-            else 1
-        )
-    )
-    attempts = []
-    for hwnd, window in canvas_hwnds:
-        attempt = resolve_canvas_header_anchor(jab, hwnd, window, timeout=0.2)
-        attempts.append(attempt)
-        if attempt.get("ok"):
-            return attempt
-    return {
-        "ok": False,
-        "reason": "财务组织(O) anchor not resolved in current canvas",
-        "attempts": attempts,
-    }
-
-
-def resolve_canvas_header_anchor(jab, hwnd, window=None, timeout=0.2):
-    from tools.receipt_self_made_fill_trial import (
-        resolve_receipt_header_anchor_in_canvas,
-    )
-
-    attempt = resolve_receipt_header_anchor_in_canvas(jab, hwnd, timeout=timeout)
-    if window is not None:
-        attempt["window"] = {
-            key: window.get(key)
-            for key in (
-                "hwnd",
-                "title",
-                "class_name",
-                "visible",
-                "root_hwnd",
-                "is_foreground_root",
-            )
-        }
-    return attempt
-
-
 def collect_new_visible_popup_windows(jab, before, max_depth=8, max_children=120):
     if os.name != "nt" or not hasattr(ctypes, "WinDLL"):
         return collect_receipt_new_windows(jab)
@@ -999,15 +908,6 @@ def collect_window_controls_limited(jab, window, max_depth=8, max_children=120):
         max_children=max_children,
     )
     return window
-
-
-def collect_receipt_new_windows_compat(jab, **kwargs):
-    try:
-        return collect_receipt_new_windows(jab, **kwargs)
-    except TypeError as exc:
-        if "unexpected keyword argument" not in str(exc):
-            raise
-        return collect_receipt_new_windows(jab)
 
 
 def find_new_buttons(jab, name_query="新增", role=None, class_name=None):

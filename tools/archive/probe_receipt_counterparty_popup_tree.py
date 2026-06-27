@@ -18,7 +18,7 @@ from core.jab_popup import (  # noqa: E402
 )
 from core.jab_near_label import collect_controls_for_bounds_scan, info_to_dict  # noqa: E402
 from core.utils import load_config  # noqa: E402
-from tools.jab_probe import JOBJECT, enum_windows  # noqa: E402
+from core.jab_probe import JOBJECT, enum_windows  # noqa: E402
 from tools.receipt_full_flow_entry import (  # noqa: E402
     find_counterparty_combo,
     read_counterparty_combo_state,

@@ -518,7 +518,7 @@ def find_finance_org_header_scope_by_paths(
     max_index=10,
 ):
     started_at = time.perf_counter()
-    shallow = find_finance_org_header_scope_by_shallow_semantic(
+    shallow = _find_finance_org_header_scope_by_shallow_semantic(
         jab,
         scope_hwnd,
         order="dfs",
@@ -665,7 +665,7 @@ def find_finance_org_header_scope_by_paths(
     }
 
 
-def find_finance_org_header_scope_by_shallow_semantic(
+def _find_finance_org_header_scope_by_shallow_semantic(
     jab,
     scope_hwnd,
     order="dfs",
@@ -682,7 +682,7 @@ def find_finance_org_header_scope_by_shallow_semantic(
             "scope_hwnd": scope_hwnd,
             "seconds": round(time.perf_counter() - started_at, 3),
         }
-    from tools.jab_probe import JOBJECT
+    from core.jab_probe import JOBJECT
 
     vm_id_ref = ctypes.c_long()
     root_context = JOBJECT()
@@ -795,89 +795,6 @@ def find_finance_org_header_scope_by_shallow_semantic(
         }
     finally:
         jab.release_contexts(vm_id, release_after)
-
-
-def correct_header_dynamic_index_by_customer_paths(jab, scope_hwnd, dynamic_index):
-    candidates = []
-    try:
-        base = int(dynamic_index)
-    except (TypeError, ValueError):
-        base = None
-    if base is not None:
-        candidates.extend([base, base + 1, base + 2, base - 1, base - 2])
-    for index in range(1, 11):
-        candidates.append(index)
-    attempts = []
-    seen = set()
-    for index in candidates:
-        if index is None or index <= 0 or index in seen:
-            continue
-        seen.add(index)
-        found = find_receipt_header_field_by_dynamic_path(
-            jab,
-            "客户",
-            index,
-            scope_hwnd=scope_hwnd,
-            require_showing=False,
-            require_valid_bounds=False,
-        )
-        attempts.append(
-            {
-                "dynamic_index": index,
-                "ok": bool(found.get("ok")),
-                "path": found.get("path"),
-                "reason": found.get("reason"),
-            }
-        )
-        if found.get("ok"):
-            path = found.get("path")
-            window = found.get("window")
-            jab.release_contexts(found["vm_id"], found["owned_contexts"])
-            return {
-                "ok": True,
-                "source": "customer-dynamic-path-nearby",
-                "dynamic_index": index,
-                "dynamic_prefix": receipt_header_dynamic_prefix(index),
-                "path": path,
-                "window": window,
-                "attempts": attempts,
-            }
-    semantic = find_receipt_header_field_by_semantic_label(
-        jab,
-        "客户",
-        scope_hwnd=scope_hwnd,
-        timeout=0.6,
-    )
-    if not semantic.get("ok"):
-        return {
-            "ok": False,
-            "source": "customer-dynamic-path-nearby",
-            "dynamic_index": dynamic_index,
-            "attempts": attempts,
-            "semantic_attempt": semantic,
-        }
-    corrected_index = extract_receipt_header_dynamic_index(semantic.get("path"))
-    path = semantic.get("path")
-    window = semantic.get("window")
-    jab.release_contexts(semantic["vm_id"], semantic["owned_contexts"])
-    if corrected_index is None:
-        return {
-            "ok": False,
-            "source": "customer-semantic-correction",
-            "dynamic_index": dynamic_index,
-            "attempts": attempts,
-            "semantic_path": path,
-            "reason": "客户语义 path 无法推出 dynamic_index",
-        }
-    return {
-        "ok": True,
-        "source": "customer-semantic-correction",
-        "dynamic_index": corrected_index,
-        "dynamic_prefix": receipt_header_dynamic_prefix(corrected_index),
-        "path": path,
-        "window": window,
-        "attempts": attempts,
-    }
 
 
 def resolve_receipt_header_anchor_in_canvas(jab, scope_hwnd, timeout=0.6):
@@ -1963,7 +1880,7 @@ def find_header_label_context_with_window(
                 continue
             if not jab.dll.isJavaWindow(hwnd):
                 continue
-            from tools.jab_probe import JOBJECT
+            from core.jab_probe import JOBJECT
 
             vm_id_ref = ctypes.c_long()
             root_context = JOBJECT()
@@ -2292,122 +2209,6 @@ def find_receipt_header_field_by_dynamic_path(
     }
 
 
-def find_finance_org_field_by_dynamic_path(
-    jab,
-    dynamic_index,
-    scope_hwnd=None,
-    require_showing=True,
-    require_valid_bounds=True,
-):
-    attempts = []
-    for variant, label_path, text_path in build_finance_org_path_variants(
-        dynamic_index
-    ):
-        context, vm_id, owned_contexts, window_info = jab.find_context_by_path_once(
-            text_path,
-            class_name="SunAwtCanvas",
-            scope_hwnd=scope_hwnd,
-            role="text",
-            require_showing=require_showing,
-            require_valid_bounds=require_valid_bounds,
-        )
-        attempts.append(
-            {
-                "variant": variant,
-                "path": text_path,
-                "label_path": label_path,
-                "ok": bool(context),
-            }
-        )
-        if context:
-            return {
-                "ok": True,
-                "context": context,
-                "vm_id": vm_id,
-                "owned_contexts": owned_contexts,
-                "path": text_path,
-                "label_path": label_path,
-                "window": window_info,
-                "dynamic_index": dynamic_index,
-                "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
-                "variant": variant,
-                "attempts": attempts,
-            }
-    return {
-        "ok": False,
-        "reason": "finance org dynamic path not found",
-        "label": HEADER_SCOPE_ANCHOR_LABEL,
-        "dynamic_index": dynamic_index,
-        "attempts": attempts,
-    }
-
-
-def build_receipt_extra_text_field_path(dynamic_index, label):
-    return build_receipt_header_dynamic_path(dynamic_index, label)
-
-
-def find_receipt_extra_text_field_by_dynamic_path(
-    jab,
-    label,
-    dynamic_index,
-    scope_hwnd=None,
-    require_showing=True,
-    require_valid_bounds=True,
-):
-    found = find_receipt_header_field_by_dynamic_path(
-        jab,
-        label,
-        dynamic_index,
-        scope_hwnd=scope_hwnd,
-        require_showing=require_showing,
-        require_valid_bounds=require_valid_bounds,
-    )
-    if found.get("ok"):
-        found["source"] = "dynamic-path"
-    return found
-
-
-def infer_receipt_extra_text_field_suffix(path, dynamic_index):
-    prefix = f"{receipt_header_dynamic_prefix(dynamic_index)}."
-    if not path or dynamic_index is None or not str(path).startswith(prefix):
-        return None
-    return str(path)[len(prefix) :]
-
-
-def find_receipt_extra_text_field_by_live_semantic(
-    jab,
-    label,
-    dynamic_index,
-    scope_hwnd=None,
-    timeout=HEADER_LIVE_SEMANTIC_FALLBACK_TIMEOUT,
-):
-    found = find_receipt_header_field_by_semantic_label(
-        jab,
-        label,
-        scope_hwnd=scope_hwnd,
-        timeout=timeout,
-    )
-    if not found.get("ok"):
-        return {
-            "ok": False,
-            "label": label,
-            "source": "semantic-live-after-path-miss",
-            "reason": found.get("reason") or "semantic label not found",
-            "semantic_attempt": found,
-            "dynamic_index": dynamic_index,
-        }
-    suffix = infer_receipt_extra_text_field_suffix(found.get("path"), dynamic_index)
-    found["source"] = "semantic-live-after-path-miss"
-    found["dynamic_index"] = dynamic_index
-    found["dynamic_prefix"] = (
-        receipt_header_dynamic_prefix(dynamic_index)
-        if dynamic_index is not None
-        else None
-    )
-    found["inferred_suffix"] = suffix
-    return found
-
-
 def find_receipt_header_field_by_scoped_label(jab, label, scope_hwnd=None):
     aliases = HEADER_LABEL_ALIASES.get(label, (label,))
     for hwnd, title, class_name, pid, visible in jab.get_scoped_windows(
@@ -2419,7 +2220,7 @@ def find_receipt_header_field_by_scoped_label(jab, label, scope_hwnd=None):
             continue
         if not jab.dll.isJavaWindow(hwnd):
             continue
-        from tools.jab_probe import JOBJECT
+        from core.jab_probe import JOBJECT
 
         vm_id_ref = ctypes.c_long()
         root_context = JOBJECT()
@@ -2657,7 +2458,7 @@ def find_context_with_window(
                 continue
             if not jab.dll.isJavaWindow(hwnd):
                 continue
-            from tools.jab_probe import JOBJECT
+            from core.jab_probe import JOBJECT
 
             vm_id_ref = ctypes.c_long()
             root_context = JOBJECT()

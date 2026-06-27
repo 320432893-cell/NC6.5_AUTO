@@ -50,7 +50,6 @@ from core.receipt_plan import (
 from core.receipt_plan_issue import (
     detect_duplicate_rows,
     plan_issue as plan_issue,
-    read_optional_cell,
     summarize_plan,
 )
 

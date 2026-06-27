@@ -13,7 +13,7 @@ if str(ROOT) not in sys.path:
 from core.jab_operator import JABOperator  # noqa: E402
 from core.utils import load_config  # noqa: E402
 from tools.receipt_body_table_locator import locate_receipt_body_table  # noqa: E402
-from tools.jab_probe import AccessibleTableCellInfo, JOBJECT, enum_windows  # noqa: E402
+from core.jab_probe import AccessibleTableCellInfo, JOBJECT, enum_windows  # noqa: E402
 
 
 def build_parser():

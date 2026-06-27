@@ -1,6 +1,6 @@
 # 职责：封装基于 label 位置关系的 JAB 文本控件查找、诊断和邻近控件动作
 # 不做什么：不处理 context path，不读取表格，不发送全局键盘输入，不解释业务字段
-# 允许依赖层：标准库 ctypes/time、JABOperator 暴露的 dll/context/action/text 能力、tools.jab_probe 枚举窗口能力
+# 允许依赖层：标准库 ctypes/time、JABOperator 暴露的 dll/context/action/text 能力、core.jab_probe 枚举窗口能力
 # 谁不应该 import：Excel/Sheet 读写、收款匹配、配置解析模块不应 import
 
 import ctypes
@@ -8,7 +8,7 @@ import time
 
 from core.logger import log
 from core.utils import check_abort
-from tools.jab_probe import JOBJECT, enum_windows
+from core.jab_probe import JOBJECT, enum_windows
 
 
 def set_text_near_label(

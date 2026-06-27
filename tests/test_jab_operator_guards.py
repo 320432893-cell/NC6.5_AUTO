@@ -16,7 +16,7 @@ from core import jab_operator
 from core.jab_context_tree import matches_control, release_contexts
 from core.jab_operator import JABOperator
 from core.jab_table_reader import read_table_cells_from_context
-from tools.jab_probe import AccessibleContextInfo
+from core.jab_probe import AccessibleContextInfo
 
 
 def make_info(states, x=1, y=1, width=10, height=10):

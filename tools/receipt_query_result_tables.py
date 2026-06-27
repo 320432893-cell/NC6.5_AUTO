@@ -1,11 +1,11 @@
 # 职责：读取和筛选收款单查询结果表，提供结果表路径枚举能力。
 # 不做什么：不处理翻页按钮、不设置分页大小、不生成匹配报告、不解析 CLI 参数。
-# 允许依赖层：JABOperator 暴露的窗口/上下文/表格读取接口、tools.jab_probe 的 JOBJECT 类型。
+# 允许依赖层：JABOperator 暴露的窗口/上下文/表格读取接口、core.jab_probe 的 JOBJECT 类型。
 # 谁不应该 import：与收款单查询无关的业务流程、临时探针脚本。
 
 import ctypes
 
-from tools.jab_probe import JOBJECT
+from core.jab_probe import JOBJECT
 
 
 def summarize_receipt_tables(jab, query_cfg, scope_hwnd=None):

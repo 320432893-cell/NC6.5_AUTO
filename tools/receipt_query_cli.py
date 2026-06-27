@@ -4,6 +4,7 @@
 # 谁不应该 import：core 层模块不应 import；测试应优先测具体流程/读表模块而非 CLI 输出。
 
 import argparse
+from copy import deepcopy
 import json
 import os
 from pathlib import Path

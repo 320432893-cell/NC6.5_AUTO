@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.jab_probe import (  # noqa: E402
+from core.jab_probe import (  # noqa: E402
     AccessibleActions,
     AccessibleActionsToDo,
     JOBJECT,
@@ -324,7 +324,7 @@ def candidate_score(window_item, info):
 
 
 def get_info(dll, vm_id, context):
-    from tools.jab_probe import AccessibleContextInfo
+    from core.jab_probe import AccessibleContextInfo
 
     info = AccessibleContextInfo()
     if not dll.getAccessibleContextInfo(vm_id, context, ctypes.byref(info)):

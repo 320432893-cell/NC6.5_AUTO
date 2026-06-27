@@ -13,7 +13,7 @@ if str(ROOT) not in sys.path:
 from core.jab_operator import JABOperator  # noqa: E402
 from core.utils import load_config  # noqa: E402
 from tools.jab_health_check import check_jab_ready  # noqa: E402
-from tools.jab_probe import enum_windows  # noqa: E402
+from core.jab_probe import enum_windows  # noqa: E402
 
 START_DELAY_SECONDS = 2
 WM_NULL = 0x0000

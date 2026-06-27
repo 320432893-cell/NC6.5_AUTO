@@ -1,6 +1,7 @@
 import json
 import subprocess
 import ctypes
+import pytest
 
 from tools import receipt_self_made_fill_trial as trial
 from tools import receipt_new_probe
@@ -98,6 +99,10 @@ def test_new_button_priority_prefers_showing_valid_button():
     assert buttons[0] is real
 
 
+@pytest.mark.skipif(
+    not hasattr(ctypes, "WinDLL"),
+    reason="Windows 专有路径:依赖 ctypes.WinDLL,Linux 无法运行",
+)
 def test_self_made_choose_cleans_popup_before_entry_wait(monkeypatch):
     calls = []
     monkeypatch.setattr(receipt_new_probe.os, "name", "nt")
@@ -196,48 +201,6 @@ def test_self_made_choose_cleans_popup_before_entry_wait(monkeypatch):
 
     assert "residue_cleanup" not in report
     assert calls == [("cleanup", 456), ("entry_wait", 456)]
-
-
-def test_entry_context_snapshot_resolves_header_anchor(monkeypatch):
-    class FakeJAB:
-        pass
-
-    windows = [
-        {
-            "hwnd": 24680,
-            "class_name": "SunAwtCanvas",
-            "visible": True,
-            "is_java": True,
-        }
-    ]
-    monkeypatch.setattr(
-        receipt_new_probe,
-        "collect_receipt_new_windows_compat",
-        lambda _jab, **_kwargs: windows,
-    )
-    monkeypatch.setattr(
-        receipt_new_probe,
-        "resolve_current_canvas_header_anchor",
-        lambda _jab, _windows: {
-            "ok": True,
-            "scope_hwnd": 24680,
-            "dynamic_index": 5,
-            "dynamic_prefix": "0.0.1.0.0.0.0.5",
-            "label_path": "0.0.1.0.0.0.0.5.0.0.0.1",
-            "anchor_text": {"name": "财务组织(O)", "description": ""},
-            "window": {
-                "hwnd": 24680,
-                "class_name": "SunAwtCanvas",
-                "visible": True,
-            },
-        },
-    )
-
-    result = receipt_new_probe.collect_entry_context_snapshot(FakeJAB())
-
-    assert result["confirmed"] is True
-    assert result["state"]["partial_ok"] is True
-    assert result["state"]["hits"][0]["control"]["dynamic_index"] == 5
 
 
 def test_new_probe_stops_before_new_when_parent_guard_fails(monkeypatch):
@@ -1515,7 +1478,7 @@ def test_finance_org_header_scope_prefers_shallow_semantic(monkeypatch):
 
     monkeypatch.setattr(
         trial,
-        "find_finance_org_header_scope_by_shallow_semantic",
+        "_find_finance_org_header_scope_by_shallow_semantic",
         fake_shallow,
     )
 
@@ -1576,13 +1539,8 @@ def test_finance_org_shallow_semantic_canonical_label_path_uses_dynamic_index(
         "extract_receipt_header_dynamic_index",
         lambda _path: 2,
     )
-    monkeypatch.setattr(
-        trial,
-        "correct_header_dynamic_index_by_customer_paths",
-        lambda *_args, **_kwargs: {"ok": False},
-    )
 
-    result = trial.find_finance_org_header_scope_by_shallow_semantic(
+    result = trial._find_finance_org_header_scope_by_shallow_semantic(
         FakeJAB(),
         919586,
         order="bfs",
