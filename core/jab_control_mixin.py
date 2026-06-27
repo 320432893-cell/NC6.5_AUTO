@@ -1,6 +1,6 @@
 # 职责：封装 JAB 控件查找、动作执行、context 树代理和保存按钮兼容入口
 # 不做什么：不负责 JAB 生命周期加载，不发送全局键盘输入，不处理表格业务匹配
-# 允许依赖层：标准库 ctypes/os/time、core.jab_context_tree、tools.jab_probe JAB 结构
+# 允许依赖层：标准库 ctypes/os/time、core.jab_context_tree、core.jab_probe JAB 结构
 # 谁不应该 import：Excel/Sheet 读写、收款匹配、配置解析模块不应直接 import
 
 import ctypes
@@ -21,7 +21,7 @@ from core.jab_helpers import (
 )
 from core.logger import log
 from core.utils import check_abort
-from tools.jab_probe import (
+from core.jab_probe import (
     AccessibleActions,
     AccessibleActionsToDo,
     JOBJECT,
@@ -130,21 +130,6 @@ class JABControlMixin:
         except Exception as exc:
             log.warning(f"JAB 保存按钮 path 写入配置失败: {exc}")
 
-    def wait_for_control(self, name, roles=(), timeout=None, require_showing=False):
-        self.ensure_started()
-        context, vm_id, owned_contexts = self.find_context(
-            name,
-            roles=roles,
-            timeout=timeout,
-            require_showing=require_showing,
-        )
-        if not context:
-            return False
-        self.release_contexts(vm_id, owned_contexts)
-        return True
-
-    def wait_save_success(self, timeout=None):
-        return self.wait_for_control("保存成功", timeout=timeout or self.search_timeout)
 
     def normalize_amount(self, value):
         return normalize_amount(value)

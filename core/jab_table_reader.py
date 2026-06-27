@@ -1,12 +1,12 @@
 # 职责：读取 JAB table 元信息、单元格文本，并投影为调用方使用的表格 dict
 # 不做什么：不枚举窗口，不缓存 context，不选择行，不匹配业务金额/关联方
-# 允许依赖层：标准库 ctypes、JABOperator 暴露的 dll/get_context_info 能力、tools.jab_probe 表格结构
+# 允许依赖层：标准库 ctypes、JABOperator 暴露的 dll/get_context_info 能力、core.jab_probe 表格结构
 # 谁不应该 import：Excel/Sheet 读写、收款匹配、配置解析模块不应 import
 
 import ctypes
 
 from core.utils import check_abort
-from tools.jab_probe import AccessibleTableCellInfo, AccessibleTableInfo
+from core.jab_probe import AccessibleTableCellInfo, AccessibleTableInfo
 
 
 def read_table_selected_columns_from_context(

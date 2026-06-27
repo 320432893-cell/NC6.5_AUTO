@@ -10,15 +10,23 @@ import pytest
 
 from core.receipt_models import ReceiptPlanIssue, ReceiptPlanRow
 from tools import receipt_full_flow_entry as full_flow
+from tools import receipt_counterparty as cp
+from tools import receipt_locator_cache as _locator
+from tools import receipt_save_cancel as _save_cancel
+from tools import receipt_report as _report
+from tools import receipt_row_stages as _row_stages
+from tools.receipt_locator_cache import (
+    extract_entry_anchor_path,
+    extract_entry_dynamic_index,
+    extract_entry_scope_hwnd,
+)
+
+from tools.receipt_report import build_console_report_lines
 from tools.receipt_full_flow_entry import (
-    build_console_report_lines,
     business_from_plan_row,
     cache_receipt_header_scope,
     confirm_save,
     ensure_header_counterparty_customer,
-    extract_entry_anchor_path,
-    extract_entry_dynamic_index,
-    extract_entry_scope_hwnd,
     extract_header_accepted_text,
     open_self_made_entry,
     parse_args,
@@ -27,11 +35,23 @@ from tools.receipt_full_flow_entry import (
     run_one_row,
     save_receipt_by_ctrl_s,
     select_plan_rows,
-    wait_receipt_header_anchor_in_current_canvas,
     write_extra_text_field_by_dynamic_path,
 )
 from tools.receipt_post_save_query import target_to_match_row
 from tools.receipt_post_save_query import format_query_exception
+
+_PATCH_TARGET_MODULES = [full_flow, cp, _locator, _save_cancel, _report, _row_stages]
+
+
+def patch_all(monkeypatch, name, value):
+    """把 helper 同时打到所有导入它的拆分模块,使调用方无论在哪都命中补丁。"""
+    patched = False
+    for _m in _PATCH_TARGET_MODULES:
+        if hasattr(_m, name):
+            monkeypatch.setattr(_m, name, value)
+            patched = True
+    if not patched:
+        raise AttributeError(name)
 
 REAL_ENSURE_HEADER_COUNTERPARTY_CUSTOMER = ensure_header_counterparty_customer
 
@@ -105,9 +125,7 @@ class Args:
 
 @pytest.fixture(autouse=True)
 def default_counterparty_header_ok(monkeypatch):
-    monkeypatch.setattr(
-        full_flow,
-        "ensure_header_counterparty_customer",
+    patch_all(monkeypatch, "ensure_header_counterparty_customer",
         lambda *_args, **_kwargs: {
             "ok": True,
             "skipped": True,
@@ -146,8 +164,7 @@ def test_read_customer_name_after_header_uses_customer_description(monkeypatch):
         def release_contexts(self, _vm_id, _contexts):
             pass
 
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.find_receipt_header_field_by_dynamic_path",
+    patch_all(monkeypatch, "find_receipt_header_field_by_dynamic_path",
         lambda *_args, **_kwargs: {
             "ok": True,
             "context": object(),
@@ -192,8 +209,7 @@ def test_read_customer_name_after_header_polls_until_customer_description(monkey
         def release_contexts(self, _vm_id, _contexts):
             pass
 
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.find_receipt_header_field_by_dynamic_path",
+    patch_all(monkeypatch, "find_receipt_header_field_by_dynamic_path",
         lambda *_args, **_kwargs: {
             "ok": True,
             "context": object(),
@@ -237,8 +253,7 @@ def test_read_customer_name_after_header_failure_reports_readback(monkeypatch):
         def release_contexts(self, _vm_id, _contexts):
             pass
 
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.find_receipt_header_field_by_dynamic_path",
+    patch_all(monkeypatch, "find_receipt_header_field_by_dynamic_path",
         lambda *_args, **_kwargs: {
             "ok": True,
             "context": object(),
@@ -482,49 +497,10 @@ def test_extract_entry_anchor_path_uses_exact_finance_org_anchor():
     )
 
 
-def test_header_anchor_wait_polls_current_canvas_every_point_two(monkeypatch):
-    calls = {"anchor": [], "sleep": []}
-
-    def fake_anchor(_jab, hwnd, timeout=0.05):
-        calls["anchor"].append((hwnd, timeout))
-        if len(calls["anchor"]) == 1:
-            return {"ok": False, "reason": "not ready"}
-        return {
-            "ok": True,
-            "scope_hwnd": hwnd,
-            "dynamic_index": 5,
-            "dynamic_prefix": "0.0.1.0.0.0.0.5",
-        }
-
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.resolve_receipt_header_anchor_in_canvas",
-        fake_anchor,
-    )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.time.sleep",
-        lambda seconds: calls["sleep"].append(seconds),
-    )
-
-    result = wait_receipt_header_anchor_in_current_canvas(
-        object(),
-        919586,
-        timeout=1.2,
-        interval=0.2,
-    )
-
-    assert result["ok"] is True
-    assert result["dynamic_index"] == 5
-    assert len(calls["anchor"]) == 2
-    assert calls["anchor"][0][0] == 919586
-    assert calls["sleep"] == [0.2]
-    assert result["poll_interval"] == 0.2
-
-
 def test_open_self_made_entry_always_runs_new_probe(monkeypatch):
     calls = []
 
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.run_receipt_new_probe",
+    patch_all(monkeypatch, "run_receipt_new_probe",
         lambda: calls.append("new-probe") or {"ok": True, "mode": "new-self-made"},
     )
 
@@ -539,12 +515,10 @@ def test_open_self_made_entry_reuses_existing_jab(monkeypatch):
     calls = []
     jab = object()
 
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.run_receipt_new_probe",
+    patch_all(monkeypatch, "run_receipt_new_probe",
         lambda: (_ for _ in ()).throw(AssertionError("不应起子进程开单")),
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.run_receipt_new_probe_with_jab",
+    patch_all(monkeypatch, "run_receipt_new_probe_with_jab",
         lambda actual_jab: (
             calls.append(actual_jab) or {"ok": True, "mode": "in-process"}
         ),
@@ -574,16 +548,14 @@ def test_save_receipt_uses_sendinput_ctrl_s_not_jab_button(monkeypatch):
             calls["maximize"].append(hwnd)
             return True
 
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.foreground_matches_window",
+    patch_all(monkeypatch, "foreground_matches_window",
         lambda window: {"ok": True, "target_window": window, "foreground": {}},
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.collect_receipt_new_windows",
+    patch_all(monkeypatch, "collect_receipt_new_windows",
         lambda _jab: [{"hwnd": 12345}],
     )
     monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.detect_receipt_parent_new_ready",
+        "tools.receipt_save_cancel.detect_receipt_parent_new_ready",
         lambda _windows: {
             "ok": True,
             "usable_new_button_count": 1,
@@ -595,16 +567,13 @@ def test_save_receipt_uses_sendinput_ctrl_s_not_jab_button(monkeypatch):
         calls["states"] += 1
         return {"ok": False, "reason": "已回到新增态"}
 
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.detect_self_made_entry_state",
+    patch_all(monkeypatch, "detect_self_made_entry_state",
         fake_detect,
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.root_hwnd",
+    patch_all(monkeypatch, "root_hwnd",
         lambda hwnd: hwnd,
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.send_hotkey_ctrl_s",
+    patch_all(monkeypatch, "send_hotkey_ctrl_s",
         lambda: calls.__setitem__("hotkey", calls["hotkey"] + 1),
     )
 
@@ -628,22 +597,18 @@ def test_save_receipt_stops_before_oracle_when_foreground_guard_fails(monkeypatc
         def maximize_window_by_handle(self, hwnd):
             return True
 
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.foreground_matches_window",
+    patch_all(monkeypatch, "foreground_matches_window",
         lambda _window: {"ok": False, "reason": "当前前台窗口不是目标 NC 窗口"},
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.root_hwnd",
+    patch_all(monkeypatch, "root_hwnd",
         lambda hwnd: hwnd,
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.send_hotkey_ctrl_s",
+    patch_all(monkeypatch, "send_hotkey_ctrl_s",
         lambda: (_ for _ in ()).throw(
             AssertionError("前台保护失败时不应触发 Ctrl+S")
         ),
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.collect_receipt_new_windows",
+    patch_all(monkeypatch, "collect_receipt_new_windows",
         lambda _jab: (_ for _ in ()).throw(
             AssertionError("Ctrl+S 未发出时不应继续等保存 oracle")
         ),
@@ -664,28 +629,23 @@ def test_save_receipt_promotes_scope_hwnd_to_root_before_hotkey(monkeypatch):
             calls["maximize"].append(hwnd)
             return True
 
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.root_hwnd",
+    patch_all(monkeypatch, "root_hwnd",
         lambda hwnd: 13579 if hwnd == 24680 else hwnd,
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.foreground_matches_window",
+    patch_all(monkeypatch, "foreground_matches_window",
         lambda window: calls["guard"].append(window) or {"ok": True},
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.send_hotkey_ctrl_s",
+    patch_all(monkeypatch, "send_hotkey_ctrl_s",
         lambda: calls.__setitem__("hotkey", calls["hotkey"] + 1),
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.collect_receipt_new_windows",
+    patch_all(monkeypatch, "collect_receipt_new_windows",
         lambda _jab: [{"hwnd": 13579}],
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.detect_self_made_entry_state",
+    patch_all(monkeypatch, "detect_self_made_entry_state",
         lambda _windows: {"ok": False, "reason": "已回到新增态"},
     )
     monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.detect_receipt_parent_new_ready",
+        "tools.receipt_save_cancel.detect_receipt_parent_new_ready",
         lambda _windows: {"ok": True, "usable_new_button_count": 1},
     )
 
@@ -709,28 +669,23 @@ def test_save_receipt_does_not_treat_missing_entry_buttons_as_success_without_ne
         def maximize_window_by_handle(self, hwnd):
             return True
 
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.foreground_matches_window",
+    patch_all(monkeypatch, "foreground_matches_window",
         lambda _window: {"ok": True},
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.collect_receipt_new_windows",
+    patch_all(monkeypatch, "collect_receipt_new_windows",
         lambda _jab: [{"hwnd": 12345}],
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.detect_self_made_entry_state",
+    patch_all(monkeypatch, "detect_self_made_entry_state",
         lambda _windows: {"ok": False, "reason": "三按钮读不到"},
     )
     monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.detect_receipt_parent_new_ready",
+        "tools.receipt_save_cancel.detect_receipt_parent_new_ready",
         lambda _windows: {"ok": False, "usable_new_button_count": 0},
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.root_hwnd",
+    patch_all(monkeypatch, "root_hwnd",
         lambda hwnd: hwnd,
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.send_hotkey_ctrl_s",
+    patch_all(monkeypatch, "send_hotkey_ctrl_s",
         lambda: None,
     )
 
@@ -820,8 +775,7 @@ def test_run_one_row_uses_detail_pipeline_verifier(monkeypatch):
         def close(self, timeout=1.0):
             calls["closed"] = timeout
 
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.open_self_made_entry",
+    patch_all(monkeypatch, "open_self_made_entry",
         lambda _config, _jab=None: {
             "ok": True,
             "entry_state": {
@@ -842,9 +796,8 @@ def test_run_one_row_uses_detail_pipeline_verifier(monkeypatch):
             },
         },
     )
-    monkeypatch.setattr("tools.receipt_full_flow_entry.JABOperator", FakeJAB)
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.fill_header",
+    patch_all(monkeypatch, "JABOperator", FakeJAB)
+    patch_all(monkeypatch, "fill_header",
         lambda _jab, _business, **kwargs: (
             calls["fill_header_kwargs"].append(kwargs)
             or [
@@ -857,8 +810,7 @@ def test_run_one_row_uses_detail_pipeline_verifier(monkeypatch):
             ]
         ),
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.locate_receipt_body_table_cached",
+    patch_all(monkeypatch, "locate_receipt_body_table_cached",
         lambda _jab, max_rows=5, **kwargs: (
             calls["body_locate_kwargs"].append(kwargs)
             or {
@@ -871,8 +823,7 @@ def test_run_one_row_uses_detail_pipeline_verifier(monkeypatch):
     def fail_sync_read_before(*_args, **_kwargs):
         raise AssertionError("完整流程不应在明细写入前同步读整表")
 
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.read_body_table",
+    patch_all(monkeypatch, "read_body_table",
         fail_sync_read_before,
     )
 
@@ -883,27 +834,22 @@ def test_run_one_row_uses_detail_pipeline_verifier(monkeypatch):
         step["async_verify_task"] = after_field(0, field, business, step)
         return [step]
 
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.write_detail_line_by_screen",
+    patch_all(monkeypatch, "write_detail_line_by_screen",
         fake_write_detail,
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.delete_extra_row_if_present",
+    patch_all(monkeypatch, "delete_extra_row_if_present",
         lambda *_args, **kwargs: (
             calls["delete_extra_kwargs"].append(kwargs) or {"ok": True}
         ),
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.wait_header_account_description",
+    patch_all(monkeypatch, "wait_header_account_description",
         lambda _jab, _timeout=0.0, scope=None: (
             calls["account_scope"].append(scope) or {"accepted": True}
         ),
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.DetailPipelineVerifier", FakeVerifier
+    patch_all(monkeypatch, "DetailPipelineVerifier", FakeVerifier
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.recover_cancelable_modal_now",
+    patch_all(monkeypatch, "recover_cancelable_modal_now",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("no-save 正常路径不应主动检查弹窗")
         ),
@@ -1007,13 +953,11 @@ def test_run_one_row_verifies_extra_text_fields_in_pipeline(monkeypatch):
         def close(self, timeout=1.0):
             pass
 
-    monkeypatch.setattr("tools.receipt_full_flow_entry.JABOperator", FakeJAB)
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.open_self_made_entry",
+    patch_all(monkeypatch, "JABOperator", FakeJAB)
+    patch_all(monkeypatch, "open_self_made_entry",
         lambda _config, _jab=None: open_report_with_header_anchor(),
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.fill_header",
+    patch_all(monkeypatch, "fill_header",
         lambda _jab, _business, **_kwargs: [
             {
                 "ok": True,
@@ -1023,19 +967,16 @@ def test_run_one_row_verifies_extra_text_fields_in_pipeline(monkeypatch):
             }
         ],
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.locate_receipt_body_table_cached",
+    patch_all(monkeypatch, "locate_receipt_body_table_cached",
         lambda *_args, **_kwargs: {
             "best": {"path": "0.1", "row_count": 1, "col_count": 25, "window": {}},
             "candidates": [],
         },
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.write_detail_line_by_screen",
+    patch_all(monkeypatch, "write_detail_line_by_screen",
         lambda *_args, **_kwargs: [{"ok": True}],
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.write_extra_text_fields",
+    patch_all(monkeypatch, "write_extra_text_fields",
         lambda *_args, **_kwargs: {
             "ok": True,
             "fields": [
@@ -1048,16 +989,13 @@ def test_run_one_row_verifies_extra_text_fields_in_pipeline(monkeypatch):
             ],
         },
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.delete_extra_row_if_present",
+    patch_all(monkeypatch, "delete_extra_row_if_present",
         lambda *_args, **_kwargs: {"ok": True},
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.wait_header_account_description",
+    patch_all(monkeypatch, "wait_header_account_description",
         lambda *_args, **_kwargs: {"accepted": True},
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.DetailPipelineVerifier", FakeVerifier
+    patch_all(monkeypatch, "DetailPipelineVerifier", FakeVerifier
     )
 
     report = run_one_row(
@@ -1093,14 +1031,10 @@ def test_write_extra_text_field_rewrites_when_first_paste_does_not_land(monkeypa
         def release_contexts(self, _vm_id, _contexts):
             pass
 
-    monkeypatch.setattr(
-        full_flow,
-        "get_receipt_header_path_template",
+    patch_all(monkeypatch, "get_receipt_header_path_template",
         lambda dynamic_index: {"text_suffix_template": "memo.{index}.0"},
     )
-    monkeypatch.setattr(
-        full_flow,
-        "find_receipt_header_field_by_dynamic_path",
+    patch_all(monkeypatch, "find_receipt_header_field_by_dynamic_path",
         lambda *_args, **_kwargs: {
             "ok": True,
             "context": object(),
@@ -1117,7 +1051,7 @@ def test_write_extra_text_field_rewrites_when_first_paste_does_not_land(monkeypa
         paste_values.append(value)
         return {"ok": True, "enter_ok": True}
 
-    monkeypatch.setattr(full_flow, "guarded_paste_header_value", fake_paste)
+    patch_all(monkeypatch, "guarded_paste_header_value", fake_paste)
     monkeypatch.setattr(full_flow.time, "sleep", lambda *_args, **_kwargs: None)
 
     result = write_extra_text_field_by_dynamic_path(
@@ -1146,14 +1080,10 @@ def test_write_extra_text_field_fails_when_rewrite_still_does_not_land(monkeypat
         def release_contexts(self, _vm_id, _contexts):
             pass
 
-    monkeypatch.setattr(
-        full_flow,
-        "get_receipt_header_path_template",
+    patch_all(monkeypatch, "get_receipt_header_path_template",
         lambda dynamic_index: {"text_suffix_template": "memo.{index}.0"},
     )
-    monkeypatch.setattr(
-        full_flow,
-        "find_receipt_header_field_by_dynamic_path",
+    patch_all(monkeypatch, "find_receipt_header_field_by_dynamic_path",
         lambda *_args, **_kwargs: {
             "ok": True,
             "context": object(),
@@ -1164,9 +1094,7 @@ def test_write_extra_text_field_fails_when_rewrite_still_does_not_land(monkeypat
             "source": "dynamic-path",
         },
     )
-    monkeypatch.setattr(
-        full_flow,
-        "guarded_paste_header_value",
+    patch_all(monkeypatch, "guarded_paste_header_value",
         lambda *_args: {"ok": True, "enter_ok": True},
     )
     monkeypatch.setattr(full_flow.time, "sleep", lambda *_args, **_kwargs: None)
@@ -1206,9 +1134,7 @@ def test_ensure_header_counterparty_customer_skips_when_already_customer(monkeyp
             pass
 
     jab = FakeJAB()
-    monkeypatch.setattr(
-        full_flow,
-        "read_detail_counterparty_value",
+    monkeypatch.setattr(cp, "read_detail_counterparty_value",
         lambda *_args, **_kwargs: {
             "ok": True,
             "source": "detail-row0-col0",
@@ -1304,9 +1230,7 @@ def test_ensure_header_counterparty_customer_skips_when_embedded_selected_custom
             pass
 
     jab = FakeJAB()
-    monkeypatch.setattr(
-        full_flow,
-        "read_detail_counterparty_value",
+    monkeypatch.setattr(cp, "read_detail_counterparty_value",
         lambda *_args, **_kwargs: {
             "ok": True,
             "source": "detail-row0-col0",
@@ -1385,9 +1309,7 @@ def test_ensure_header_counterparty_customer_fails_when_detail_conflicts_with_st
         def release_contexts(self, _vm_id, _contexts):
             pass
 
-    monkeypatch.setattr(
-        full_flow,
-        "read_detail_counterparty_value",
+    monkeypatch.setattr(cp, "read_detail_counterparty_value",
         lambda *_args, **_kwargs: {
             "ok": True,
             "source": "detail-row0-col0",
@@ -1505,17 +1427,13 @@ def test_ensure_header_counterparty_customer_repairs_blank_detail_with_embedded_
             },
         ]
     )
-    monkeypatch.setattr(
-        full_flow,
-        "read_detail_counterparty_value",
+    monkeypatch.setattr(cp, "read_detail_counterparty_value",
         lambda *_args, **_kwargs: next(reads),
     )
     monkeypatch.setattr(full_flow.time, "sleep", lambda *_args, **_kwargs: None)
 
     jab = FakeJAB()
-    monkeypatch.setattr(
-        full_flow,
-        "find_counterparty_combo",
+    monkeypatch.setattr(cp, "find_counterparty_combo",
         lambda *_args, **_kwargs: {
             "ok": True,
             "source": "nearby",
@@ -1557,9 +1475,7 @@ def test_ensure_header_counterparty_customer_skips_when_detail_row0_col0_custome
         def release_contexts(self, _vm_id, _contexts):
             pass
 
-    monkeypatch.setattr(
-        full_flow,
-        "read_detail_counterparty_value",
+    monkeypatch.setattr(cp, "read_detail_counterparty_value",
         lambda *_args, **_kwargs: {
             "ok": True,
             "source": "detail-row0-col0",
@@ -1603,22 +1519,16 @@ def test_ensure_header_counterparty_customer_skips_lower_detail_without_header_l
         def release_contexts(self, _vm_id, _contexts):
             pass
 
-    monkeypatch.setattr(full_flow, "_COUNTERPARTY_NEARBY_SUFFIX_CACHE", {})
-    monkeypatch.setattr(
-        full_flow,
-        "find_counterparty_combo",
+    monkeypatch.setattr(cp, "_COUNTERPARTY_NEARBY_SUFFIX_CACHE", {})
+    monkeypatch.setattr(cp, "find_counterparty_combo",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("lower detail 已是客户时不应定位上方往来对象")
         ),
     )
-    monkeypatch.setattr(
-        full_flow,
-        "receipt_header_dynamic_prefix",
+    patch_all(monkeypatch, "receipt_header_dynamic_prefix",
         lambda dynamic_index: "0.0.1.0.0.0.0.5",
     )
-    monkeypatch.setattr(
-        full_flow,
-        "read_detail_counterparty_value",
+    monkeypatch.setattr(cp, "read_detail_counterparty_value",
         lambda *_args, **_kwargs: {
             "ok": True,
             "source": "detail-row0-col0",
@@ -1633,7 +1543,7 @@ def test_ensure_header_counterparty_customer_skips_lower_detail_without_header_l
 
     assert result["ok"] is True
     assert result["path"] is None
-    assert full_flow._COUNTERPARTY_NEARBY_SUFFIX_CACHE == {}
+    assert cp._COUNTERPARTY_NEARBY_SUFFIX_CACHE == {}
 
 
 def test_find_counterparty_combo_uses_cached_nearby_suffix(monkeypatch):
@@ -1642,13 +1552,11 @@ def test_find_counterparty_combo_uses_cached_nearby_suffix(monkeypatch):
     class FakeJAB:
         pass
 
-    monkeypatch.setattr(full_flow, "_COUNTERPARTY_NEARBY_SUFFIX_CACHE", {})
-    monkeypatch.setattr(
-        full_flow,
-        "receipt_header_dynamic_prefix",
+    monkeypatch.setattr(cp, "_COUNTERPARTY_NEARBY_SUFFIX_CACHE", {})
+    patch_all(monkeypatch, "receipt_header_dynamic_prefix",
         lambda dynamic_index: "0.0.1.0.0.0.0.5",
     )
-    full_flow._COUNTERPARTY_NEARBY_SUFFIX_CACHE[2002] = {
+    cp._COUNTERPARTY_NEARBY_SUFFIX_CACHE[2002] = {
         "suffix": "nearby.suffix",
         "path": "old",
     }
@@ -1664,16 +1572,14 @@ def test_find_counterparty_combo_uses_cached_nearby_suffix(monkeypatch):
             "path": path,
         }
 
-    monkeypatch.setattr(full_flow, "find_counterparty_combo_by_path", fake_find_by_path)
-    monkeypatch.setattr(
-        full_flow,
-        "find_counterparty_combo_nearby",
+    monkeypatch.setattr(cp, "find_counterparty_combo_by_path", fake_find_by_path)
+    monkeypatch.setattr(cp, "find_counterparty_combo_nearby",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("nearby should not run when cached path works")
         ),
     )
 
-    result = full_flow.find_counterparty_combo(FakeJAB(), 5, scope_hwnd=2002)
+    result = cp.find_counterparty_combo(FakeJAB(), 5, scope_hwnd=2002)
 
     assert result["ok"] is True
     assert result["source"] == "nearby-cache-path"
@@ -1757,13 +1663,11 @@ def test_find_counterparty_combo_nearby_handles_label_path_triples(monkeypatch):
         def release_contexts(self, _vm_id, contexts):
             self.released.extend(contexts or [])
 
-    monkeypatch.setattr(
-        full_flow,
-        "receipt_header_dynamic_prefix",
+    patch_all(monkeypatch, "receipt_header_dynamic_prefix",
         lambda dynamic_index: "0.0.1.0.0.0.0.2",
     )
 
-    result = full_flow.find_counterparty_combo_nearby(
+    result = cp.find_counterparty_combo_nearby(
         FakeJAB(),
         2,
         scope_hwnd=2002,
@@ -1796,9 +1700,7 @@ def test_ensure_header_counterparty_customer_fails_when_existing_non_target_valu
         def release_contexts(self, _vm_id, _contexts):
             pass
 
-    monkeypatch.setattr(
-        full_flow,
-        "read_detail_counterparty_value",
+    monkeypatch.setattr(cp, "read_detail_counterparty_value",
         lambda *_args, **_kwargs: {
             "ok": True,
             "source": "detail-row0-col0",
@@ -1836,9 +1738,7 @@ def test_ensure_header_counterparty_customer_trusts_detail_over_stale_header_tex
         def release_contexts(self, _vm_id, _contexts):
             pass
 
-    monkeypatch.setattr(
-        full_flow,
-        "read_detail_counterparty_value",
+    monkeypatch.setattr(cp, "read_detail_counterparty_value",
         lambda *_args, **_kwargs: {
             "ok": True,
             "source": "detail-row0-col0",
@@ -1873,9 +1773,7 @@ def test_ensure_header_counterparty_customer_failure_includes_detail_diagnostic(
         def release_contexts(self, _vm_id, _contexts):
             pass
 
-    monkeypatch.setattr(
-        full_flow,
-        "read_detail_counterparty_value",
+    monkeypatch.setattr(cp, "read_detail_counterparty_value",
         lambda *_args, **_kwargs: {"ok": False, "value": "", "text": "", "reason": "明细表 path 未定位"},
     )
     result = REAL_ENSURE_HEADER_COUNTERPARTY_CUSTOMER(FakeJAB(), 5, scope_hwnd=2002)
@@ -1929,8 +1827,7 @@ def test_run_one_row_resolves_header_scope_by_finance_org_fast_path(monkeypatch)
         def close(self, timeout=1.0):
             pass
 
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.open_self_made_entry",
+    patch_all(monkeypatch, "open_self_made_entry",
         lambda _config, _jab=None: {
             "ok": True,
             "entry_state": {
@@ -1947,9 +1844,8 @@ def test_run_one_row_resolves_header_scope_by_finance_org_fast_path(monkeypatch)
             },
         },
     )
-    monkeypatch.setattr("tools.receipt_full_flow_entry.JABOperator", FakeJAB)
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.find_finance_org_header_scope_by_paths",
+    patch_all(monkeypatch, "JABOperator", FakeJAB)
+    patch_all(monkeypatch, "find_finance_org_header_scope_by_paths",
         lambda _jab, hwnd, **kwargs: (
             calls["finance_scope"].append((hwnd, kwargs))
             or {
@@ -1964,8 +1860,7 @@ def test_run_one_row_resolves_header_scope_by_finance_org_fast_path(monkeypatch)
             }
         ),
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.fill_header",
+    patch_all(monkeypatch, "fill_header",
         lambda jab, _business, **kwargs: (
             calls["fill_header_kwargs"].append(kwargs)
             or calls["fill_header_scope_cache"].append(
@@ -1974,8 +1869,7 @@ def test_run_one_row_resolves_header_scope_by_finance_org_fast_path(monkeypatch)
             or [{"ok": True, "label": "客户", "accepted_text": "ACME LTD"}]
         ),
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.locate_receipt_body_table_cached",
+    patch_all(monkeypatch, "locate_receipt_body_table_cached",
         lambda _jab, max_rows=5, **kwargs: (
             calls["body_locate_kwargs"].append(kwargs)
             or {
@@ -1989,20 +1883,16 @@ def test_run_one_row_resolves_header_scope_by_finance_org_fast_path(monkeypatch)
             }
         ),
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.write_detail_line_by_screen",
+    patch_all(monkeypatch, "write_detail_line_by_screen",
         lambda *_args, **_kwargs: [{"ok": True}],
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.delete_extra_row_if_present",
+    patch_all(monkeypatch, "delete_extra_row_if_present",
         lambda *_args, **_kwargs: {"ok": True},
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.wait_header_account_description",
+    patch_all(monkeypatch, "wait_header_account_description",
         lambda *_args, **_kwargs: {"accepted": True},
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.DetailPipelineVerifier", FakeVerifier
+    patch_all(monkeypatch, "DetailPipelineVerifier", FakeVerifier
     )
 
     report = run_one_row({}, plan_row(10), save_enabled=False)
@@ -2065,8 +1955,7 @@ def test_run_one_row_stops_when_current_canvas_header_scope_missing(monkeypatch)
         def close(self):
             return None
 
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.open_self_made_entry",
+    patch_all(monkeypatch, "open_self_made_entry",
         lambda _config, _jab=None: {
             "ok": True,
             "entry_state": {
@@ -2083,22 +1972,19 @@ def test_run_one_row_stops_when_current_canvas_header_scope_missing(monkeypatch)
             },
         },
     )
-    monkeypatch.setattr("tools.receipt_full_flow_entry.JABOperator", FakeJAB)
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.find_finance_org_header_scope_by_paths",
+    patch_all(monkeypatch, "JABOperator", FakeJAB)
+    patch_all(monkeypatch, "find_finance_org_header_scope_by_paths",
         lambda *_args, **_kwargs: {
             "ok": False,
             "reason": "当前 canvas 未通过财务组织(O) dynamic path 扫描",
         },
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.fill_header",
+    patch_all(monkeypatch, "fill_header",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("锚点失败后不应进入表头写入")
         ),
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.locate_receipt_body_table_cached",
+    patch_all(monkeypatch, "locate_receipt_body_table_cached",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("锚点失败后不应定位明细表")
         ),
@@ -2222,8 +2108,7 @@ def test_run_one_row_repairs_pending_detail_field_with_cached_path(monkeypatch):
         def close(self, timeout=1.0):
             calls["closed"] = timeout
 
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.open_self_made_entry",
+    patch_all(monkeypatch, "open_self_made_entry",
         lambda _config, _jab=None: {
             "ok": True,
             "entry_state": {
@@ -2243,9 +2128,8 @@ def test_run_one_row_repairs_pending_detail_field_with_cached_path(monkeypatch):
             },
         },
     )
-    monkeypatch.setattr("tools.receipt_full_flow_entry.JABOperator", FakeJAB)
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.fill_header",
+    patch_all(monkeypatch, "JABOperator", FakeJAB)
+    patch_all(monkeypatch, "fill_header",
         lambda *_args, **_kwargs: [
             {"ok": True, "label": "客户", "accepted_text": "ACME LTD"}
         ],
@@ -2255,12 +2139,10 @@ def test_run_one_row_repairs_pending_detail_field_with_cached_path(monkeypatch):
         calls["locate"] += 1
         return located
 
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.locate_receipt_body_table_cached",
+    patch_all(monkeypatch, "locate_receipt_body_table_cached",
         fake_locate,
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.read_body_table",
+    patch_all(monkeypatch, "read_body_table",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("修复成功后不应整表读 fallback")
         ),
@@ -2320,27 +2202,21 @@ def test_run_one_row_repairs_pending_detail_field_with_cached_path(monkeypatch):
             "target": {"row": row_index, "col": field["col"]},
         }
 
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.write_detail_line_by_screen",
+    patch_all(monkeypatch, "write_detail_line_by_screen",
         fake_write_detail,
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.write_field_once",
+    patch_all(monkeypatch, "write_field_once",
         fake_write_field_once,
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.delete_extra_row_if_present",
+    patch_all(monkeypatch, "delete_extra_row_if_present",
         lambda *_args, **_kwargs: {"ok": True},
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.wait_header_account_description",
+    patch_all(monkeypatch, "wait_header_account_description",
         lambda *_args, **_kwargs: {"accepted": True},
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.DetailPipelineVerifier", RepairingVerifier
+    patch_all(monkeypatch, "DetailPipelineVerifier", RepairingVerifier
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.recover_cancelable_modal_now",
+    patch_all(monkeypatch, "recover_cancelable_modal_now",
         lambda *_args, **_kwargs: {"ok": False, "attempted": False},
     )
 
@@ -2540,38 +2416,31 @@ def test_run_one_row_recovers_modal_only_after_save_failure(monkeypatch):
         def close(self, timeout=1.0):
             pass
 
-    monkeypatch.setattr("tools.receipt_full_flow_entry.JABOperator", LocalFakeJAB)
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.open_self_made_entry",
+    patch_all(monkeypatch, "JABOperator", LocalFakeJAB)
+    patch_all(monkeypatch, "open_self_made_entry",
         lambda _config, _jab=None: open_report_with_header_anchor(),
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.fill_header",
+    patch_all(monkeypatch, "fill_header",
         lambda *_args, **_kwargs: [
             {"ok": True, "label": "客户", "accepted_text": "ACME LTD"}
         ],
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.locate_receipt_body_table_cached",
+    patch_all(monkeypatch, "locate_receipt_body_table_cached",
         lambda *_args, **_kwargs: {
             "best": {"path": "0.1", "row_count": 1, "col_count": 25, "window": {}},
             "candidates": [],
         },
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.write_detail_line_by_screen",
+    patch_all(monkeypatch, "write_detail_line_by_screen",
         lambda *_args, **_kwargs: [{"ok": True}],
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.delete_extra_row_if_present",
+    patch_all(monkeypatch, "delete_extra_row_if_present",
         lambda *_args, **_kwargs: {"ok": True},
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.wait_header_account_description",
+    patch_all(monkeypatch, "wait_header_account_description",
         lambda *_args, **_kwargs: {"accepted": True},
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.DetailPipelineVerifier", LocalFakeVerifier
+    patch_all(monkeypatch, "DetailPipelineVerifier", LocalFakeVerifier
     )
 
     def fake_save(*_args, **_kwargs):
@@ -2580,11 +2449,9 @@ def test_run_one_row_recovers_modal_only_after_save_failure(monkeypatch):
             return {"ok": False, "reason": "前台窗口不是目标 NC 窗口"}
         return {"ok": True, "triggered": True}
 
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.save_receipt_by_ctrl_s", fake_save
+    patch_all(monkeypatch, "save_receipt_by_ctrl_s", fake_save
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.recover_cancelable_modal_now",
+    patch_all(monkeypatch, "recover_cancelable_modal_now",
         lambda *_args, **_kwargs: (
             calls.__setitem__("recover", calls["recover"] + 1)
             or {"ok": True, "attempted": True}
@@ -2630,45 +2497,36 @@ def test_run_one_row_stops_when_customer_name_readback_is_empty(monkeypatch):
         def close(self, timeout=1.0):
             pass
 
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.open_self_made_entry",
+    patch_all(monkeypatch, "open_self_made_entry",
         lambda _config, _jab=None: open_report_with_header_anchor(),
     )
-    monkeypatch.setattr("tools.receipt_full_flow_entry.JABOperator", LocalFakeJAB)
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.fill_header",
+    patch_all(monkeypatch, "JABOperator", LocalFakeJAB)
+    patch_all(monkeypatch, "fill_header",
         lambda _jab, _business, **_kwargs: [
             {"ok": True, "label": "客户", "value": "YW03574"}
         ],
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.locate_receipt_body_table_cached",
+    patch_all(monkeypatch, "locate_receipt_body_table_cached",
         lambda _jab, max_rows=5, **_kwargs: {
             "best": {"path": "0.1", "row_count": 1, "col_count": 25, "window": {}},
             "candidates": [],
         },
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.read_body_table",
+    patch_all(monkeypatch, "read_body_table",
         lambda _jab, step: {"ok": True, "step": step, "rows": []},
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.write_detail_line_by_screen",
+    patch_all(monkeypatch, "write_detail_line_by_screen",
         lambda *_args, **_kwargs: [{"ok": True}],
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.delete_extra_row_if_present",
+    patch_all(monkeypatch, "delete_extra_row_if_present",
         lambda *_args, **_kwargs: {"ok": True},
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.wait_header_account_description",
+    patch_all(monkeypatch, "wait_header_account_description",
         lambda *_args, **_kwargs: {"accepted": True},
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.DetailPipelineVerifier", LocalFakeVerifier
+    patch_all(monkeypatch, "DetailPipelineVerifier", LocalFakeVerifier
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.recover_cancelable_modal_now",
+    patch_all(monkeypatch, "recover_cancelable_modal_now",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("no-save 正常路径不应主动检查弹窗")
         ),
@@ -2716,13 +2574,11 @@ def test_run_one_row_continues_when_header_account_readback_is_empty(monkeypatch
         def close(self, timeout=1.0):
             pass
 
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.open_self_made_entry",
+    patch_all(monkeypatch, "open_self_made_entry",
         lambda _config, _jab=None: open_report_with_header_anchor(),
     )
-    monkeypatch.setattr("tools.receipt_full_flow_entry.JABOperator", LocalFakeJAB)
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.fill_header",
+    patch_all(monkeypatch, "JABOperator", LocalFakeJAB)
+    patch_all(monkeypatch, "fill_header",
         lambda _jab, _business, **_kwargs: [
             {
                 "ok": True,
@@ -2732,37 +2588,30 @@ def test_run_one_row_continues_when_header_account_readback_is_empty(monkeypatch
             }
         ],
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.locate_receipt_body_table_cached",
+    patch_all(monkeypatch, "locate_receipt_body_table_cached",
         lambda _jab, max_rows=5, **_kwargs: {
             "best": {"path": "0.1", "row_count": 1, "col_count": 25, "window": {}},
             "candidates": [],
         },
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.read_body_table",
+    patch_all(monkeypatch, "read_body_table",
         lambda _jab, step: {"ok": True, "step": step, "rows": []},
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.write_detail_line_by_screen",
+    patch_all(monkeypatch, "write_detail_line_by_screen",
         lambda *_args, **_kwargs: [{"ok": True}],
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.delete_extra_row_if_present",
+    patch_all(monkeypatch, "delete_extra_row_if_present",
         lambda *_args, **_kwargs: {"ok": True},
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.wait_header_account_description",
+    patch_all(monkeypatch, "wait_header_account_description",
         lambda _jab, timeout=5.0, **_kwargs: (
             account_readback_timeouts.append(timeout)
             or {"accepted": False, "description": "", "text": ""}
         ),
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.DetailPipelineVerifier", LocalFakeVerifier
+    patch_all(monkeypatch, "DetailPipelineVerifier", LocalFakeVerifier
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.recover_cancelable_modal_now",
+    patch_all(monkeypatch, "recover_cancelable_modal_now",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("no-save 正常路径不应主动检查弹窗")
         ),
@@ -2799,14 +2648,12 @@ def test_pause_after_customer_diagnoses_cleared_header_and_stops(monkeypatch):
         def release_contexts(self, vm_id, contexts):
             return None
 
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.open_self_made_entry",
+    patch_all(monkeypatch, "open_self_made_entry",
         lambda _config, _jab=None: open_report_with_header_anchor(),
     )
-    monkeypatch.setattr("tools.receipt_full_flow_entry.JABOperator", LocalFakeJAB)
+    patch_all(monkeypatch, "JABOperator", LocalFakeJAB)
     monkeypatch.setattr("builtins.input", lambda _prompt: "")
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.find_receipt_header_field_by_dynamic_path",
+    patch_all(monkeypatch, "find_receipt_header_field_by_dynamic_path",
         lambda _jab, label, dynamic_index, **_kwargs: {
             "ok": True,
             "context": object(),
@@ -2816,8 +2663,7 @@ def test_pause_after_customer_diagnoses_cleared_header_and_stops(monkeypatch):
             "dynamic_prefix": "0.0.1.0.0.0.0.5",
         },
     )
-    monkeypatch.setattr(
-        "tools.receipt_full_flow_entry.locate_receipt_body_table_cached",
+    patch_all(monkeypatch, "locate_receipt_body_table_cached",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("表头诊断失败后不应继续定位明细表")
         ),
@@ -2857,7 +2703,7 @@ def test_pause_after_customer_diagnoses_cleared_header_and_stops(monkeypatch):
             )
         return steps
 
-    monkeypatch.setattr("tools.receipt_full_flow_entry.fill_header", fake_fill_header)
+    patch_all(monkeypatch, "fill_header", fake_fill_header)
 
     report = run_one_row(
         {},

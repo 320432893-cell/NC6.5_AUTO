@@ -16,9 +16,9 @@ if str(ROOT) not in sys.path:
 
 from core.jab_operator import JABOperator  # noqa: E402
 from core.utils import load_config  # noqa: E402
-from tools.jab_environment import prepare_java_access_bridge  # noqa: E402
+from core.jab_environment import prepare_java_access_bridge  # noqa: E402
 from tools.jab_health_check import check_jab_ready  # noqa: E402
-from tools.jab_probe import enum_windows  # noqa: E402
+from core.jab_probe import enum_windows  # noqa: E402
 from tools.receipt_new_probe import foreground_info, root_hwnd  # noqa: E402
 from tools.receipt_query_guard import guard_receipt_parent_page  # noqa: E402
 from tools.receipt_self_made_fill_trial import (  # noqa: E402

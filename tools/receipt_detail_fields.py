@@ -293,17 +293,6 @@ def field_mismatch_reason(step, actual, prefix="读回值未匹配目标值"):
     )
 
 
-def validate_step_from_cells(step, cells, screen_ok=True, reason=None):
-    actual = cells.get(str(step["col"]))
-    ok = bool(screen_ok) and field_matches(
-        actual, step.get("raw_value") or step["value"], step.get("kind")
-    )
-    step["ok"] = ok
-    step["blocked"] = not ok
-    step["actual"] = actual
-    step["reason"] = None if ok else reason or field_mismatch_reason(step, actual)
-
-
 def apply_readback_to_steps(steps, cells):
     for step in steps:
         actual = cells.get(str(step["col"]))

@@ -139,8 +139,6 @@ def write_field_once(
         "typing_interval": field.get("typing_interval", 0.0),
         "edit_mode": field.get("edit_mode", "editor"),
         "input_mode": field.get("input_mode", "paste"),
-        "pre_input_key": field.get("pre_input_key"),
-        "pre_input_wait": field.get("pre_input_wait", 0.0),
         "pre_commit_wait": field.get("pre_commit_wait", 0.025),
         "commit_col": current_col_after_commit(target_col, field.get("commit_key")),
         "commit_target": {
@@ -287,8 +285,6 @@ def write_field_value_to_focused_cell(
         typing_interval=field.get("typing_interval", 0.0),
         edit_mode=field.get("edit_mode", "editor"),
         input_mode=field.get("input_mode", "paste"),
-        pre_input_key=field.get("pre_input_key"),
-        pre_input_wait=field.get("pre_input_wait", 0.0),
         pre_commit_wait=field.get("pre_commit_wait", 0.025),
         recover_after_failure=recover_after_failure,
     )

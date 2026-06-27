@@ -9,7 +9,6 @@ from tools.receipt_body_table_locator import locate_receipt_body_table_cached
 from tools.receipt_detail_fields import (
     ACCOUNT_COL,
     FEE_FIELDS,
-    SUBJECT_COL,
     build_fee_business,
     cells_from_steps,
     normalize_text,

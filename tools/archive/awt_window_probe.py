@@ -10,7 +10,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from core.utils import load_config  # noqa: E402
-from tools.jab_probe import (  # noqa: E402
+from core.jab_probe import (  # noqa: E402
     AccessibleActions,
     AccessibleContextInfo,
     JOBJECT,

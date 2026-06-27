@@ -1,6 +1,6 @@
 # 职责：封装 JAB 表格发现、缓存、选择、快照读取和金额/关联方匹配
 # 不做什么：不读取单元格底层 ctypes 结构，不做 context path 动作，不发送全局键盘输入
-# 允许依赖层：标准库 ctypes/os/time、JABOperator 暴露的 dll/table/context 能力、tools.jab_probe 窗口枚举
+# 允许依赖层：标准库 ctypes/os/time、JABOperator 暴露的 dll/table/context 能力、core.jab_probe 窗口枚举
 # 谁不应该 import：Excel/Sheet 读写、收款匹配、配置解析模块不应 import
 
 import ctypes
@@ -10,7 +10,7 @@ import time
 
 from core.logger import log
 from core.utils import check_abort
-from tools.jab_probe import JOBJECT, enum_windows
+from core.jab_probe import JOBJECT, enum_windows
 
 
 def find_amount_rows(jab, amount, amount_col=None, timeout=None):

@@ -33,7 +33,7 @@ from tools.archive.probe_receipt_counterparty_methods import (  # noqa: E402
     root_hwnd,
     select_embedded_customer_option,
 )
-from tools.jab_probe import AccessibleTableCellInfo  # noqa: E402
+from core.jab_probe import AccessibleTableCellInfo  # noqa: E402
 
 EXPECTED = "客户"
 KNOWN_OPTIONS = {"客户", "部门", "业务员", "供应商"}

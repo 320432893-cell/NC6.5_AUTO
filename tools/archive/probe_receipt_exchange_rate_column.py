@@ -11,7 +11,7 @@ if str(ROOT) not in sys.path:
 
 from core.jab_operator import JABOperator  # noqa: E402
 from core.utils import load_config  # noqa: E402
-from tools.jab_probe import AccessibleTableCellInfo  # noqa: E402
+from core.jab_probe import AccessibleTableCellInfo  # noqa: E402
 from tools.receipt_body_table_locator import (  # noqa: E402
     KEY_COLUMNS,
     locate_receipt_body_table_cached,
@@ -303,7 +303,7 @@ def describe_context_from_info(jab, vm_id, context, info, text_value):
 
 
 def get_action_names(jab, vm_id, context):
-    from tools.jab_probe import AccessibleActions
+    from core.jab_probe import AccessibleActions
 
     actions = AccessibleActions()
     if not jab.dll.getAccessibleActions(vm_id, context, ctypes.byref(actions)):

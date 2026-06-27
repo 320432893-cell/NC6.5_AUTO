@@ -287,43 +287,6 @@ class NCPendingWorkflow:
                 "excel_rows": [match.item.row for match in saved_matches],
             }
 
-    def handle_generate_match_issues(self, issues: list[MatchIssue]) -> None:
-        duplicate_issues = [issue for issue in issues if issue.is_duplicate_match()]
-        if not duplicate_issues:
-            return
-
-        self.run_state.event(
-            "duplicate_match_issues",
-            policy=self.duplicate_match_policy,
-            count=len(duplicate_issues),
-            issues=[
-                {
-                    "excel_row": issue.item.row,
-                    "amount": str(issue.item.amount),
-                    "partner": issue.item.partner,
-                    "nc_rows": issue.rows,
-                }
-                for issue in duplicate_issues
-            ],
-        )
-
-        if self.duplicate_match_policy == "skip":
-            log.warning(
-                "待生成表存在重复匹配，按配置跳过异常行继续: "
-                f"excel_rows={[issue.item.row for issue in duplicate_issues]}"
-            )
-            return
-
-        detail = "; ".join(
-            f"Excel行{issue.item.row} {issue.reason} NC行{issue.rows} "
-            f"amount={issue.item.amount} partner={issue.item.partner}"
-            for issue in duplicate_issues
-        )
-        raise TableMatchError(
-            "待生成表匹配不唯一，已暂停，未点击生成。"
-            "如确认要跳过异常行继续，使用 --on-duplicate skip。"
-            f" 异常: {detail}"
-        )
 
     def ensure_full_pending_match(self, pending, matches, issues) -> None:
         if self.duplicate_match_policy == "skip":

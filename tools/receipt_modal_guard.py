@@ -1,6 +1,6 @@
 # 职责: 识别收款单保存前可取消的 NC Java 模态弹窗，并用 Alt+C 恢复页面
 # 不做什么: 不写表头/明细，不保存/暂存，不枚举业务弹窗白名单
-# 允许依赖层: 标准库 ctypes/time、tools.jab_probe、tools.receipt_keyboard_utils
+# 允许依赖层: 标准库 ctypes/time、core.jab_probe、tools.receipt_keyboard_utils
 # 谁不应该 import: core、配置校验、Excel/Sheet 写入模块不应 import
 
 import ctypes
@@ -8,7 +8,7 @@ from ctypes import wintypes
 import sys
 import time
 
-from tools.jab_probe import JOBJECT, enum_windows
+from core.jab_probe import JOBJECT, enum_windows
 from tools.receipt_keyboard_utils import send_hotkey_alt_c
 
 
@@ -39,70 +39,6 @@ def recover_cancelable_modal_now(jab, stage="", settle_timeout=0.25):
     event["ok"] = not still_recoverable
     event["reason"] = None if event["ok"] else "Alt+C 后仍存在带取消按钮的 Java 弹窗"
     return event
-
-
-def retry_after_cancelable_modal(
-    action,
-    recover_jab,
-    *,
-    stage="",
-    retry_once=True,
-    is_success=None,
-):
-    try:
-        result = action()
-    except Exception as exc:
-        recovery = recover_cancelable_modal_now(recover_jab, stage=stage)
-        if recovery.get("attempted") and recovery.get("ok") and retry_once:
-            try:
-                retried = action()
-            except Exception as retry_exc:
-                return {
-                    "ok": False,
-                    "exception": f"{type(retry_exc).__name__}: {retry_exc}",
-                    "modal_recovery": recovery,
-                    "retried": True,
-                }
-            return {
-                "ok": bool(is_success(retried) if is_success else retried),
-                "result": retried,
-                "modal_recovery": recovery,
-                "retried": True,
-            }
-        return {
-            "ok": False,
-            "exception": f"{type(exc).__name__}: {exc}",
-            "modal_recovery": recovery,
-            "retried": False,
-        }
-    ok = bool(is_success(result) if is_success else result)
-    if ok:
-        return {"ok": True, "result": result, "retried": False}
-    recovery = recover_cancelable_modal_now(recover_jab, stage=stage)
-    if recovery.get("attempted") and recovery.get("ok") and retry_once:
-        try:
-            retried = action()
-        except Exception as retry_exc:
-            return {
-                "ok": False,
-                "exception": f"{type(retry_exc).__name__}: {retry_exc}",
-                "result": result,
-                "modal_recovery": recovery,
-                "retried": True,
-            }
-        return {
-            "ok": bool(is_success(retried) if is_success else retried),
-            "result": retried,
-            "first_result": result,
-            "modal_recovery": recovery,
-            "retried": True,
-        }
-    return {
-        "ok": False,
-        "result": result,
-        "modal_recovery": recovery,
-        "retried": False,
-    }
 
 
 def focus_window(hwnd):

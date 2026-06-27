@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.jab_environment import prepare_java_access_bridge  # noqa: E402
+from core.jab_environment import prepare_java_access_bridge  # noqa: E402
 from core.jab_operator import JABOperator  # noqa: E402
 from core.utils import load_config  # noqa: E402
 from tools.receipt_modal_guard import (  # noqa: E402

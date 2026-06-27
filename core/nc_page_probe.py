@@ -1,4 +1,4 @@
-from tools.jab_probe import JOBJECT, enum_windows
+from core.jab_probe import JOBJECT, enum_windows
 
 
 WATCH_NAMES = (

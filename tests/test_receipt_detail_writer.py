@@ -734,46 +734,6 @@ def test_write_detail_line_allows_amount_when_neighbors_unchanged(monkeypatch):
     assert verify["neighbor_guard_after"]["changes"] == []
 
 
-def test_keyboard_write_can_press_pre_input_key_without_editor_clear(monkeypatch):
-    from tools import receipt_detail_screen_writer as screen
-
-    keys = []
-
-    monkeypatch.setattr(
-        screen,
-        "foreground_matches_table",
-        lambda _window: {"ok": True, "foreground": {"hwnd": 1}},
-    )
-    monkeypatch.setattr(
-        screen,
-        "guarded_press_virtual_key",
-        lambda _window, key: keys.append(key) or {"ok": True, "key": key},
-    )
-    monkeypatch.setattr(
-        screen,
-        "send_hotkey_ctrl_a",
-        lambda: (_ for _ in ()).throw(AssertionError("selected 模式不应 Ctrl+A")),
-    )
-    monkeypatch.setattr(screen, "send_hotkey_ctrl_v", lambda: None)
-    monkeypatch.setattr(screen, "safe_clipboard_read", lambda: None)
-    monkeypatch.setattr(screen, "set_clipboard_text", lambda _text: None)
-    monkeypatch.setattr(screen, "restore_clipboard_text", lambda _text: True)
-    monkeypatch.setattr(screen.time, "sleep", lambda *_args, **_kwargs: None)
-
-    result = screen.keyboard_write_selected_cell(
-        {"hwnd": 1},
-        "1783854003",
-        edit_mode="selected",
-        pre_input_key="F2",
-        pre_input_wait=0.1,
-    )
-
-    assert result["ok"] is True
-    assert keys == ["F2", "Enter"]
-    assert result["pre_input_key"] == "F2"
-    assert result["screen_timing"]["pre_input_seconds"] >= 0
-
-
 def test_keyboard_write_recovers_after_clipboard_open_failure(monkeypatch):
     from tools import receipt_detail_screen_writer as screen
 

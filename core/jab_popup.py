@@ -1,6 +1,6 @@
 # 职责：跟踪和清理 NC/JAB 下拉菜单类 SunAwtWindow popup。
 # 不做什么：不实现收款单/凭证业务匹配，不全局强清理所有小窗。
-# 允许依赖层：JABOperator-like 对象、tools.jab_probe 窗口枚举/JOBJECT、Win32 ctypes。
+# 允许依赖层：JABOperator-like 对象、core.jab_probe 窗口枚举/JOBJECT、Win32 ctypes。
 # 谁不应该 import：Excel/Sheet 读写和纯数据解析模块不应 import。
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ import time
 from ctypes import wintypes
 from typing import Any
 
-from tools.jab_probe import JOBJECT, enum_windows
+from core.jab_probe import JOBJECT, enum_windows
 
 
 def collect_visible_popup_windows(jab, max_depth=8, max_children=120) -> list[dict]:

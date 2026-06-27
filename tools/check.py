@@ -11,6 +11,7 @@ BASE_CHECKS = (
     ("compile", [sys.executable, "-m", "compileall", "-q", "core", "tools"]),
     ("basedpyright", [".venv/bin/basedpyright", "."]),
     ("architecture", [sys.executable, "tools/check_architecture.py"]),
+    ("naming", [sys.executable, "tools/check_naming.py"]),
     ("pytest", [sys.executable, "-m", "pytest", "-q"]),
 )
 
@@ -40,7 +41,15 @@ AUDIT_CHECKS = (
 
 DEEP_CHECKS = (
     ("radon", [sys.executable, "-m", "radon", "cc", "core", "tools", "-s", "-a"]),
-    ("vulture", [sys.executable, "-m", "vulture", "core", "tools", "tests"]),
+    (
+        "vulture",
+        [
+            sys.executable, "-m", "vulture",
+            "core", "tools", "tests", ".vulture_whitelist.py",
+            "--exclude", "*/archive/*",
+            "--min-confidence", "60",
+        ],
+    ),
 )
 
 RULE_TOOL_CONTRACT_CHECKS = (

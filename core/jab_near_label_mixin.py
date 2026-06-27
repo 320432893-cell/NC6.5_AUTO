@@ -4,7 +4,6 @@
 # 谁不应该 import：收款匹配、Excel/Sheet 读写、CLI 模块不应直接 import
 
 from core import jab_near_label
-from core.logger import log
 from typing import TYPE_CHECKING
 
 
@@ -234,15 +233,3 @@ class JABNearLabelMixin:
             skip_contexts=skip_contexts,
         )
 
-    def click_context_center(self, vm_id, context):
-        info = self.get_context_info(vm_id, context)
-        if not info:
-            log.warning("JAB bounds 点击失败: 控件信息不可读")
-            return False
-
-        log.warning(
-            "JAB bounds 点击已禁用: "
-            f"name={info.name.strip()!r} role={info.role_en_US.strip() or info.role.strip()!r} "
-            f"bounds={info.x},{info.y},{info.width},{info.height}"
-        )
-        return False

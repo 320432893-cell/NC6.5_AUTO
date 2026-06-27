@@ -11,7 +11,7 @@ from core.jab_path_mixin import JABPathMixin
 from core.logger import log
 from core.jab_table_mixin import JABTableMixin
 from core.utils import check_abort
-from tools.jab_probe import (
+from core.jab_probe import (
     configure_jab,
     load_access_bridge,
     run_windows_access_bridge,

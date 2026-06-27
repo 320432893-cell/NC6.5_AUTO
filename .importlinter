@@ -1,5 +1,7 @@
 [importlinter]
-root_package = core
+root_packages =
+    core
+    tools
 
 [importlinter:contract:workflow_independence]
 name = NC workflow modules stay independently wired
@@ -9,3 +11,23 @@ modules =
     core.nc_voucher_workflow
     core.nc_switch_generated_workflow
     core.nc_backfill_workflow
+
+[importlinter:contract:core_no_reverse_tools]
+name = core 不反依赖 tools(头号不变量;jab_probe/jab_environment 已下沉 core,无例外)
+type = forbidden
+source_modules =
+    core
+forbidden_modules =
+    tools
+
+[importlinter:contract:receipt_split_modules_no_entry_dep]
+name = 收款单拆分模块不得反依赖入口 receipt_full_flow_entry(锁住拆分分层)
+type = forbidden
+source_modules =
+    tools.receipt_counterparty
+    tools.receipt_save_cancel
+    tools.receipt_report
+    tools.receipt_locator_cache
+    tools.receipt_row_stages
+forbidden_modules =
+    tools.receipt_full_flow_entry

@@ -10,7 +10,6 @@ from tools.receipt_detail_fields import (
     field_matches,
     make_detail_step,
     validate_exchange_rate_not_polluted,
-    validate_step_from_cells,
 )
 
 
@@ -18,25 +17,6 @@ def test_detail_field_matching_accepts_amount_and_subject_prefix():
     assert field_matches("1,090.00", "1090", "amount")
     assert field_matches("1002\\银行存款", "1002", "code_prefix")
     assert not field_matches("1003\\其他货币资金", "1002", "code_prefix")
-
-
-def test_validate_step_from_cells_reports_field_expected_actual_and_row():
-    field = next(item for item in DETAIL_FIELDS if item["name"] == "贷方原币金额")
-    step = make_detail_step(
-        field,
-        {"amount": "1090"},
-        row_index=0,
-        row_count=1,
-        col_count=25,
-    )
-
-    validate_step_from_cells(step, {"7": "1089.00"})
-
-    assert step["ok"] is False
-    assert "字段=贷方原币金额" in step["reason"]
-    assert "行=1" in step["reason"]
-    assert "期望='1090.00'" in step["reason"]
-    assert "实际='1089.00'" in step["reason"]
 
 
 def test_apply_readback_to_steps_and_cells_from_steps_keep_column_values():

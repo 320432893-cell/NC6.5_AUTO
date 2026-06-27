@@ -24,7 +24,7 @@ from tools.archive.probe_receipt_counterparty_popup_tree import (  # noqa: E402
     strip_handles,
     summarize_windows,
 )
-from tools.jab_probe import JOBJECT  # noqa: E402
+from core.jab_probe import JOBJECT  # noqa: E402
 from tools.receipt_full_flow_entry import (  # noqa: E402
     find_counterparty_combo,
     read_counterparty_combo_state,

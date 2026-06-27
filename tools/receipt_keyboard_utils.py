@@ -8,9 +8,7 @@ from ctypes import wintypes
 from decimal import Decimal, InvalidOperation
 import sys
 import time
-
-from core.clipboard_utils import (
-    configure_clipboard_api,
+from core.clipboard_utils import (  # noqa: F401  (转出给 screen_writer/self_made 复用)
     get_clipboard_text,
     restore_clipboard_text,
     set_clipboard_text,
@@ -22,7 +20,6 @@ VK_CONTROL = 0x11
 VK_A = 0x41
 VK_D = 0x44
 VK_I = 0x49
-VK_N = 0x4E
 VK_Q = 0x51
 VK_C = 0x43
 VK_S = 0x53
@@ -211,13 +208,6 @@ def send_hotkey_alt_y():
     send_virtual_key(VK_MENU, key_up=False)
     send_virtual_key(VK_Y, key_up=False)
     send_virtual_key(VK_Y, key_up=True)
-    send_virtual_key(VK_MENU, key_up=True)
-
-
-def send_hotkey_alt_n():
-    send_virtual_key(VK_MENU, key_up=False)
-    send_virtual_key(VK_N, key_up=False)
-    send_virtual_key(VK_N, key_up=True)
     send_virtual_key(VK_MENU, key_up=True)
 
 
