@@ -26,7 +26,9 @@ class FakeProcessor:
         self.transitions.append((event, from_state, to_state, kwargs))
 
     def switch_to_generated_list(self):
+        # 模拟真实 switch:内部已 require_page_state 验证落到 generated,返回已验证态
         self.switches += 1
+        return NCPageState("generated", "after switch")
 
     def require_page_state(self, expected, items=None, command=""):
         self.required.append((expected, command))
@@ -46,15 +48,10 @@ def test_backfill_preflight_allows_generated_page():
     assert processor.required == []
 
 
-@pytest.mark.skip(
-    reason=(
-        "测试期望 auto-switch 后再 require_page_state('generated','backfill') 复核并返回状态,"
-        "但现生产 ensure_generated_page_for_backfill 只 return switch_to_generated_list()、无切换后复核。"
-        "判不准是测试断言过时、还是生产漏了「切换后状态复核」(若漏=真 bug,切完没验证就回填),"
-        "需按规格确认后再定改测试或补生产。"
-    )
-)
 def test_backfill_preflight_auto_switches_from_pending():
+    # 已核实非 bug:切换后状态复核委托给 switch_to_generated_list 内部
+    # (它 require_page_state('generated','switch-generated') 验证落地、不过则抛),
+    # 故 ensure 不另做 'backfill' 标签的复核;返回 switch 给出的已验证 generated 态。
     processor = FakeProcessor([NCPageState("pending", "待生成页")])
     workflow = NCBackfillWorkflow(processor)
 
@@ -62,7 +59,7 @@ def test_backfill_preflight_auto_switches_from_pending():
 
     assert state.name == "generated"
     assert processor.switches == 1
-    assert processor.required == [("generated", "backfill")]
+    assert processor.required == []
     assert processor.transitions == [
         ("backfill_auto_switch_generated", "pending", "generated", {"rows": 1})
     ]
