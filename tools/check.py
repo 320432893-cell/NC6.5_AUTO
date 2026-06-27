@@ -11,6 +11,7 @@ BASE_CHECKS = (
     ("compile", [sys.executable, "-m", "compileall", "-q", "core", "tools"]),
     ("basedpyright", [".venv/bin/basedpyright", "."]),
     ("architecture", [sys.executable, "tools/check_architecture.py"]),
+    ("naming", [sys.executable, "tools/check_naming.py"]),
     ("pytest", [sys.executable, "-m", "pytest", "-q"]),
 )
 
