@@ -41,6 +41,8 @@ COUNTERPARTY_STATE_REPAIRABLE = "repairable-empty"
 
 COUNTERPARTY_STATE_CONFLICT = "conflict"
 
+COUNTERPARTY_STATE_REPAIRABLE_CONFLICT = "repairable-conflict"
+
 COUNTERPARTY_STATE_DETAIL_UNREADABLE = "detail-unreadable"
 
 _COUNTERPARTY_NEARBY_SUFFIX_CACHE = {}
@@ -96,37 +98,6 @@ def ensure_header_counterparty_customer(
             "reason": "明细表第 0 行往来对象为客户，跳过",
             "seconds": round(time.perf_counter() - started_at, 3),
         }
-    if detail_value in COUNTERPARTY_KNOWN_OPTIONS:
-        snapshot = {
-            "combo": {},
-            "embedded": {},
-            "detail": detail,
-            "selected": "",
-            "combo_text": "",
-            "detail_value": detail_value,
-            "state": {
-                "state": COUNTERPARTY_STATE_CONFLICT,
-                "actual": detail_value,
-                "source": "detail-row0-col0",
-                "repairable": False,
-            },
-        }
-        return {
-            "ok": False,
-            "label": COUNTERPARTY_LABEL,
-            "expected": COUNTERPARTY_EXPECTED,
-            "actual": detail_value,
-            "path": None,
-            "dynamic_index": dynamic_index,
-            "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
-            "before": {},
-            "embedded": {},
-            "detail": detail,
-            "state": snapshot["state"],
-            "readback_trusted": False,
-            "reason": summarize_counterparty_failure(snapshot),
-            "seconds": round(time.perf_counter() - started_at, 3),
-        }
     if detail.get("ok") is False and not detail_value:
         reason = str(detail.get("reason") or "")
         unreadable = any(
@@ -178,6 +149,7 @@ def ensure_header_counterparty_customer(
             **found,
             "label": COUNTERPARTY_LABEL,
             "expected": COUNTERPARTY_EXPECTED,
+            "actual": detail_value,
             "dynamic_index": dynamic_index,
             "detail": detail,
             "modal_recovery": recovery_after_find,
@@ -228,64 +200,21 @@ def ensure_header_counterparty_customer(
                 "seconds": round(time.perf_counter() - started_at, 3),
             }
 
-        if state["state"] == COUNTERPARTY_STATE_REPAIRABLE:
-            repair = select_counterparty_customer_embedded(
+        if state["state"] in {
+            COUNTERPARTY_STATE_REPAIRABLE,
+            COUNTERPARTY_STATE_REPAIRABLE_CONFLICT,
+        }:
+            return repair_counterparty_to_customer(
                 jab,
-                found["vm_id"],
-                found["context"],
-                press_enter=True,
-            )
-            time.sleep(0.12)
-            after_detail = read_detail_counterparty_value(
-                jab,
+                found,
+                found_path,
+                snapshot,
+                state,
                 dynamic_index,
-                scope_hwnd=scope_hwnd,
-                located=located,
-                row=0,
-                col=0,
+                scope_hwnd,
+                located,
+                started_at,
             )
-            after_value = normalize_counterparty_value(
-                after_detail.get("value"),
-                after_detail.get("text"),
-            )
-            if after_value == COUNTERPARTY_EXPECTED:
-                return {
-                    "ok": True,
-                    "repaired": True,
-                    "label": COUNTERPARTY_LABEL,
-                    "expected": COUNTERPARTY_EXPECTED,
-                    "actual": after_value,
-                    "path": found_path,
-                    "dynamic_index": dynamic_index,
-                    "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
-                    "before": snapshot["combo"],
-                    "embedded": snapshot["embedded"],
-                    "detail": snapshot["detail"],
-                    "after_detail": after_detail,
-                    "repair": repair,
-                    "state": state,
-                    "source": "embedded-selection-api",
-                    "reason": "往来对象为空，已通过子列表 selection API 选择客户并验证明细表",
-                    "seconds": round(time.perf_counter() - started_at, 3),
-                }
-            return {
-                "ok": False,
-                "label": COUNTERPARTY_LABEL,
-                "expected": COUNTERPARTY_EXPECTED,
-                "actual": after_value,
-                "path": found_path,
-                "dynamic_index": dynamic_index,
-                "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
-                "before": snapshot["combo"],
-                "embedded": snapshot["embedded"],
-                "detail": snapshot["detail"],
-                "after_detail": after_detail,
-                "repair": repair,
-                "state": state,
-                "readback_trusted": False,
-                "reason": summarize_counterparty_failure(snapshot, after_detail),
-                "seconds": round(time.perf_counter() - started_at, 3),
-            }
 
         return {
             "ok": False,
@@ -327,10 +256,10 @@ def classify_counterparty_snapshot(snapshot):
     ):
         if value in COUNTERPARTY_KNOWN_OPTIONS and value != COUNTERPARTY_EXPECTED:
             return {
-                "state": COUNTERPARTY_STATE_CONFLICT,
+                "state": COUNTERPARTY_STATE_REPAIRABLE_CONFLICT,
                 "actual": value,
                 "source": source,
-                "repairable": False,
+                "repairable": True,
             }
 
     if detail.get("ok") is False and not detail_value:
@@ -352,6 +281,81 @@ def classify_counterparty_snapshot(snapshot):
         "actual": detail_value,
         "source": "detail-row0-col0",
         "repairable": True,
+    }
+
+def repair_counterparty_to_customer(
+    jab,
+    found,
+    found_path,
+    snapshot,
+    state,
+    dynamic_index,
+    scope_hwnd,
+    located,
+    started_at,
+):
+    repair = select_counterparty_customer_embedded(
+        jab,
+        found["vm_id"],
+        found["context"],
+        press_enter=True,
+    )
+    time.sleep(0.12)
+    after_detail = read_detail_counterparty_value(
+        jab,
+        dynamic_index,
+        scope_hwnd=scope_hwnd,
+        located=located,
+        row=0,
+        col=0,
+    )
+    after_value = normalize_counterparty_value(
+        after_detail.get("value"),
+        after_detail.get("text"),
+    )
+    if after_value == COUNTERPARTY_EXPECTED:
+        from_conflict = state.get("state") == COUNTERPARTY_STATE_REPAIRABLE_CONFLICT
+        return {
+            "ok": True,
+            "repaired": True,
+            "repaired_from_conflict": bool(from_conflict),
+            "label": COUNTERPARTY_LABEL,
+            "expected": COUNTERPARTY_EXPECTED,
+            "actual": after_value,
+            "path": found_path,
+            "dynamic_index": dynamic_index,
+            "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
+            "before": snapshot["combo"],
+            "embedded": snapshot["embedded"],
+            "detail": snapshot["detail"],
+            "after_detail": after_detail,
+            "repair": repair,
+            "state": state,
+            "source": "embedded-selection-api",
+            "reason": (
+                "往来对象为非客户选项，已通过子列表 selection API 选择客户并验证明细表"
+                if from_conflict
+                else "往来对象为空，已通过子列表 selection API 选择客户并验证明细表"
+            ),
+            "seconds": round(time.perf_counter() - started_at, 3),
+        }
+    return {
+        "ok": False,
+        "label": COUNTERPARTY_LABEL,
+        "expected": COUNTERPARTY_EXPECTED,
+        "actual": after_value,
+        "path": found_path,
+        "dynamic_index": dynamic_index,
+        "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
+        "before": snapshot["combo"],
+        "embedded": snapshot["embedded"],
+        "detail": snapshot["detail"],
+        "after_detail": after_detail,
+        "repair": repair,
+        "state": state,
+        "readback_trusted": False,
+        "reason": summarize_counterparty_failure(snapshot, after_detail),
+        "seconds": round(time.perf_counter() - started_at, 3),
     }
 
 def normalize_counterparty_value(*values):

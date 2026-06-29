@@ -341,6 +341,51 @@ def press_enter_for_page_size(jab, wait=2.0):
         time.sleep(float(wait or 0))
 
 
+def refresh_receipt_results(jab, query_cfg, runtime_query_cfg=None, pager_hwnd=None):
+    effective_query_cfg = runtime_query_cfg or query_cfg
+    pagination = effective_query_cfg.get("pagination") or {}
+    if not pagination or not bool(pagination.get("refresh_after_page_size", True)):
+        return {"enabled": False, "reason": "refresh_after_page_size_disabled"}
+    wait_after_refresh = float(pagination.get("wait_after_refresh", 0.5))
+    window_class = pagination.get("window_class", "SunAwtCanvas")
+    page_label_path = pagination.get("page_label_path")
+    page_size_path = pagination.get("page_size_text_path")
+    started = time.perf_counter()
+    try:
+        jab.press_key("f5", wait=wait_after_refresh)
+        method = "jab.press_key"
+    except ModuleNotFoundError:
+        send_virtual_key(0x74)
+        time.sleep(wait_after_refresh)
+        method = "virtual_key"
+    stability = wait_receipt_result_stable(
+        jab,
+        runtime_query_cfg or query_cfg,
+        pager_hwnd=pager_hwnd,
+    )
+    label = (
+        read_page_label(jab, page_label_path, window_class, pager_hwnd)
+        if page_label_path
+        else None
+    )
+    page_size_text = (
+        read_page_size_text(jab, page_size_path, window_class, pager_hwnd)
+        if page_size_path
+        else None
+    )
+    return {
+        "enabled": True,
+        "ok": True,
+        "method": method,
+        "key": "f5",
+        "wait_after_refresh": wait_after_refresh,
+        "label": label,
+        "page_size_text": page_size_text,
+        "stability": stability,
+        "seconds": round(time.perf_counter() - started, 3),
+    }
+
+
 def read_page_label(jab, path, window_class, scope_hwnd=None):
     return jab.get_text_by_path(
         path,

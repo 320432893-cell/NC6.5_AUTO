@@ -28,6 +28,7 @@ from tools.receipt_query_pagination_paths import (
     infer_result_area_prefix_from_table_path,
 )
 from tools.receipt_query_page_reader import read_receipt_result_pages
+from tools.receipt_query_match_reader import read_receipt_result_pages_incremental
 from tools.receipt_query_result_tables import read_receipt_tables
 from tools.receipt_query_fill import (
     ReceiptPageGuardError,
@@ -821,6 +822,48 @@ def test_read_receipt_result_pages_skips_page_size_change_when_already_target():
     assert report["pagination_plan_reason"] == "total_records_within_page_size"
     assert jab.actions == []
     assert [table["row_count"] for table in tables] == [2]
+
+
+def test_incremental_post_save_query_refreshes_after_page_size(monkeypatch):
+    waits = []
+    monkeypatch.setattr("tools.receipt_query_pagination.time.sleep", waits.append)
+    jab = FakePagedJAB()
+    jab.texts["label"] = "第1页 共1页 16条记录 每页显示"
+
+    tables, report, snapshot = read_receipt_result_pages_incremental(
+        jab,
+        paged_query_config(
+            prefer_configured_paths=False,
+            wait_after_page_size=0,
+            wait_after_refresh=0,
+            stability_timeout=1,
+            stability_interval=0.1,
+        ),
+        ReceiptNCResultExtractor(
+            {
+                "receipt_entry": {
+                    "query": {
+                        "result_column_indexes": {
+                            "document_no": 0,
+                            "document_date": 1,
+                            "customer": 4,
+                            "original_amount": 6,
+                            "payer_name": 4,
+                        }
+                    }
+                }
+            }
+        ),
+        [],
+        max_rows=500,
+        max_cols=40,
+    )
+
+    assert tables
+    assert snapshot["matched"] == {}
+    assert jab.keys[:2] == [("enter", 0.0), ("f5", 0.0)]
+    assert report["post_page_size_refresh"]["enabled"] is True
+    assert report["post_page_size_refresh"]["key"] == "f5"
 
 
 def test_read_receipt_result_pages_uses_dynamic_pagination_paths(monkeypatch):

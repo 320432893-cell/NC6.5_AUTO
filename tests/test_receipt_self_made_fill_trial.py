@@ -480,7 +480,7 @@ def test_header_scope_stops_when_index_missing(monkeypatch):
         trial,
         "infer_receipt_header_scope_by_semantic",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            AssertionError("正式表头缺 dynamic_index 时不能语义兜底")
+            AssertionError("正式表头缺 dynamic_index 时不能走旧全局语义兜底")
         ),
     )
 
@@ -489,7 +489,7 @@ def test_header_scope_stops_when_index_missing(monkeypatch):
     assert scope["ok"] is False
     assert scope["scope_hwnd"] == 123
     assert scope["dynamic_index"] is None
-    assert "不走语义兜底" in scope["reason"]
+    assert "deep scan 未找到财务组织" in scope["reason"]
 
 
 def test_header_scope_uses_provided_canvas_anchor_before_semantic(monkeypatch):
@@ -516,7 +516,7 @@ def test_header_scope_uses_provided_canvas_anchor_before_semantic(monkeypatch):
         return {
             "ok": True,
             "scope_hwnd": scope_hwnd,
-            "mode": "finance-org-dynamic-path-scan",
+            "mode": "finance-org-shallow-semantic",
             "dynamic_index": kwargs["preferred_dynamic_index"],
             "dynamic_prefix": f"0.0.1.0.0.0.0.{kwargs['preferred_dynamic_index']}",
             "matched_labels": ["财务组织"],
@@ -535,7 +535,7 @@ def test_header_scope_uses_provided_canvas_anchor_before_semantic(monkeypatch):
 
     assert scope["ok"] is True
     assert scope["dynamic_index"] == 2
-    assert scope["mode"] == "finance-org-dynamic-path-scan"
+    assert scope["mode"] == "finance-org-shallow-semantic"
     assert calls == [
         (
             "finance-path",
@@ -1486,8 +1486,48 @@ def test_finance_org_header_scope_prefers_shallow_semantic(monkeypatch):
 
     assert result["ok"] is True
     assert result["dynamic_index"] == 5
-    assert result["path_scan_skipped"] is True
+    assert result["deep_scan_skipped"] is True
     assert result["preferred_dynamic_index"] is None
+
+
+def test_finance_org_header_scope_falls_back_to_deep_semantic_without_path_probe(monkeypatch):
+    calls = []
+
+    def fake_semantic(_jab, _scope_hwnd, **kwargs):
+        calls.append(kwargs["scan_mode"])
+        if kwargs["scan_mode"] == "finance-org-shallow-semantic":
+            return {
+                "ok": False,
+                "mode": kwargs["scan_mode"],
+                "reason": "finance org anchor not found in shallow scope",
+            }
+        return {
+            "ok": True,
+            "scope_hwnd": 919586,
+            "mode": kwargs["scan_mode"],
+            "dynamic_index": 6,
+            "dynamic_prefix": "0.0.1.0.0.0.0.6",
+            "label_path": "0.0.1.0.0.0.0.6.deep",
+        }
+
+    class FakeJAB:
+        def find_context_by_path_once(self, *_args, **_kwargs):
+            raise AssertionError("deep fallback must not probe guessed dynamic paths")
+
+    monkeypatch.setattr(
+        trial,
+        "_find_finance_org_header_scope_by_shallow_semantic",
+        fake_semantic,
+    )
+
+    result = trial.find_finance_org_header_scope_by_paths(FakeJAB(), 919586)
+
+    assert result["ok"] is True
+    assert result["mode"] == "finance-org-deep-semantic"
+    assert result["dynamic_index"] == 6
+    assert result["preferred_dynamic_index"] is None
+    assert calls == ["finance-org-shallow-semantic", "finance-org-deep-semantic"]
+    assert result["shallow_semantic_attempt"]["ok"] is False
 
 
 def test_finance_org_shallow_semantic_canonical_label_path_uses_dynamic_index(

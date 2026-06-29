@@ -22,6 +22,7 @@ def test_detail_settlement_fields_keep_keyboard_write_with_immediate_verify():
         assert field["pre_write_stabilize_wait"] == 0.08
         assert field["immediate_verify"] is True
         assert field["immediate_verify_attempts"] == 2
+        assert field["immediate_verify_wait"] == 0.05
 
 
 def test_amount_fields_keep_sensitive_neighbor_guard():
@@ -34,9 +35,10 @@ def test_amount_fields_keep_sensitive_neighbor_guard():
     assert len(amount_fields) == 2
     for field in amount_fields:
         assert field["kind"] == "amount"
-        assert field["sensitive_neighbor_cols"] == [6, 8]
+        assert field["sensitive_neighbor_cols"] == [6]
         assert field["immediate_verify"] is True
         assert field["immediate_verify_attempts"] == 2
+        assert field["immediate_verify_wait"] == 0.15
 
 
 def test_subject_fields_verify_immediately_with_neighbor_guard():
@@ -49,8 +51,8 @@ def test_subject_fields_verify_immediately_with_neighbor_guard():
         assert field["kind"] == "code_prefix"
         assert field["sensitive_neighbor_cols"] == [4, 6, 7, 8]
         assert field["immediate_verify"] is True
-        assert field["immediate_verify_attempts"] == 2
-        assert field["immediate_verify_wait"] == 0.15
+        assert field["immediate_verify_attempts"] == 3
+        assert field["immediate_verify_wait"] == 0.2
 
 
 def test_business_type_fields_verify_immediately():
@@ -64,10 +66,16 @@ def test_business_type_fields_verify_immediately():
     for field in business_type_fields:
         assert field["immediate_verify"] is True
         assert field["immediate_verify_attempts"] == 2
-        assert field["immediate_verify_wait"] == 0.15
+        assert field["immediate_verify_wait"] == 0.05
 
 
 def test_fee_account_clear_verifies_immediately():
+    main_account = next(
+        field
+        for field in DETAIL_FIELDS
+        if field["name"] == "收款银行账户"
+        and field["value_key"] == "bank_account"
+    )
     fee_account = next(
         field
         for field in FEE_FIELDS
@@ -75,10 +83,13 @@ def test_fee_account_clear_verifies_immediately():
         and field["value_key"] == "fee_account"
     )
 
+    assert main_account["immediate_verify"] is True
+    assert main_account["immediate_verify_attempts"] == 3
+    assert main_account["immediate_verify_wait"] == 0.2
     assert fee_account["kind"] == "blank"
     assert fee_account["immediate_verify"] is True
-    assert fee_account["immediate_verify_attempts"] == 2
-    assert fee_account["immediate_verify_wait"] == 0.15
+    assert fee_account["immediate_verify_attempts"] == 3
+    assert fee_account["immediate_verify_wait"] == 0.2
 
 
 def test_write_field_once_defers_readback_to_verifier(monkeypatch):
@@ -112,6 +123,14 @@ def test_write_field_once_defers_readback_to_verifier(monkeypatch):
     assert "selected_before_write" not in result
     assert result["commit_target"]["skipped"] is True
     assert "后台 verifier" in result["commit_target"]["reason"]
+    assert set(result["stage_timing"]) >= {
+        "focus_entry",
+        "activation",
+        "pre_write_stabilize",
+        "neighbor_guard_before",
+        "screen_write",
+        "unaccounted",
+    }
 
 
 def test_write_field_once_passes_failure_recovery_hook_without_calling_it(monkeypatch):
@@ -628,7 +647,7 @@ def test_write_detail_line_blocks_when_amount_neighbor_changes(monkeypatch):
         "value_key": "amount",
         "kind": "amount",
         "input_mode": "paste",
-        "sensitive_neighbor_cols": [6, 8],
+        "sensitive_neighbor_cols": [6],
         "immediate_verify": True,
         "immediate_verify_attempts": 1,
         "immediate_verify_wait": 0.0,
@@ -680,14 +699,14 @@ def test_write_detail_line_blocks_when_amount_neighbor_changes(monkeypatch):
     assert verify["diagnostic_cells"]["7"] == "375,000.00"
 
 
-def test_write_detail_line_allows_amount_when_neighbors_unchanged(monkeypatch):
+def test_write_detail_line_allows_amount_when_only_local_amount_changes(monkeypatch):
     amount_field = {
         "col": 7,
         "name": "贷方原币金额",
         "value_key": "amount",
         "kind": "amount",
         "input_mode": "paste",
-        "sensitive_neighbor_cols": [6, 8],
+        "sensitive_neighbor_cols": [6],
         "immediate_verify": True,
         "immediate_verify_attempts": 1,
         "immediate_verify_wait": 0.0,
@@ -696,11 +715,11 @@ def test_write_detail_line_allows_amount_when_neighbors_unchanged(monkeypatch):
         [
             (
                 {"ok": True, "fast_path": True, "row_count": 1, "col_count": 25},
-                {"6": "1.000000", "7": "", "8": ""},
+                {"6": "1.000000", "7": "", "8": "0.00"},
             ),
             (
                 {"ok": True, "fast_path": True, "row_count": 1, "col_count": 25},
-                {"6": "1.000000", "7": "375,000.00", "8": ""},
+                {"6": "1.000000", "7": "375,000.00", "8": "375,000.00"},
             ),
         ]
     )

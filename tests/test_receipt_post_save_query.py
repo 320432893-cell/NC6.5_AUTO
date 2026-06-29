@@ -9,6 +9,7 @@ from decimal import Decimal
 from core.receipt_models import ReceiptMatchIssue, ReceiptNCIndexedRow, ReceiptPlanRow
 from tools.receipt_post_save_query import (
     BatchQueryTarget,
+    document_no_sort_number,
     group_targets_by_org,
     match_snapshot_to_result,
 )
@@ -79,7 +80,7 @@ def test_match_snapshot_result_is_the_single_post_query_source():
             "match_issues": [
                 ReceiptMatchIssue(
                     excel_row=828,
-                    reason="名称匹配但金额不一致",
+                    reason="名称匹配但金额不匹配",
                     nc_rows=[0, 2],
                 )
             ],
@@ -88,8 +89,73 @@ def test_match_snapshot_result_is_the_single_post_query_source():
 
     assert result == {
         "matched": {},
-        "issues": {828: "名称匹配但金额不一致"},
+        "issues": {828: "名称匹配但金额不匹配"},
     }
+
+
+def test_match_snapshot_resolves_duplicate_by_largest_document_no():
+    target = BatchQueryTarget(
+        row=plan_row(1956),
+        row_report={"nc_customer_name": "Leader Products Co Pty Ltd"},
+    )
+
+    result = match_snapshot_to_result(
+        [target],
+        {
+            "matched": {},
+            "nc_rows": [
+                nc_row("D22026062200027101", "Leader Products Co Pty Ltd"),
+                nc_row("D22026062200027134", "Leader Products Co Pty Ltd"),
+            ],
+            "match_issues": [
+                ReceiptMatchIssue(
+                    excel_row=1956,
+                    reason="重复2条：名称和金额相同，需人工确认",
+                    nc_rows=[0, 1],
+                )
+            ],
+        },
+    )
+
+    assert result == {
+        "matched": {1956: "D22026062200027134"},
+        "issues": {},
+    }
+
+
+def test_match_snapshot_keeps_duplicate_issue_when_document_no_not_sortable():
+    target = BatchQueryTarget(
+        row=plan_row(1956),
+        row_report={"nc_customer_name": "Leader Products Co Pty Ltd"},
+    )
+
+    result = match_snapshot_to_result(
+        [target],
+        {
+            "matched": {},
+            "nc_rows": [
+                nc_row("TEMP-A", "Leader Products Co Pty Ltd"),
+                nc_row("TEMP-B", "Leader Products Co Pty Ltd"),
+            ],
+            "match_issues": [
+                ReceiptMatchIssue(
+                    excel_row=1956,
+                    reason="重复2条：名称和金额相同，需人工确认",
+                    nc_rows=[0, 1],
+                )
+            ],
+        },
+    )
+
+    assert result == {
+        "matched": {},
+        "issues": {1956: "重复2条：名称和金额相同，需人工确认"},
+    }
+
+
+def test_document_no_sort_number_uses_all_digits():
+    assert document_no_sort_number("D22026062200027134") == 22026062200027134
+    assert document_no_sort_number("") is None
 
 
 def test_group_targets_by_org_groups_and_sorts_by_date_then_row():

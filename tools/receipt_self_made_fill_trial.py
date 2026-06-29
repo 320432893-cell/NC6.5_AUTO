@@ -481,23 +481,6 @@ def validate_receipt_header_scope_anchor(
     }
 
 
-def build_finance_org_path_variants(dynamic_index):
-    if dynamic_index is None:
-        return
-    seen = set()
-    for variant, suffix in FINANCE_ORG_LABEL_SUFFIX_VARIANTS:
-        label_path = f"{HEADER_DYNAMIC_PREFIX_BASE}.{int(dynamic_index)}.{suffix}"
-        text_path = infer_header_text_path_from_label_path(
-            HEADER_SCOPE_ANCHOR_LABEL,
-            label_path,
-        )
-        key = (label_path, text_path)
-        if not label_path or not text_path or key in seen:
-            continue
-        seen.add(key)
-        yield variant, label_path, text_path
-
-
 def finance_org_label_info_matches(info):
     if not info:
         return False
@@ -524,144 +507,37 @@ def find_finance_org_header_scope_by_paths(
         order="dfs",
         max_depth=30,
         max_nodes=800,
+        scan_mode="finance-org-shallow-semantic",
     )
     if shallow.get("ok"):
-        shallow["path_scan_skipped"] = True
+        shallow["deep_scan_skipped"] = True
         shallow["seconds"] = round(time.perf_counter() - started_at, 3)
         shallow["preferred_dynamic_index"] = preferred_dynamic_index
         return shallow
-    if not hasattr(jab, "find_context_by_path_once"):
-        return {
-            "ok": False,
-            "mode": "finance-org-dynamic-path-scan",
-            "reason": "JAB path lookup unavailable；不走语义兜底",
-            "scope_hwnd": scope_hwnd,
-            "dynamic_index": preferred_dynamic_index,
-            "attempts": [],
-            "shallow_semantic_attempt": shallow,
-            "seconds": round(time.perf_counter() - started_at, 3),
-            "preferred_dynamic_index": preferred_dynamic_index,
-        }
-    indexes = []
-    if preferred_dynamic_index is not None:
-        try:
-            indexes.append(int(preferred_dynamic_index))
-        except (TypeError, ValueError):
-            pass
-    for index in range(int(min_index), int(max_index) + 1):
-        if index not in indexes:
-            indexes.append(index)
-    attempts = []
-    for dynamic_index in indexes:
-        for variant, label_path, text_path in build_finance_org_path_variants(
-            dynamic_index
-        ):
-            label_context, vm_id, owned_contexts, window_info = (
-                jab.find_context_by_path_once(
-                    label_path,
-                    class_name="SunAwtCanvas",
-                    scope_hwnd=scope_hwnd,
-                    role="label",
-                    require_showing=False,
-                    require_valid_bounds=False,
-                )
-            )
-            label_info = None
-            label_matches = False
-            if label_context:
-                try:
-                    label_info = jab.get_context_info(vm_id, label_context)
-                    label_matches = finance_org_label_info_matches(label_info)
-                finally:
-                    jab.release_contexts(vm_id, owned_contexts)
-            attempt = {
-                "dynamic_index": dynamic_index,
-                "variant": variant,
-                "label_path": label_path,
-                "text_path": text_path,
-                "label_found": bool(label_context),
-                "label_matches": bool(label_matches),
-                "label_text": {
-                    "name": str(getattr(label_info, "name", "") or "").strip()
-                    if label_info
-                    else "",
-                    "description": str(
-                        getattr(label_info, "description", "") or ""
-                    ).strip()
-                    if label_info
-                    else "",
-                },
-            }
-            if not label_matches:
-                attempts.append(attempt)
-                continue
-            text_context, text_vm_id, text_owned_contexts, text_window = (
-                jab.find_context_by_path_once(
-                    text_path,
-                    class_name="SunAwtCanvas",
-                    scope_hwnd=scope_hwnd,
-                    role="text",
-                    require_showing=False,
-                    require_valid_bounds=False,
-                )
-            )
-            attempt["text_found"] = bool(text_context)
-            attempts.append(attempt)
-            if not text_context:
-                continue
-            try:
-                text_info = jab.get_context_info(text_vm_id, text_context)
-                text_snapshot = {
-                    "name": str(getattr(text_info, "name", "") or "").strip()
-                    if text_info
-                    else "",
-                    "description": str(
-                        getattr(text_info, "description", "") or ""
-                    ).strip()
-                    if text_info
-                    else "",
-                    "text": jab.get_text_context_value(text_vm_id, text_context),
-                }
-            finally:
-                jab.release_contexts(text_vm_id, text_owned_contexts)
-            return {
-                "ok": True,
-                "scope_hwnd": scope_hwnd,
-                "mode": "finance-org-dynamic-path-scan",
-                "dynamic_index": dynamic_index,
-                "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
-                "finance_org_dynamic_index": dynamic_index,
-                "finance_org_dynamic_prefix": receipt_header_dynamic_prefix(
-                    dynamic_index
-                ),
-                "matched_labels": [HEADER_SCOPE_ANCHOR_LABEL],
-                "semantic_label_path": label_path,
-                "label_path": label_path,
-                "text_path": text_path,
-                "anchor_text": attempt["label_text"],
-                "finance_org_text_snapshot": text_snapshot,
-                "window": text_window or window_info,
-                "variant": variant,
-                "attempts": attempts,
-                "shallow_semantic_attempt": shallow,
-                "customer_index_correction": {
-                    "ok": True,
-                    "skipped": True,
-                    "reason": "正式链路不再用客户 path 猜测校正财务组织 dynamic_index",
-                },
-                "seconds": round(time.perf_counter() - started_at, 3),
-                "preferred_dynamic_index": preferred_dynamic_index,
-            }
+    deep = _find_finance_org_header_scope_by_shallow_semantic(
+        jab,
+        scope_hwnd,
+        order="dfs",
+        max_depth=80,
+        max_nodes=5000,
+        scan_mode="finance-org-deep-semantic",
+    )
+    if deep.get("ok"):
+        deep["shallow_semantic_attempt"] = shallow
+        deep["seconds"] = round(time.perf_counter() - started_at, 3)
+        deep["preferred_dynamic_index"] = preferred_dynamic_index
+        return deep
     return {
         "ok": False,
-        "mode": "finance-org-dynamic-path-scan",
-        "reason": "当前 canvas 未通过财务组织(O) dynamic path 扫描",
+        "mode": "finance-org-semantic-scan",
+        "reason": "当前 canvas deep scan 未找到财务组织(O)锚点",
         "scope_hwnd": scope_hwnd,
         "dynamic_index": preferred_dynamic_index,
-        "attempts": attempts,
         "shallow_semantic_attempt": shallow,
+        "deep_semantic_attempt": deep,
         "seconds": round(time.perf_counter() - started_at, 3),
         "preferred_dynamic_index": preferred_dynamic_index,
+        "legacy_dynamic_path_scan_removed": True,
     }
 
 
@@ -671,13 +547,14 @@ def _find_finance_org_header_scope_by_shallow_semantic(
     order="dfs",
     max_depth=30,
     max_nodes=800,
+    scan_mode="finance-org-shallow-semantic",
 ):
     started_at = time.perf_counter()
     dll = getattr(jab, "dll", None)
     if not scope_hwnd or not dll or not hasattr(dll, "getAccessibleContextFromHWND"):
         return {
             "ok": False,
-            "mode": "finance-org-shallow-semantic",
+            "mode": scan_mode,
             "reason": "missing scope hwnd or JAB root lookup",
             "scope_hwnd": scope_hwnd,
             "seconds": round(time.perf_counter() - started_at, 3),
@@ -693,7 +570,7 @@ def _find_finance_org_header_scope_by_shallow_semantic(
     ):
         return {
             "ok": False,
-            "mode": "finance-org-shallow-semantic",
+            "mode": scan_mode,
             "reason": "getAccessibleContextFromHWND failed",
             "scope_hwnd": scope_hwnd,
             "seconds": round(time.perf_counter() - started_at, 3),
@@ -724,7 +601,7 @@ def _find_finance_org_header_scope_by_shallow_semantic(
                 if dynamic_index is None:
                     return {
                         "ok": False,
-                        "mode": "finance-org-shallow-semantic",
+                        "mode": scan_mode,
                         "reason": "matched label but dynamic index not inferred",
                         "scope_hwnd": scope_hwnd,
                         "label_path": path,
@@ -742,7 +619,7 @@ def _find_finance_org_header_scope_by_shallow_semantic(
                 return {
                     "ok": True,
                     "scope_hwnd": scope_hwnd,
-                    "mode": "finance-org-shallow-semantic",
+                    "mode": scan_mode,
                     "dynamic_index": dynamic_index,
                     "dynamic_prefix": receipt_header_dynamic_prefix(
                         dynamic_index
@@ -784,7 +661,7 @@ def _find_finance_org_header_scope_by_shallow_semantic(
                 pending.append((child, [*path_indexes, index], depth + 1))
         return {
             "ok": False,
-            "mode": "finance-org-shallow-semantic",
+            "mode": scan_mode,
             "reason": "finance org anchor not found in shallow scope",
             "scope_hwnd": scope_hwnd,
             "scanned_nodes": scanned,

@@ -9,7 +9,7 @@ from tools.receipt_detail_fields import (
     cells_from_steps,
     field_matches,
     make_detail_step,
-    validate_exchange_rate_not_polluted,
+    validate_main_row_exchange_rate,
 )
 
 
@@ -55,43 +55,57 @@ def test_apply_readback_to_steps_and_cells_from_steps_keep_column_values():
     }
 
 
-def test_exchange_rate_guard_accepts_currency_expected_values():
-    assert validate_exchange_rate_not_polluted({"6": "7.12"}, "美元", "1090")["ok"] is True
-    assert validate_exchange_rate_not_polluted({"6": "1"}, "人民币", "1090")["ok"] is True
+def test_exchange_rate_check_accepts_currency_expected_values():
+    assert validate_main_row_exchange_rate({"6": "7.12"}, "美元", "1090")["ok"] is True
+    assert validate_main_row_exchange_rate({"6": "1"}, "CNY", "1090")["ok"] is True
+    assert validate_main_row_exchange_rate({"6": "1.0"}, "RMB", "1090")["ok"] is True
+    assert validate_main_row_exchange_rate({"6": "1.0000"}, "人民币", "1090")["ok"] is True
 
 
-def test_exchange_rate_guard_allows_missing_rate_as_warning():
-    result = validate_exchange_rate_not_polluted({}, "美元", "1090")
+def test_exchange_rate_check_blocks_missing_rate():
+    result = validate_main_row_exchange_rate({}, "美元", "1090")
 
-    assert result["ok"] is True
-    assert result["warning"] is True
-    assert "不作为污染失败" in result["reason"]
+    assert result["ok"] is False
+    assert "汇率为空" in result["reason"]
 
 
-def test_exchange_rate_guard_blocks_amount_pollution():
-    result = validate_exchange_rate_not_polluted({"6": "1,090.00"}, "美元", "1090")
+def test_exchange_rate_check_blocks_non_numeric_rate():
+    result = validate_main_row_exchange_rate({"6": "abc"}, "美元", "1090")
+
+    assert result["ok"] is False
+    assert "无法解析" in result["reason"]
+
+
+def test_exchange_rate_check_blocks_amount_pollution():
+    result = validate_main_row_exchange_rate({"6": "1,090.00"}, "美元", "1090")
 
     assert result["ok"] is False
     assert "金额误写入汇率列" in result["reason"]
 
 
-def test_exchange_rate_guard_allows_invalid_usd_rate_as_warning():
-    result = validate_exchange_rate_not_polluted({"6": "1090"}, "USD", "1090.01")
+def test_exchange_rate_check_blocks_invalid_usd_rate():
+    result = validate_main_row_exchange_rate({"6": "5.9"}, "USD", "1090")
+
+    assert result["ok"] is False
+    assert "美元汇率不在有效区间" in result["reason"]
+
+
+def test_exchange_rate_check_blocks_invalid_cny_rate():
+    result = validate_main_row_exchange_rate({"6": "7.12"}, "CNY", "1090")
+
+    assert result["ok"] is False
+    assert "人民币汇率必须等于 1" in result["reason"]
+
+
+def test_exchange_rate_check_blocks_large_value_pollution():
+    result = validate_main_row_exchange_rate({"6": "1089.99"}, "USD", "1090")
 
     assert result["ok"] is False
     assert "异常偏大" in result["reason"]
 
 
-def test_exchange_rate_guard_allows_small_invalid_usd_rate_as_warning():
-    result = validate_exchange_rate_not_polluted({"6": "5.9"}, "USD", "1090")
-
-    assert result["ok"] is True
-    assert result["warning"] is True
-    assert "美元汇率列诊断异常" in result["reason"]
-
-
-def test_exchange_rate_guard_blocks_large_value_pollution():
-    result = validate_exchange_rate_not_polluted({"6": "1089.99"}, "USD", "1090")
+def test_exchange_rate_check_blocks_unknown_currency():
+    result = validate_main_row_exchange_rate({"6": "7.12"}, "EUR", "1090")
 
     assert result["ok"] is False
-    assert "异常偏大" in result["reason"]
+    assert "不支持的币种" in result["reason"]

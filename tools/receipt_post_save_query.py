@@ -6,10 +6,12 @@
 from collections import defaultdict
 from dataclasses import dataclass
 from decimal import Decimal
+import re
 import time
 
 from core.jab_operator import JABOperator
 from core.receipt_amounts import receipt_nc_amount
+from core.receipt_matching import names_match
 from core.receipt_models import ReceiptBatchResultRow, ReceiptPlanRow
 from core.receipt_nc_extract import ReceiptNCResultExtractor
 from tools.receipt_query_dynamic_fields import (
@@ -274,20 +276,62 @@ def match_snapshot_to_result(targets, match_snapshot):
     snapshot = match_snapshot or {}
     matched = snapshot.get("matched") or {}
     match_issues = snapshot.get("match_issues") or []
+    nc_rows = snapshot.get("nc_rows") or []
+    result_matched = {
+        int(row): getattr(nc_row, "document_no", "") for row, nc_row in matched.items()
+    }
     result_issues = {
         int(issue.excel_row): str(issue.reason or "后验未匹配")
         for issue in match_issues
     }
     for target in targets:
+        if target.row.row in result_matched:
+            continue
+        if is_duplicate_match_reason(result_issues.get(target.row.row)):
+            resolved = resolve_duplicate_by_latest_document_no(target, nc_rows)
+            if resolved:
+                result_matched[target.row.row] = resolved.document_no
+                result_issues.pop(target.row.row, None)
+                continue
         if target.row.row not in matched:
             result_issues.setdefault(target.row.row, "后验未匹配")
     return {
-        "matched": {
-            int(row): getattr(nc_row, "document_no", "")
-            for row, nc_row in matched.items()
-        },
+        "matched": result_matched,
         "issues": result_issues,
     }
+
+
+def is_duplicate_match_reason(reason):
+    return str(reason or "").strip().startswith("重复")
+
+
+def resolve_duplicate_by_latest_document_no(target, nc_rows):
+    match_row = target_to_match_row(target)
+    candidates = [
+        nc_row
+        for nc_row in nc_rows
+        if nc_row.original_amount == match_row.raw_amount
+        and names_match(match_row.payer_name, nc_row.name)
+    ]
+    if len(candidates) < 2:
+        return None
+    sortable = []
+    for nc_row in candidates:
+        sort_number = document_no_sort_number(nc_row.document_no)
+        if sort_number is None:
+            return None
+        sortable.append((sort_number, str(nc_row.document_no or ""), nc_row))
+    sortable.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    if len(sortable) > 1 and sortable[0][0] == sortable[1][0]:
+        return None
+    return sortable[0][2]
+
+
+def document_no_sort_number(document_no):
+    digits = re.findall(r"\d+", str(document_no or ""))
+    if not digits:
+        return None
+    return int("".join(digits))
 
 
 def target_to_match_row(target):

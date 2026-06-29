@@ -20,7 +20,7 @@ from core.receipt_entry import ReceiptEntryWorkbook  # noqa: E402
 from core.run_state import RunStateRecorder  # noqa: E402
 from core.utils import load_config  # noqa: E402
 from tools.receipt_detail_async_verifier import DetailPipelineVerifier  # noqa: E402
-from tools.receipt_detail_fields import validate_exchange_rate_not_polluted  # noqa: E402
+from tools.receipt_detail_fields import validate_main_row_exchange_rate  # noqa: E402
 from tools.receipt_detail_row_cleanup import delete_extra_row_if_present  # noqa: E402
 from tools.receipt_detail_rows import StepTimer, run_fee_only  # noqa: E402
 from tools.receipt_detail_writer import (  # noqa: E402
@@ -459,6 +459,287 @@ def filter_issues_for_rows(issues, selected_rows):
     ]
 
 
+def build_header_unified_targets(header_steps, extra_text_report):
+    targets = []
+    seen = set()
+    for step in header_steps or []:
+        label = str(step.get("label") or "").strip()
+        path = str(step.get("path") or "").strip()
+        value = str(step.get("value") or "").strip()
+        if label == "财务组织":
+            continue
+        if not label or not path or not step.get("ok"):
+            continue
+        key = ("header", label, path)
+        if key in seen:
+            continue
+        seen.add(key)
+        targets.append(
+            {
+                "kind": "customer" if label == "客户" else "header",
+                "label": label,
+                "value": value,
+                "path": path,
+                "accepted_text": step.get("accepted_text"),
+                "source": step.get("source") or step.get("method") or "header-fill",
+            }
+        )
+    return targets
+
+
+def read_header_target_by_exact_path(jab, target, scope_hwnd):
+    path = str((target or {}).get("path") or "").strip()
+    label = str((target or {}).get("label") or "").strip()
+    if not path:
+        return {
+            "ok": False,
+            "label": label,
+            "path": path,
+            "kind": (target or {}).get("kind"),
+            "reason": "缺少表头字段 path",
+        }
+    context, vm_id, owned_contexts, window_info = jab.find_context_by_path_once(
+        path,
+        class_name="SunAwtCanvas",
+        scope_hwnd=scope_hwnd,
+        role="text",
+        require_showing=False,
+        require_valid_bounds=False,
+    )
+    if not context:
+        return {
+            "ok": False,
+            "label": label,
+            "path": path,
+            "kind": (target or {}).get("kind"),
+            "reason": "表头字段 path 不可读",
+        }
+    try:
+        info = jab.get_context_info(vm_id, context)
+        text = jab.get_text_context_value(vm_id, context)
+        description = info.description.strip() if info else ""
+        name = info.name.strip() if info else ""
+        kind = (target or {}).get("kind")
+        snapshot = describe_backend_field_state(
+            info,
+            text,
+            value=(target or {}).get("value"),
+            accepted_text=(target or {}).get("accepted_text"),
+        )
+        if kind == "customer":
+            actual_value = first_valid_text(description, text, name)
+            ok = bool(actual_value)
+        elif kind == "extra_text":
+            actual_value = description or str(text or "").strip() or name
+            ok = bool(snapshot.get("written"))
+        elif label == "币种":
+            actual_value = description or str(text or "").strip() or name
+            ok = header_currency_matches(
+                (target or {}).get("value"),
+                (target or {}).get("accepted_text"),
+                actual_value,
+                text,
+                name,
+                description,
+            )
+        else:
+            actual_value = description or str(text or "").strip() or name
+            ok = bool(snapshot.get("accepted") or snapshot.get("written"))
+        return {
+            "ok": ok,
+            "label": label,
+            "path": path,
+            "kind": kind,
+            "value": (target or {}).get("value"),
+            "actual_value": actual_value,
+            "text": text,
+            "description": description,
+            "name": name,
+            "window": window_info,
+            "snapshot": snapshot,
+            "reason": None if ok else f"{label} 未读回目标值",
+        }
+    finally:
+        jab.release_contexts(vm_id, owned_contexts)
+
+
+def normalize_header_currency_value(*values):
+    for value in values:
+        text = str(value or "").strip().upper()
+        if not text:
+            continue
+        compact = (
+            text.replace("/", "")
+            .replace("\\", "")
+            .replace(" ", "")
+            .replace("-", "")
+            .replace("_", "")
+        )
+        if "USD" in compact or "美元" in compact:
+            return "USD"
+        if "CNY" in compact or "RMB" in compact or "人民币" in compact:
+            return "CNY"
+    return ""
+
+
+def header_currency_matches(expected_value, accepted_text, *actual_values):
+    expected = normalize_header_currency_value(expected_value, accepted_text)
+    actual = normalize_header_currency_value(*actual_values)
+    return bool(expected and actual and expected == actual)
+
+
+def rewrite_header_target_by_exact_path(
+    jab,
+    target,
+    scope_hwnd,
+    recover_after_failure=None,
+):
+    path = str((target or {}).get("path") or "").strip()
+    label = str((target or {}).get("label") or "").strip()
+    if not path:
+        return {
+            "ok": False,
+            "label": label,
+            "path": path,
+            "kind": (target or {}).get("kind"),
+            "reason": "缺少表头字段 path，不能补写",
+        }
+    context, vm_id, owned_contexts, window_info = jab.find_context_by_path_once(
+        path,
+        class_name="SunAwtCanvas",
+        scope_hwnd=scope_hwnd,
+        role="text",
+        require_showing=True,
+        require_valid_bounds=False,
+    )
+    if not context and recover_after_failure is not None:
+        recovery = recover_after_failure()
+        if recovery.get("attempted") and recovery.get("ok"):
+            context, vm_id, owned_contexts, window_info = jab.find_context_by_path_once(
+                path,
+                class_name="SunAwtCanvas",
+                scope_hwnd=scope_hwnd,
+                role="text",
+                require_showing=True,
+                require_valid_bounds=False,
+            )
+        else:
+            recovery = None
+    else:
+        recovery = None
+    if not context:
+        return {
+            "ok": False,
+            "label": label,
+            "path": path,
+            "kind": (target or {}).get("kind"),
+            "modal_recovery": recovery,
+            "reason": "表头字段 path 不可写，不能补写",
+        }
+    try:
+        paste = guarded_paste_header_value(
+            jab,
+            vm_id,
+            context,
+            window_info or {},
+            (target or {}).get("value"),
+        )
+        return {
+            "ok": bool(paste.get("ok")),
+            "label": label,
+            "path": path,
+            "kind": (target or {}).get("kind"),
+            "value": (target or {}).get("value"),
+            "guarded_paste": paste,
+            "modal_recovery": recovery,
+            "reason": None if paste.get("ok") else paste.get("reason"),
+        }
+    finally:
+        jab.release_contexts(vm_id, owned_contexts)
+
+
+def verify_and_repair_header_targets(
+    jab,
+    header_steps,
+    extra_text_report,
+    dynamic_index,
+    scope_hwnd,
+    recover_after_failure=None,
+):
+    started_at = time.perf_counter()
+    targets = build_header_unified_targets(header_steps, extra_text_report)
+    if not targets:
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "没有可用 path 的表头统一校验目标",
+            "dynamic_index": dynamic_index,
+            "scope_hwnd": scope_hwnd,
+            "targets": [],
+            "reads": [],
+            "missing": [],
+            "repairs": [],
+            "rereads": [],
+            "seconds": round(time.perf_counter() - started_at, 3),
+        }
+    reads = [read_header_target_by_exact_path(jab, target, scope_hwnd) for target in targets]
+    missing = [item for item in reads if not item.get("ok")]
+    repairs = []
+    rereads = []
+    if missing:
+        targets_by_path = {target.get("path"): target for target in targets}
+        for item in missing:
+            target = targets_by_path.get(item.get("path"))
+            if not target:
+                continue
+            repair = rewrite_header_target_by_exact_path(
+                jab,
+                target,
+                scope_hwnd,
+                recover_after_failure=recover_after_failure,
+            )
+            repairs.append(repair)
+        rereads = [
+            read_header_target_by_exact_path(jab, targets_by_path[item.get("path")], scope_hwnd)
+            for item in missing
+            if item.get("path") in targets_by_path
+        ]
+    failed_after_repair = [item for item in rereads if not item.get("ok")]
+    ok = not missing or (bool(repairs) and not failed_after_repair)
+    reason = ""
+    if failed_after_repair:
+        reason = "表头统一校验补写后仍有缺失：" + "；".join(
+            f"{item.get('label')}: {item.get('reason')}" for item in failed_after_repair
+        )
+    elif missing and not repairs:
+        reason = "表头统一校验发现缺失，但没有可补写字段"
+    return {
+        "ok": bool(ok),
+        "dynamic_index": dynamic_index,
+        "scope_hwnd": scope_hwnd,
+        "targets": targets,
+        "reads": reads,
+        "missing": missing,
+        "repairs": repairs,
+        "rereads": rereads,
+        "reason": reason,
+        "seconds": round(time.perf_counter() - started_at, 3),
+    }
+
+
+def customer_name_from_header_unified_check(report):
+    candidates = []
+    for section in ("rereads", "reads"):
+        for item in (report or {}).get(section) or []:
+            if item.get("kind") == "customer" and item.get("ok"):
+                candidates.append(item.get("actual_value"))
+    for value in candidates:
+        text = str(value or "").strip()
+        if is_valid_customer_name_candidate(text):
+            return text
+    return ""
+
+
 def run_one_row(
     config,
     row,
@@ -664,6 +945,7 @@ def run_one_row(
             entry_dynamic_index,
             entry_scope_hwnd,
             recover_after_failure=recover_modal_after_failure,
+            verify_after_write=False,
         )
         row_report["extra_text_fields"] = extra_text_report
         if not extra_text_report.get("ok"):
@@ -678,16 +960,48 @@ def run_one_row(
                 timings,
                 extra_text_report.get("reason") or "扩展文本字段写入失败",
             )
-        customer_name = timings.measure(
-            "header.customer-name-readback",
+        header_unified_check = timings.measure(
+            "header.unified-check",
             run_with_jab_lock,
             jab_lock,
-            read_customer_name_after_header,
+            verify_and_repair_header_targets,
             jab,
             header_steps,
+            extra_text_report,
             entry_dynamic_index,
             entry_scope_hwnd,
+            recover_after_failure=recover_modal_after_failure,
         )
+        row_report["header_unified_check"] = header_unified_check
+        if not header_unified_check.get("ok"):
+            reason = header_unified_check.get("reason") or "表头统一校验失败"
+            _event(
+                "header-unified-check-failed",
+                excel_row=row.row,
+                error=reason,
+            )
+            return fail(row_report, "header-unified-check", timings, reason)
+        unified_customer_name = customer_name_from_header_unified_check(
+            header_unified_check
+        )
+        if unified_customer_name:
+            customer_name = {
+                "ok": True,
+                "value": unified_customer_name,
+                "source": "header-unified-check",
+                "skipped_legacy_readback": True,
+            }
+        else:
+            customer_name = timings.measure(
+                "header.customer-name-readback",
+                run_with_jab_lock,
+                jab_lock,
+                read_customer_name_after_header,
+                jab,
+                header_steps,
+                entry_dynamic_index,
+                entry_scope_hwnd,
+            )
         row_report["customer_name_readback"] = customer_name
         row_report["nc_customer_name"] = str(customer_name.get("value") or "").strip()
         if not row_report["nc_customer_name"]:
@@ -961,24 +1275,25 @@ def run_one_row(
             or row_report.get("detail_pipeline_verify")
         )
         main_row_cells = latest_snapshot_row_cells(guard_source, row_index=0)
-        exchange_rate_guard = validate_exchange_rate_not_polluted(
+        exchange_rate_check = validate_main_row_exchange_rate(
             main_row_cells,
             row.currency,
             row.raw_amount,
             row_index=0,
         )
-        row_report["detail_exchange_rate_guard"] = exchange_rate_guard
-        if not exchange_rate_guard.get("ok"):
+        row_report["detail_exchange_rate_check"] = exchange_rate_check
+        row_report["detail_exchange_rate_guard"] = exchange_rate_check
+        if not exchange_rate_check.get("ok"):
             _event(
-                "exchange-rate-guard-failed",
+                "exchange-rate-check-failed",
                 excel_row=row.row,
-                error=exchange_rate_guard.get("reason"),
+                error=exchange_rate_check.get("reason"),
             )
             return fail(
                 row_report,
-                "detail-exchange-rate-guard",
+                "detail-exchange-rate-check",
                 timings,
-                exchange_rate_guard.get("reason") or "汇率列污染守卫未通过",
+                exchange_rate_check.get("reason") or "汇率保存前校验未通过",
             )
         account_check = timings.measure(
             "header.account-readback-after-detail",
@@ -1336,6 +1651,7 @@ def write_extra_text_fields(
     dynamic_index,
     scope_hwnd=None,
     recover_after_failure=None,
+    verify_after_write=True,
 ):
     values = {
         str(label or "").strip(): str(value or "").strip()
@@ -1353,6 +1669,7 @@ def write_extra_text_fields(
             dynamic_index,
             scope_hwnd=scope_hwnd,
             recover_after_failure=recover_after_failure,
+            verify_after_write=verify_after_write,
         )
         results.append(result)
         if not result.get("ok"):
@@ -1371,6 +1688,7 @@ def write_extra_text_field_by_dynamic_path(
     dynamic_index,
     scope_hwnd=None,
     recover_after_failure=None,
+    verify_after_write=True,
 ):
     started_at = time.perf_counter()
     recovery_after_find = None
@@ -1478,8 +1796,8 @@ def write_extra_text_field_by_dynamic_path(
         max_attempts = 2
         for attempt_no in range(1, max_attempts + 1):
             write_started_at = time.perf_counter()
-            info_before = jab.get_context_info(vm_id, context)
-            before = jab.get_text_context_value(vm_id, context)
+            info_before = jab.get_context_info(vm_id, context) if verify_after_write else None
+            before = jab.get_text_context_value(vm_id, context) if verify_after_write else ""
             paste_started_at = time.perf_counter()
             paste = guarded_paste_header_value(
                 jab,
@@ -1502,16 +1820,24 @@ def write_extra_text_field_by_dynamic_path(
                         value,
                     )
                     paste_seconds = round(time.perf_counter() - paste_started_at, 3)
-            info_after = jab.get_context_info(vm_id, context)
-            after = jab.get_text_context_value(vm_id, context)
-            backend_state = describe_backend_field_state(info_after, after, value=value)
-            accepted = bool(
-                backend_state.get("accepted") or backend_state.get("written")
-            )
-            ok = bool(paste.get("ok") and accepted)
+            if verify_after_write:
+                info_after = jab.get_context_info(vm_id, context)
+                after = jab.get_text_context_value(vm_id, context)
+                backend_state = describe_backend_field_state(info_after, after, value=value)
+                accepted = bool(
+                    backend_state.get("accepted") or backend_state.get("written")
+                )
+                ok = bool(paste.get("ok") and accepted)
+            else:
+                info_after = None
+                after = ""
+                backend_state = {}
+                accepted = None
+                ok = bool(paste.get("ok"))
             attempt = {
                 "ok": ok,
                 "input_ok": bool(paste.get("ok")),
+                "verify_after_write": bool(verify_after_write),
                 "attempt": attempt_no,
                 "stage": "write",
                 "label": label,
@@ -1549,7 +1875,7 @@ def write_extra_text_field_by_dynamic_path(
                 "seconds": round(time.perf_counter() - started_at, 3),
             }
             attempts.append(attempt)
-            if ok or not paste.get("ok"):
+            if ok or not paste.get("ok") or not verify_after_write:
                 final = dict(attempt)
                 final["attempts"] = attempts
                 final["rewrites"] = attempts[1:]

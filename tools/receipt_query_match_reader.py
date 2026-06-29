@@ -13,6 +13,7 @@ from tools.receipt_query_pagination import (
     parse_page_label,
     read_page_label,
     set_receipt_page_size,
+    refresh_receipt_results,
     wait_receipt_result_stable,
 )
 from tools.receipt_query_pagination_paths import with_runtime_pagination_paths
@@ -108,6 +109,19 @@ def read_receipt_result_pages_incremental(
     next_page_path = setup_report["next_page_button_path"]
     pager_hwnd = setup_report["pager_hwnd"]
     runtime_query_cfg = with_runtime_pagination_paths(query_cfg, setup_report)
+    refresh_report = refresh_receipt_results(
+        jab,
+        query_cfg,
+        runtime_query_cfg,
+        pager_hwnd=pager_hwnd,
+    )
+    setup_report["post_page_size_refresh"] = refresh_report
+    if refresh_report.get("label"):
+        setup_report["after_label"] = refresh_report.get("label")
+    if refresh_report.get("page_size_text"):
+        setup_report["after_page_size_text"] = refresh_report.get("page_size_text")
+    if refresh_report.get("stability"):
+        setup_report["after_stability"] = refresh_report.get("stability")
 
     page_info = parse_page_label(
         setup_report.get("after_label") or setup_report.get("before_label") or ""

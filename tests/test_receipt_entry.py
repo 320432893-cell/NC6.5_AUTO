@@ -676,6 +676,8 @@ def test_dry_run_matcher_reports_same_amount_different_name():
         excel_name="Christoff Pretorius",
         nc_names=["Different Payer"],
     )
+    assert "用于匹配的名称/期望名称=Christoff Pretorius" in issues[0].reason
+    assert "NC同金额行实际名称=Different Payer" in issues[0].reason
     assert issues[0].nc_rows == [8]
 
 

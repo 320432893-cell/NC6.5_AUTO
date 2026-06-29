@@ -16,7 +16,7 @@ DETAIL_FIELDS = [
         "input_mode": "paste",
         "immediate_verify": True,
         "immediate_verify_attempts": 2,
-        "immediate_verify_wait": 0.15,
+        "immediate_verify_wait": 0.05,
     },
     {
         "col": 4,
@@ -30,8 +30,8 @@ DETAIL_FIELDS = [
         "pre_write_stabilize": True,
         "pre_write_stabilize_wait": 0.08,
         "immediate_verify": True,
-        "immediate_verify_attempts": 2,
-        "immediate_verify_wait": 0.15,
+        "immediate_verify_attempts": 3,
+        "immediate_verify_wait": 0.2,
     },
     {
         "col": 5,
@@ -41,8 +41,8 @@ DETAIL_FIELDS = [
         "input_mode": "paste",
         "sensitive_neighbor_cols": [4, 6, 7, 8],
         "immediate_verify": True,
-        "immediate_verify_attempts": 2,
-        "immediate_verify_wait": 0.15,
+        "immediate_verify_attempts": 3,
+        "immediate_verify_wait": 0.2,
     },
     {
         "col": 7,
@@ -50,7 +50,7 @@ DETAIL_FIELDS = [
         "value_key": "amount",
         "kind": "amount",
         "input_mode": "paste",
-        "sensitive_neighbor_cols": [6, 8],
+        "sensitive_neighbor_cols": [6],
         "immediate_verify": True,
         "immediate_verify_attempts": 2,
         "immediate_verify_wait": 0.15,
@@ -65,7 +65,7 @@ DETAIL_FIELDS = [
         "pre_write_stabilize_wait": 0.08,
         "immediate_verify": True,
         "immediate_verify_attempts": 2,
-        "immediate_verify_wait": 0.15,
+        "immediate_verify_wait": 0.05,
     },
 ]
 FEE_FIELDS = [
@@ -76,7 +76,7 @@ FEE_FIELDS = [
         "input_mode": "paste",
         "immediate_verify": True,
         "immediate_verify_attempts": 2,
-        "immediate_verify_wait": 0.15,
+        "immediate_verify_wait": 0.05,
     },
     {
         "col": 4,
@@ -86,8 +86,8 @@ FEE_FIELDS = [
         "edit_mode": "selected",
         "focus_via_col": 5,
         "immediate_verify": True,
-        "immediate_verify_attempts": 2,
-        "immediate_verify_wait": 0.15,
+        "immediate_verify_attempts": 3,
+        "immediate_verify_wait": 0.2,
     },
     {
         "col": 5,
@@ -97,8 +97,8 @@ FEE_FIELDS = [
         "input_mode": "paste",
         "sensitive_neighbor_cols": [4, 6, 7, 8],
         "immediate_verify": True,
-        "immediate_verify_attempts": 2,
-        "immediate_verify_wait": 0.15,
+        "immediate_verify_attempts": 3,
+        "immediate_verify_wait": 0.2,
     },
     {
         "col": 7,
@@ -106,7 +106,7 @@ FEE_FIELDS = [
         "value_key": "fee_amount",
         "kind": "amount",
         "input_mode": "paste",
-        "sensitive_neighbor_cols": [6, 8],
+        "sensitive_neighbor_cols": [6],
         "immediate_verify": True,
         "immediate_verify_attempts": 2,
         "immediate_verify_wait": 0.15,
@@ -121,7 +121,7 @@ FEE_FIELDS = [
         "pre_write_stabilize_wait": 0.08,
         "immediate_verify": True,
         "immediate_verify_attempts": 2,
-        "immediate_verify_wait": 0.15,
+        "immediate_verify_wait": 0.05,
     },
 ]
 ACCOUNT_COL = 4
@@ -146,7 +146,7 @@ def normalize_amount_text(value):
 
 
 def parse_decimal_text(value):
-    text = normalize_text(value).replace(",", "")
+    text = normalize_text(value).replace(",", "").replace(" ", "")
     if not text:
         return None
     try:
@@ -178,36 +178,42 @@ def normalize_currency_name(value):
     return text
 
 
-def validate_exchange_rate_not_polluted(cells, currency, amount, row_index=0):
+def validate_main_row_exchange_rate(cells, currency, amount, row_index=0):
     actual = normalize_text((cells or {}).get(str(EXCHANGE_RATE_COL)))
     expected_amount = parse_decimal_text(amount)
     normalized_currency = normalize_currency_name(currency)
     if not actual:
         return {
-            "ok": True,
-            "warning": True,
+            "ok": False,
             "row": row_index,
             "col": EXCHANGE_RATE_COL,
             "currency": currency,
             "normalized_currency": normalized_currency,
             "actual": actual,
+            "normalized_rate": None,
             "amount": normalize_amount_text(amount),
-            "reason": "汇率列为空或未被 JAB 快照读出；不作为污染失败，只记录诊断",
-            "policy": "只在汇率列读到明确金额污染时失败；读不到不熔断",
+            "normalized_amount": (
+                str(expected_amount) if expected_amount is not None else None
+            ),
+            "reason": "汇率为空或未被读出，保存前汇率校验未通过",
+            "policy": "NC 自动带出汇率，自动化只校验不写入；保存前必须读到合法汇率",
         }
     actual_decimal = parse_decimal_text(actual)
     if actual_decimal is None:
         return {
-            "ok": True,
-            "warning": True,
+            "ok": False,
             "row": row_index,
             "col": EXCHANGE_RATE_COL,
             "currency": currency,
             "normalized_currency": normalized_currency,
             "actual": actual,
+            "normalized_rate": None,
             "amount": normalize_amount_text(amount),
-            "reason": f"汇率列不是有效数字：{actual!r}；不作为污染失败，只记录诊断",
-            "policy": "只在汇率列读到明确金额污染时失败；读不到/不可解析不熔断",
+            "normalized_amount": (
+                str(expected_amount) if expected_amount is not None else None
+            ),
+            "reason": f"汇率无法解析为有效数字：{actual!r}",
+            "policy": "NC 自动带出汇率，自动化只校验不写入；保存前必须读到合法汇率",
         }
     if expected_amount is not None and actual_decimal == expected_amount:
         return {
@@ -215,10 +221,13 @@ def validate_exchange_rate_not_polluted(cells, currency, amount, row_index=0):
             "row": row_index,
             "col": EXCHANGE_RATE_COL,
             "currency": currency,
+            "normalized_currency": normalized_currency,
             "actual": actual,
+            "normalized_rate": str(actual_decimal),
             "amount": normalize_amount_text(amount),
+            "normalized_amount": str(expected_amount),
             "reason": "汇率列值等于本次录入金额，疑似金额误写入汇率列",
-            "policy": "只在汇率列读到明确金额污染时失败",
+            "policy": "NC 自动带出汇率，自动化只校验不写入；金额误入汇率列必须失败并取消重开",
         }
     if actual_decimal.copy_abs() >= Decimal("100"):
         return {
@@ -228,32 +237,38 @@ def validate_exchange_rate_not_polluted(cells, currency, amount, row_index=0):
             "currency": currency,
             "normalized_currency": normalized_currency,
             "actual": actual,
+            "normalized_rate": str(actual_decimal),
             "amount": normalize_amount_text(amount),
+            "normalized_amount": (
+                str(expected_amount) if expected_amount is not None else None
+            ),
             "reason": f"汇率列值异常偏大：{actual!r}，疑似金额误写入汇率列",
-            "policy": "只在汇率列读到明确金额污染时失败",
+            "policy": "NC 自动带出汇率，自动化只校验不写入；保存前必须读到合法汇率",
         }
-    warning = False
     if normalized_currency == "USD":
-        warning = not (Decimal("6") < actual_decimal < Decimal("10"))
-        reason = None if not warning else f"美元汇率列诊断异常：{actual!r}，通常应大于 6 且小于 10"
+        ok = Decimal("6") < actual_decimal < Decimal("10")
+        reason = None if ok else f"美元汇率不在有效区间：{actual!r}，必须大于 6 且小于 10"
     elif normalized_currency == "CNY":
-        warning = actual_decimal != Decimal("1")
-        reason = None if not warning else f"人民币汇率列诊断异常：{actual!r}，通常应等于 1"
+        ok = actual_decimal == Decimal("1")
+        reason = None if ok else f"人民币汇率必须等于 1：{actual!r}"
     else:
-        reason = None
+        ok = False
+        reason = f"不支持的币种汇率校验：{currency!r}"
     return {
-        "ok": True,
-        "warning": warning,
+        "ok": ok,
         "row": row_index,
         "col": EXCHANGE_RATE_COL,
         "currency": currency,
         "normalized_currency": normalized_currency,
         "actual": actual,
+        "normalized_rate": str(actual_decimal),
         "amount": normalize_amount_text(amount),
+        "normalized_amount": (
+            str(expected_amount) if expected_amount is not None else None
+        ),
         "reason": reason,
-        "policy": "只在汇率列读到明确金额污染时失败；币种汇率合理性只做诊断 warning",
+        "policy": "NC 自动带出汇率，自动化只校验不写入；保存前按币种校验汇率",
     }
-
 
 def field_expected_value(field, business):
     value = str(business[field["value_key"]])

@@ -37,10 +37,48 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 CIRCUIT_BREAKER_RETRY_STEPS = {
+    "header-counterparty-type",
+    "header-unified-check",
+    "detail-main-line",
     "detail-extra-text-verify",
     "detail-pipeline-verify",
+    "detail-exchange-rate-check",
     "detail-exchange-rate-guard",
 }
+
+NON_RETRYABLE_DETAIL_MAIN_REASON_KEYWORDS = (
+    "紧急停止键",
+    "明细表尺寸异常",
+)
+
+
+def detail_main_line_retryable(row_report):
+    detail_steps = (row_report or {}).get("detail_steps") or []
+    failed_steps = [step for step in detail_steps if not step.get("ok")]
+    if not failed_steps:
+        return False
+    failed = failed_steps[-1]
+    reason = str(failed.get("reason") or (row_report or {}).get("reason") or "")
+    if any(keyword in reason for keyword in NON_RETRYABLE_DETAIL_MAIN_REASON_KEYWORDS):
+        return False
+    name = str(failed.get("name") or "")
+    if name == "明细表":
+        return False
+    return bool(name)
+
+def header_counterparty_retryable(row_report):
+    counterparty = (row_report or {}).get("header_counterparty") or {}
+    if counterparty.get("ok"):
+        return False
+    state = counterparty.get("state") or {}
+    repair = counterparty.get("repair") or {}
+    after_detail = counterparty.get("after_detail") or {}
+    if state.get("state") != "repairable-conflict":
+        return False
+    if repair.get("method") != "embedded-selection-api":
+        return False
+    actual = str(counterparty.get("actual") or after_detail.get("value") or "").strip()
+    return bool(actual and actual != "客户")
 
 def save_receipt_by_ctrl_s(
     jab,
@@ -223,6 +261,10 @@ def should_retry_row_by_cancel_reopen(row_report):
     failed_step = str(row_report.get("failed_step") or "")
     if failed_step not in CIRCUIT_BREAKER_RETRY_STEPS:
         return False
+    if failed_step == "header-counterparty-type" and not header_counterparty_retryable(row_report):
+        return False
+    if failed_step == "detail-main-line" and not detail_main_line_retryable(row_report):
+        return False
     save_report = row_report.get("save") or {}
     if save_report and not save_report.get("skipped"):
         return False
@@ -235,6 +277,9 @@ def summarize_retry_attempt(row_report):
         "failed_step": (row_report or {}).get("failed_step"),
         "reason": (row_report or {}).get("reason"),
         "slow_steps": (row_report or {}).get("slow_steps") or [],
+        "detail_exchange_rate_check": (row_report or {}).get(
+            "detail_exchange_rate_check"
+        ),
         "detail_exchange_rate_guard": (row_report or {}).get(
             "detail_exchange_rate_guard"
         ),

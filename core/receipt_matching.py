@@ -85,12 +85,12 @@ def format_receipt_amount_name_mismatch_reason(
     excel_amount=None, excel_name=None, nc_names=None
 ):
     if excel_amount is None and excel_name is None and not nc_names:
-        return "金额匹配但名称不一致，需人工确认"
+        return "金额匹配但名称不匹配，需人工确认"
     return (
-        "金额匹配但名称不一致，需人工确认："
-        f"Excel金额={format_receipt_value(excel_amount)}；"
-        f"Excel对手方={format_receipt_value(excel_name)}；"
-        f"NC对手方={format_receipt_values(nc_names)}"
+        "金额匹配但名称不匹配，需人工确认："
+        f"金额={format_receipt_value(excel_amount)}；"
+        f"用于匹配的名称/期望名称={format_receipt_value(excel_name)}；"
+        f"NC同金额行实际名称={format_receipt_values(nc_names)}"
     )
 
 
@@ -98,12 +98,12 @@ def format_receipt_name_amount_mismatch_reason(
     excel_amount=None, excel_name=None, nc_amounts=None
 ):
     if excel_amount is None and excel_name is None and not nc_amounts:
-        return "名称匹配但金额不一致，需人工确认"
+        return "名称匹配但金额不匹配，需人工确认"
     return (
-        "名称匹配但金额不一致，需人工确认："
-        f"Excel对手方={format_receipt_value(excel_name)}；"
-        f"Excel金额={format_receipt_value(excel_amount)}；"
-        f"NC金额={format_receipt_values(nc_amounts)}"
+        "名称匹配但金额不匹配，需人工确认："
+        f"用于匹配的名称={format_receipt_value(excel_name)}；"
+        f"期望金额={format_receipt_value(excel_amount)}；"
+        f"NC同名称行实际金额={format_receipt_values(nc_amounts)}"
     )
 
 

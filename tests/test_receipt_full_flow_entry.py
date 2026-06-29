@@ -28,6 +28,7 @@ from tools.receipt_full_flow_entry import (
     confirm_save,
     ensure_header_counterparty_customer,
     extract_header_accepted_text,
+    header_currency_matches,
     open_self_made_entry,
     parse_args,
     post_query_failure_reasons,
@@ -36,9 +37,11 @@ from tools.receipt_full_flow_entry import (
     save_receipt_by_ctrl_s,
     select_plan_rows,
     write_extra_text_field_by_dynamic_path,
+    verify_and_repair_header_targets,
 )
 from tools.receipt_post_save_query import target_to_match_row
 from tools.receipt_post_save_query import format_query_exception
+from tools.receipt_save_cancel import should_retry_row_by_cancel_reopen
 
 _PATCH_TARGET_MODULES = [full_flow, cp, _locator, _save_cancel, _report, _row_stages]
 
@@ -99,6 +102,29 @@ def open_report_with_header_anchor(hwnd=2002, dynamic_index=5):
     }
 
 
+def pipeline_wait_ok_with_cny_snapshot(task_ids=()):
+    return {
+        "ok": True,
+        "submitted": list(task_ids),
+        "done": len(list(task_ids)),
+        "snapshots": [
+            {
+                "id": "snapshot-0",
+                "ok": True,
+                "snapshot": {
+                    "ok": True,
+                    "rows": [
+                        {
+                            "row_index": 0,
+                            "cells": {"6": "1.0000", "7": "1,090.00"},
+                        }
+                    ],
+                },
+            }
+        ],
+    }
+
+
 class FakeInfo:
     role = "text"
     role_en_US = "text"
@@ -151,6 +177,105 @@ def test_extract_header_accepted_text_rejects_java_object_string():
         )
         == ""
     )
+
+
+def test_header_unified_check_failure_triggers_cancel_reopen_retry():
+    assert should_retry_row_by_cancel_reopen(
+        {
+            "ok": False,
+            "failed_step": "header-unified-check",
+            "reason": "表头统一校验补写后仍有缺失",
+            "save": {"skipped": True},
+        }
+    ) is True
+
+
+def test_detail_main_line_field_failure_triggers_cancel_reopen_retry():
+    assert should_retry_row_by_cancel_reopen(
+        {
+            "ok": False,
+            "failed_step": "detail-main-line",
+            "reason": "明细主行写入失败",
+            "save": {"skipped": True},
+            "detail_steps": [
+                {
+                    "ok": False,
+                    "name": "收款银行账户",
+                    "reason": "即时校验未匹配：字段=收款银行账户",
+                }
+            ],
+        }
+    ) is True
+
+
+def test_detail_main_line_stop_hotkey_does_not_retry():
+    assert should_retry_row_by_cancel_reopen(
+        {
+            "ok": False,
+            "failed_step": "detail-main-line",
+            "reason": "明细主行写入失败",
+            "save": {"skipped": True},
+            "detail_steps": [
+                {
+                    "ok": False,
+                    "name": "科目",
+                    "reason": "检测到紧急停止键 ctrl+shift+q",
+                }
+            ],
+        }
+    ) is False
+
+
+def test_detail_main_line_table_shape_failure_does_not_retry():
+    assert should_retry_row_by_cancel_reopen(
+        {
+            "ok": False,
+            "failed_step": "detail-main-line",
+            "reason": "明细主行写入失败",
+            "save": {"skipped": True},
+            "detail_steps": [
+                {
+                    "ok": False,
+                    "name": "明细表",
+                    "reason": "明细表尺寸异常：0 行 x 0 列，目标第 1 行",
+                }
+            ],
+        }
+    ) is False
+
+
+def test_header_counterparty_api_repair_failure_triggers_cancel_reopen_retry():
+    assert should_retry_row_by_cancel_reopen(
+        {
+            "ok": False,
+            "failed_step": "header-counterparty-type",
+            "reason": "往来对象未确认客户",
+            "save": {"skipped": True},
+            "header_counterparty": {
+                "ok": False,
+                "actual": "供应商",
+                "state": {"state": "repairable-conflict"},
+                "repair": {"method": "embedded-selection-api", "ok": True},
+                "after_detail": {"value": "供应商"},
+            },
+        }
+    ) is True
+
+
+def test_header_counterparty_locator_failure_does_not_retry():
+    assert should_retry_row_by_cancel_reopen(
+        {
+            "ok": False,
+            "failed_step": "header-counterparty-type",
+            "reason": "nearby scope 不是 Java 窗口",
+            "save": {"skipped": True},
+            "header_counterparty": {
+                "ok": False,
+                "actual": "供应商",
+                "detail": {"value": "供应商"},
+            },
+        }
+    ) is False
 
 
 def test_read_customer_name_after_header_uses_customer_description(monkeypatch):
@@ -939,7 +1064,8 @@ def test_run_one_row_verifies_extra_text_fields_in_pipeline(monkeypatch):
 
         def wait(self, task_ids, timeout=2.0):
             calls["wait"].append(list(task_ids))
-            return {
+            result = pipeline_wait_ok_with_cny_snapshot(task_ids)
+            result.update({
                 "ok": True,
                 "submitted": list(task_ids),
                 "done": len(task_ids),
@@ -948,7 +1074,8 @@ def test_run_one_row_verifies_extra_text_fields_in_pipeline(monkeypatch):
                     "rows-0": {"ok": True},
                     "text-0": {"ok": True, "type": "path_text"},
                 },
-            }
+            })
+            return result
 
         def close(self, timeout=1.0):
             pass
@@ -994,6 +1121,9 @@ def test_run_one_row_verifies_extra_text_fields_in_pipeline(monkeypatch):
     )
     patch_all(monkeypatch, "wait_header_account_description",
         lambda *_args, **_kwargs: {"accepted": True},
+    )
+    patch_all(monkeypatch, "verify_and_repair_header_targets",
+        lambda *_args, **_kwargs: {"ok": True, "reads": [], "missing": []},
     )
     patch_all(monkeypatch, "DetailPipelineVerifier", FakeVerifier
     )
@@ -1069,6 +1199,55 @@ def test_write_extra_text_field_rewrites_when_first_paste_does_not_land(monkeypa
     assert result["description_after"] == "PI-001"
 
 
+def test_write_extra_text_field_can_defer_readback(monkeypatch):
+    paste_values = []
+
+    class FakeJAB:
+        def get_context_info(self, _vm_id, _context):
+            raise AssertionError("延迟校验模式不应立即读回")
+
+        def get_text_context_value(self, _vm_id, _context):
+            raise AssertionError("延迟校验模式不应立即读回")
+
+        def release_contexts(self, _vm_id, _contexts):
+            pass
+
+    patch_all(monkeypatch, "get_receipt_header_path_template",
+        lambda dynamic_index: {"text_suffix_template": "memo.{index}.0"},
+    )
+    patch_all(monkeypatch, "find_receipt_header_field_by_dynamic_path",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "context": object(),
+            "vm_id": 1,
+            "owned_contexts": [],
+            "window": {"hwnd": 2002},
+            "path": "memo.path",
+            "source": "dynamic-path",
+        },
+    )
+
+    def fake_paste(_jab, _vm_id, _context, _window, value):
+        paste_values.append(value)
+        return {"ok": True, "enter_ok": True}
+
+    patch_all(monkeypatch, "guarded_paste_header_value", fake_paste)
+
+    result = write_extra_text_field_by_dynamic_path(
+        FakeJAB(),
+        "商务领款备忘",
+        "PI-001",
+        5,
+        scope_hwnd=2002,
+        verify_after_write=False,
+    )
+
+    assert result["ok"] is True
+    assert result["verify_after_write"] is False
+    assert paste_values == ["PI-001"]
+    assert result["attempts"][0]["post_write_snapshot"] == {}
+
+
 def test_write_extra_text_field_fails_when_rewrite_still_does_not_land(monkeypatch):
     class FakeJAB:
         def get_context_info(self, _vm_id, _context):
@@ -1110,6 +1289,167 @@ def test_write_extra_text_field_fails_when_rewrite_still_does_not_land(monkeypat
     assert result["ok"] is False
     assert len(result["attempts"]) == 2
     assert result["reason"] == "写入后未读回目标文本字段值：商务领款备忘='PI-001'"
+
+
+def test_header_unified_check_ignores_extra_text_fields(monkeypatch):
+    states = {"customer.path": "ACME LTD"}
+    paths = []
+
+    class FakeJAB:
+        def find_context_by_path_once(self, path, **_kwargs):
+            paths.append(path)
+            return path, 1, [], {"hwnd": 2002}
+
+        def get_context_info(self, _vm_id, context):
+            return FakeInfo(description=states[str(context)])
+
+        def get_text_context_value(self, _vm_id, _context):
+            return ""
+
+        def release_contexts(self, _vm_id, _contexts):
+            pass
+
+    result = verify_and_repair_header_targets(
+        FakeJAB(),
+        [
+            {
+                "ok": True,
+                "label": "客户",
+                "value": "YW03574",
+                "path": "customer.path",
+                "accepted_text": "ACME LTD",
+            }
+        ],
+        {
+            "ok": True,
+            "fields": [
+                {
+                    "ok": True,
+                    "label": "商务领款备忘",
+                    "value": "PI-001",
+                    "path": "memo.path",
+                }
+            ],
+        },
+        5,
+        2002,
+    )
+
+    assert result["ok"] is True
+    assert [(item["label"], item["ok"]) for item in result["reads"]] == [
+        ("客户", True)
+    ]
+    assert paths == ["customer.path"]
+    assert all(target["kind"] != "extra_text" for target in result["targets"])
+
+
+def test_header_unified_check_fails_when_header_repair_still_missing(monkeypatch):
+    class FakeJAB:
+        def find_context_by_path_once(self, path, **_kwargs):
+            return path, 1, [], {"hwnd": 2002}
+
+        def get_context_info(self, _vm_id, _context):
+            return FakeInfo(description="")
+
+        def get_text_context_value(self, _vm_id, _context):
+            return ""
+
+        def release_contexts(self, _vm_id, _contexts):
+            pass
+
+    patch_all(monkeypatch, "guarded_paste_header_value",
+        lambda *_args: {"ok": True, "enter_ok": True},
+    )
+
+    result = verify_and_repair_header_targets(
+        FakeJAB(),
+        [
+            {
+                "ok": True,
+                "label": "结算方式",
+                "value": "网银",
+                "path": "settlement.path",
+            }
+        ],
+        {
+            "ok": True,
+            "fields": [],
+        },
+        5,
+        2002,
+    )
+
+    assert result["ok"] is False
+    assert "补写后仍有缺失" in result["reason"]
+
+
+def test_header_unified_check_skips_finance_org_path_read(monkeypatch):
+    class FakeJAB:
+        def find_context_by_path_once(self, path, **_kwargs):
+            raise AssertionError(f"财务组织不应进入统一校验 exact path 读取: {path}")
+
+    result = verify_and_repair_header_targets(
+        FakeJAB(),
+        [
+            {
+                "ok": True,
+                "label": "财务组织",
+                "value": "A001",
+                "path": "finance.org.path",
+                "accepted_text": "上海移为通信技术股份有限公司",
+            }
+        ],
+        {"ok": True, "fields": []},
+        5,
+        2002,
+    )
+
+    assert result["ok"] is True
+    assert result["skipped"] is True
+    assert result["targets"] == []
+
+
+def test_header_currency_matches_code_and_chinese_name():
+    assert header_currency_matches("USD", ["USD", "美元"], "美元") is True
+    assert header_currency_matches("USD", ["USD", "美元"], "USD/美元") is True
+    assert header_currency_matches("CNY", ["CNY", "人民币"], "人民币") is True
+    assert header_currency_matches("CNY", ["CNY", "人民币"], "RMB 人民币") is True
+    assert header_currency_matches("USD", ["USD", "美元"], "人民币") is False
+
+
+def test_header_unified_check_accepts_currency_chinese_readback(monkeypatch):
+    class FakeJAB:
+        def find_context_by_path_once(self, path, **_kwargs):
+            return path, 1, [], {"hwnd": 2002}
+
+        def get_context_info(self, _vm_id, _context):
+            return FakeInfo(description="美元")
+
+        def get_text_context_value(self, _vm_id, _context):
+            return ""
+
+        def release_contexts(self, _vm_id, _contexts):
+            pass
+
+    result = verify_and_repair_header_targets(
+        FakeJAB(),
+        [
+            {
+                "ok": True,
+                "label": "币种",
+                "value": "USD",
+                "path": "currency.path",
+                "accepted_text": ["USD", "美元"],
+            }
+        ],
+        {"ok": True, "fields": []},
+        5,
+        2002,
+    )
+
+    assert result["ok"] is True
+    assert result["reads"][0]["ok"] is True
+    assert result["reads"][0]["actual_value"] == "美元"
 
 
 def test_ensure_header_counterparty_customer_skips_when_already_customer(monkeypatch):
@@ -1250,7 +1590,7 @@ def test_ensure_header_counterparty_customer_skips_when_embedded_selected_custom
     assert jab.actions == []
 
 
-def test_ensure_header_counterparty_customer_fails_when_detail_conflicts_with_stale_header(
+def test_ensure_header_counterparty_customer_repairs_conflict_with_selection_api(
     monkeypatch,
 ):
     class FakeNode:
@@ -1293,6 +1633,8 @@ def test_ensure_header_counterparty_customer_fails_when_detail_conflicts_with_st
             self.popup = FakeNode("popup menu", children=[self.list_node])
             self.combo = FakeNode("combo box", children=[self.popup])
             self.dll = self
+            self.selection_calls = []
+            self.keys = []
 
         def find_context_by_path_once(self, path, **_kwargs):
             return self.combo, 1, [], {"hwnd": 2002}
@@ -1306,27 +1648,71 @@ def test_ensure_header_counterparty_customer_fails_when_detail_conflicts_with_st
         def getAccessibleChildFromContext(self, _vm_id, context, index):
             return context.children[index]
 
+        def clearAccessibleSelectionFromContext(self, vm_id, context):
+            self.selection_calls.append(("clear", vm_id, context))
+            return True
+
+        def addAccessibleSelectionFromContext(self, vm_id, context, index):
+            self.selection_calls.append(("add", vm_id, context, index))
+            return True
+
+        def requestFocus(self, vm_id, context):
+            self.selection_calls.append(("focus", vm_id, context))
+            return True
+
+        def press_key(self, key, wait=0):
+            self.keys.append((key, wait))
+            return True
+
         def release_contexts(self, _vm_id, _contexts):
             pass
 
+    reads = iter(
+        [
+            {
+                "ok": True,
+                "source": "detail-row0-col0",
+                "row": 0,
+                "col": 0,
+                "value": "部门",
+                "text": "部门",
+            },
+            {
+                "ok": True,
+                "source": "detail-row0-col0",
+                "row": 0,
+                "col": 0,
+                "value": "客户",
+                "text": "客户",
+            },
+        ]
+    )
     monkeypatch.setattr(cp, "read_detail_counterparty_value",
-        lambda *_args, **_kwargs: {
-            "ok": True,
-            "source": "detail-row0-col0",
-            "row": 0,
-            "col": 0,
-            "value": "部门",
-            "text": "部门",
-        },
+        lambda *_args, **_kwargs: next(reads),
     )
 
-    result = REAL_ENSURE_HEADER_COUNTERPARTY_CUSTOMER(FakeJAB(), 5, scope_hwnd=2002)
+    jab = FakeJAB()
+    monkeypatch.setattr(cp, "find_counterparty_combo",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "source": "nearby",
+            "context": jab.combo,
+            "vm_id": 1,
+            "owned_contexts": [],
+            "window": {"hwnd": 2002},
+            "path": "0.0.1.0.0.0.0.5.nearby.suffix",
+        },
+    )
+    result = REAL_ENSURE_HEADER_COUNTERPARTY_CUSTOMER(jab, 5, scope_hwnd=2002)
 
-    assert result["ok"] is False
-    assert result["actual"] == "部门"
-    assert result["embedded"] == {}
+    assert result["ok"] is True
+    assert result["repaired"] is True
+    assert result["repaired_from_conflict"] is True
+    assert result["actual"] == "客户"
     assert result["detail"]["value"] == "部门"
-    assert "detail_row0_col0=部门" in result["reason"]
+    assert result["after_detail"]["value"] == "客户"
+    assert ("add", 1, jab.list_node, 0) in jab.selection_calls
+    assert jab.keys == [("home", 0.02), ("enter", 0)]
 
 
 def test_ensure_header_counterparty_customer_repairs_blank_detail_with_embedded_selection(
@@ -1452,6 +1838,118 @@ def test_ensure_header_counterparty_customer_repairs_blank_detail_with_embedded_
     assert result["after_detail"]["value"] == "客户"
     assert ("add", 1, jab.list_node, 0) in jab.selection_calls
     assert jab.keys == [("home", 0.02), ("enter", 0)]
+
+
+def test_ensure_header_counterparty_customer_fails_when_conflict_repair_not_confirmed(
+    monkeypatch,
+):
+    class FakeNode:
+        def __init__(self, role, name="", description="", states="enabled,visible,showing", children=None):
+            self.name = name
+            self.description = description
+            self.role = role
+            self.role_en_US = role
+            self.states = states
+            self.states_en_US = states
+            self.children = children or []
+            self.childrenCount = len(self.children)
+            self.x, self.y, self.width, self.height = (0, 0, 10, 10)
+
+    class FakeJAB:
+        def __init__(self):
+            self.customer = FakeNode(
+                "label",
+                name="客户",
+                states="enabled,focusable,visible,opaque,selectable,selected,showing",
+            )
+            self.supplier = FakeNode(
+                "label",
+                name="供应商",
+                states="enabled,focusable,visible,opaque,selectable,showing",
+            )
+            self.list_node = FakeNode(
+                "list",
+                description="客户",
+                children=[self.customer, self.supplier],
+            )
+            self.popup = FakeNode("popup menu", children=[self.list_node])
+            self.combo = FakeNode("combo box", children=[self.popup])
+            self.dll = self
+            self.selection_calls = []
+
+        def find_context_by_path_once(self, path, **_kwargs):
+            return self.combo, 1, [], {"hwnd": 2002}
+
+        def get_context_info(self, _vm_id, _context):
+            return _context
+
+        def get_text_context_value(self, _vm_id, _context):
+            return ""
+
+        def getAccessibleChildFromContext(self, _vm_id, context, index):
+            return context.children[index]
+
+        def clearAccessibleSelectionFromContext(self, vm_id, context):
+            self.selection_calls.append(("clear", vm_id, context))
+            return True
+
+        def addAccessibleSelectionFromContext(self, vm_id, context, index):
+            self.selection_calls.append(("add", vm_id, context, index))
+            return True
+
+        def requestFocus(self, vm_id, context):
+            self.selection_calls.append(("focus", vm_id, context))
+            return True
+
+        def press_key(self, key, wait=0):
+            return True
+
+        def release_contexts(self, _vm_id, _contexts):
+            pass
+
+    reads = iter(
+        [
+            {
+                "ok": True,
+                "source": "detail-row0-col0",
+                "row": 0,
+                "col": 0,
+                "value": "供应商",
+                "text": "供应商",
+            },
+            {
+                "ok": True,
+                "source": "detail-row0-col0",
+                "row": 0,
+                "col": 0,
+                "value": "供应商",
+                "text": "供应商",
+            },
+        ]
+    )
+    monkeypatch.setattr(cp, "read_detail_counterparty_value",
+        lambda *_args, **_kwargs: next(reads),
+    )
+
+    jab = FakeJAB()
+    monkeypatch.setattr(cp, "find_counterparty_combo",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "source": "nearby",
+            "context": jab.combo,
+            "vm_id": 1,
+            "owned_contexts": [],
+            "window": {"hwnd": 2002},
+            "path": "0.0.1.0.0.0.0.5.nearby.suffix",
+        },
+    )
+    result = REAL_ENSURE_HEADER_COUNTERPARTY_CUSTOMER(jab, 5, scope_hwnd=2002)
+
+    assert result["ok"] is False
+    assert result["actual"] == "供应商"
+    assert result["state"]["state"] == "repairable-conflict"
+    assert result["after_detail"]["value"] == "供应商"
+    assert ("add", 1, jab.list_node, 0) in jab.selection_calls
 
 
 def test_ensure_header_counterparty_customer_skips_when_detail_row0_col0_customer(monkeypatch):
@@ -1715,11 +2213,7 @@ def test_ensure_header_counterparty_customer_fails_when_existing_non_target_valu
 
     assert result["ok"] is False
     assert result["actual"] == "供应商"
-    assert "往来对象未确认客户" in result["reason"]
-    assert "combo_text=" in result["reason"]
-    assert "detail_row0_col0=供应商" in result["reason"]
-    assert "已禁用旧下拉键盘方案" in result["reason"]
-    assert result["before"] == {}
+    assert result["detail"]["value"] == "供应商"
 
 
 def test_ensure_header_counterparty_customer_trusts_detail_over_stale_header_text(
@@ -1821,8 +2315,8 @@ def test_run_one_row_resolves_header_scope_by_finance_org_fast_path(monkeypatch)
         def submit_row_count(self, *_args, **_kwargs):
             return "rows-0"
 
-        def wait(self, *_args, **_kwargs):
-            return {"ok": True}
+        def wait(self, task_ids=(), *_args, **_kwargs):
+            return pipeline_wait_ok_with_cny_snapshot(task_ids)
 
         def close(self, timeout=1.0):
             pass
@@ -1891,6 +2385,9 @@ def test_run_one_row_resolves_header_scope_by_finance_org_fast_path(monkeypatch)
     )
     patch_all(monkeypatch, "wait_header_account_description",
         lambda *_args, **_kwargs: {"accepted": True},
+    )
+    patch_all(monkeypatch, "verify_and_repair_header_targets",
+        lambda *_args, **_kwargs: {"ok": True, "reads": [], "missing": []},
     )
     patch_all(monkeypatch, "DetailPipelineVerifier", FakeVerifier
     )
@@ -2086,7 +2583,8 @@ def test_run_one_row_repairs_pending_detail_field_with_cached_path(monkeypatch):
                         }
                     },
                 }
-            return {
+            result = pipeline_wait_ok_with_cny_snapshot(["field-0", "rows-0", "field-1"])
+            result.update({
                 "ok": True,
                 "submitted": ["field-0", "rows-0", "field-1"],
                 "done": 3,
@@ -2100,7 +2598,8 @@ def test_run_one_row_repairs_pending_detail_field_with_cached_path(monkeypatch):
                         "name": "收款银行账户",
                     },
                 },
-            }
+            })
+            return result
 
         def snapshot(self):
             return {"ok": len(calls["wait"]) >= 2}
@@ -2410,8 +2909,8 @@ def test_run_one_row_recovers_modal_only_after_save_failure(monkeypatch):
         def submit_row_count(self, *args, **kwargs):
             return "rows-0"
 
-        def wait(self, *args, **kwargs):
-            return {"ok": True}
+        def wait(self, task_ids=(), *args, **kwargs):
+            return pipeline_wait_ok_with_cny_snapshot(task_ids)
 
         def close(self, timeout=1.0):
             pass
@@ -2439,6 +2938,9 @@ def test_run_one_row_recovers_modal_only_after_save_failure(monkeypatch):
     )
     patch_all(monkeypatch, "wait_header_account_description",
         lambda *_args, **_kwargs: {"accepted": True},
+    )
+    patch_all(monkeypatch, "verify_and_repair_header_targets",
+        lambda *_args, **_kwargs: {"ok": True, "reads": [], "missing": []},
     )
     patch_all(monkeypatch, "DetailPipelineVerifier", LocalFakeVerifier
     )
@@ -2568,8 +3070,8 @@ def test_run_one_row_continues_when_header_account_readback_is_empty(monkeypatch
         def submit_row_count(self, *args, **kwargs):
             return "rows-0"
 
-        def wait(self, *args, **kwargs):
-            return {"ok": True}
+        def wait(self, task_ids=(), *args, **kwargs):
+            return pipeline_wait_ok_with_cny_snapshot(task_ids)
 
         def close(self, timeout=1.0):
             pass
@@ -2608,6 +3110,9 @@ def test_run_one_row_continues_when_header_account_readback_is_empty(monkeypatch
             account_readback_timeouts.append(timeout)
             or {"accepted": False, "description": "", "text": ""}
         ),
+    )
+    patch_all(monkeypatch, "verify_and_repair_header_targets",
+        lambda *_args, **_kwargs: {"ok": True, "reads": [], "missing": []},
     )
     patch_all(monkeypatch, "DetailPipelineVerifier", LocalFakeVerifier
     )
