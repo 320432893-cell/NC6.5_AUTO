@@ -1,7 +1,7 @@
 # 职责：后台用阶段性快照批量验证收款单明细字段和最终行数
 # 不做什么：不写入 NC，不决定业务字段顺序，不处理保存/暂存
 # 允许依赖层：core JAB 操作、core.receipt_detail_fields/reader
-# 谁不应该 import：底层 core、Excel/Sheet 写入模块不应 import
+# 谁不应该 import：tools 入口层、Excel/Sheet 写入模块(不反依赖入口、不碰落盘)
 # 生命周期：正式完整流程组件
 
 from __future__ import annotations

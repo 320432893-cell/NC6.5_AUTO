@@ -1,6 +1,6 @@
 # 职责：收款单 body 表/表头 scope 的运行内定位缓存与 entry_state 解析
 # 不做什么：不写入 NC、不做业务编排、不读 Excel
-# 允许依赖层：core JAB、tools 下 body_table_locator;谁不应 import：core 层
+# 允许依赖层：core 收款明细表定位/表头(receipt_body_table_locator/receipt_self_made_fill_trial);谁不应 import：tools 入口层(不反依赖 receipt_full_flow_entry)
 
 import sys
 from pathlib import Path
