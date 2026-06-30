@@ -740,166 +740,233 @@ def customer_name_from_header_unified_check(report):
     return ""
 
 
-def run_one_row(
-    config,
-    row,
-    save_enabled=False,
-    recorder=None,
-    pause_after_header_field=None,
-    diagnose_header_after_pause=False,
-    diagnose_detail_repair=False,
-    header_scope_cache=None,
-):
-    current_stage = {"name": ""}
+class StageAbort(Exception):
+    """阶段中止信号:任一阶段判失败时抛出,由 RowRun.execute() 统一转 fail()。"""
 
-    def _stage(stage, **fields):
-        current_stage["name"] = stage
-        if recorder is not None:
-            recorder.set_stage(stage, **fields)
+    def __init__(self, step, reason):
+        super().__init__(reason)
+        self.step = step
+        self.reason = reason
 
-    def _event(name, **fields):
-        if recorder is not None:
-            recorder.event(name, **fields)
 
-    timings = StepTimer()
-    flow_started_at = time.perf_counter()
-    row_report = {
-        "excel_row": row.row,
-        "plan_row": serializable(asdict(row)),
-        "steps": [],
-        "save_enabled": bool(save_enabled),
-    }
-    business = business_from_plan_row(row)
-    jab = JABOperator(config)
-    jab_lock = threading.RLock()
-    pipeline_verifier = None
-    modal_events = []
-    try:
-        timings.measure("jab.ensure-started", jab.ensure_started)
-        _stage("开单", excel_row=row.row)
-        open_step = timings.measure(
+class RowRun:
+    """单行收款单全流程的一次性执行器:开单→表头→明细主行→手续费→保存。
+
+    原 run_one_row 上帝函数(radon F63、647行)的内聚状态归位为对象字段、五阶段
+    归位为方法;任一阶段判失败 raise StageAbort,由 execute() 统一收尾(关 verifier、
+    关 jab)。行为与原函数严格等价:row_report 键、fail 的 step 名、event 名均不变。
+    """
+
+    def __init__(
+        self,
+        config,
+        row,
+        save_enabled=False,
+        recorder=None,
+        pause_after_header_field=None,
+        diagnose_header_after_pause=False,
+        diagnose_detail_repair=False,
+        header_scope_cache=None,
+    ):
+        self.config = config
+        self.row = row
+        self.save_enabled = save_enabled
+        self.recorder = recorder
+        self.pause_after_header_field = pause_after_header_field
+        self.diagnose_header_after_pause = diagnose_header_after_pause
+        self.diagnose_detail_repair = diagnose_detail_repair
+        self.header_scope_cache = header_scope_cache
+        self.current_stage = ""
+        self.timings = StepTimer()
+        self.flow_started_at = time.perf_counter()
+        self.row_report = {
+            "excel_row": row.row,
+            "plan_row": serializable(asdict(row)),
+            "steps": [],
+            "save_enabled": bool(save_enabled),
+        }
+        self.business = business_from_plan_row(row)
+        self.jab = JABOperator(config)
+        self.jab_lock = threading.RLock()
+        self.pipeline_verifier = None
+        self.modal_events = []
+        # 表头阶段填、后续阶段读的跨阶段派生状态
+        self.open_step = None
+        self.entry_scope_hwnd = None
+        self.entry_dynamic_index = None
+        self.entry_anchor_path = None
+        self.located = None
+        self.extra_text_report = None
+        self.header_pause_reports = []
+        self.header_steps_so_far_labels = []
+        # 明细阶段建、手续费/校验阶段读的 pipeline 任务台账
+        self.pipeline_field_task_ids = []
+        self.pipeline_field_tasks = {}
+        self.pipeline_text_task_ids = []
+        self.pipeline_snapshot_task_ids = []
+        self.pipeline_row_count_task_id = None
+
+    # ---- 共享小工具(原闭包) ----
+    def stage(self, stage, **fields):
+        self.current_stage = stage
+        if self.recorder is not None:
+            self.recorder.set_stage(stage, **fields)
+
+    def event(self, name, **fields):
+        if self.recorder is not None:
+            self.recorder.event(name, **fields)
+
+    def recover_modal(self):
+        result = recover_cancelable_modal_now(
+            self.jab,
+            stage=self.current_stage or "",
+        )
+        if result.get("attempted"):
+            self.modal_events.append(result)
+        return result
+
+    def _after_header_field(self, label, _value, step):
+        if label and label not in self.header_steps_so_far_labels:
+            self.header_steps_so_far_labels.append(label)
+        if self.pause_after_header_field != label:
+            return None
+        print(
+            f"诊断暂停：表头字段 [{label}] 已写入。"
+            "可以现在人工打开干扰窗口或清理已输入字段；回车后继续检查。"
+        )
+        input("完成干扰后按回车继续: ")
+        report = {
+            "ok": True,
+            "paused_after": label,
+            "field_path": step.get("path"),
+        }
+        if self.diagnose_header_after_pause:
+            report["header_readback"] = diagnose_written_header_fields(
+                self.jab,
+                list(self.header_steps_so_far_labels),
+                step.get("dynamic_index"),
+                step.get("dynamic_prefix"),
+                self.entry_scope_hwnd,
+            )
+            report["ok"] = all(
+                item.get("present") for item in report["header_readback"]
+            )
+            if not report["ok"]:
+                report["reason"] = "暂停恢复后检测到已写表头字段为空或不可读"
+        self.header_pause_reports.append(report)
+        return report
+
+    def _submit_detail_verify(self, row_index, field, business_values, _step):
+        task_id = self.pipeline_verifier.submit_field(
+            row_index,
+            field,
+            business_values,
+        )
+        self.pipeline_field_task_ids.append(task_id)
+        self.pipeline_field_tasks[task_id] = {
+            "row_index": int(row_index),
+            "field": dict(field),
+            "business": business_values,
+        }
+        return task_id
+
+    # ---- 五个阶段(任一失败 raise StageAbort) ----
+    def open(self):
+        self.timings.measure("jab.ensure-started", self.jab.ensure_started)
+        self.stage("开单", excel_row=self.row.row)
+        open_step = self.timings.measure(
             "open.self-made",
             run_with_jab_lock,
-            jab_lock,
+            self.jab_lock,
             open_self_made_entry,
-            config,
-            jab,
+            self.config,
+            self.jab,
         )
-        row_report["steps"].append({"name": "open-self-made", **open_step})
+        self.open_step = open_step
+        self.row_report["steps"].append({"name": "open-self-made", **open_step})
         if not open_step.get("ok"):
-            _event("open-failed", excel_row=row.row, error=open_step.get("reason"))
-            return fail(row_report, "open-self-made", timings, open_step.get("reason"))
-        row_report["modal_recovery"] = {"events": modal_events}
-
-        def recover_modal_after_failure():
-            result = recover_cancelable_modal_now(
-                jab,
-                stage=current_stage.get("name") or "",
+            self.event(
+                "open-failed", excel_row=self.row.row, error=open_step.get("reason")
             )
-            if result.get("attempted"):
-                modal_events.append(result)
-            return result
+            raise StageAbort("open-self-made", open_step.get("reason"))
+        self.row_report["modal_recovery"] = {"events": self.modal_events}
 
+    def header(self):
         scope = resolve_entry_header_scope(
-            jab,
-            jab_lock,
+            self.jab,
+            self.jab_lock,
             run_with_jab_lock,
-            open_step,
-            header_scope_cache,
-            timings,
-            row_report,
+            self.open_step,
+            self.header_scope_cache,
+            self.timings,
+            self.row_report,
         )
         if not scope["ok"]:
-            _event("header-anchor-failed", excel_row=row.row, error=scope["reason"])
-            return fail(row_report, "header-anchor", timings, scope["reason"])
-        entry_scope_hwnd = scope["scope_hwnd"]
-        entry_dynamic_index = scope["dynamic_index"]
-        entry_anchor_path = scope["anchor_path"]
-        _stage("表头", excel_row=row.row)
-        header_pause_reports = []
-        header_steps_so_far_labels = []
-
-        def after_header_field(label, _value, step):
-            if label and label not in header_steps_so_far_labels:
-                header_steps_so_far_labels.append(label)
-            if pause_after_header_field != label:
-                return None
-            print(
-                f"诊断暂停：表头字段 [{label}] 已写入。"
-                "可以现在人工打开干扰窗口或清理已输入字段；回车后继续检查。"
+            self.event(
+                "header-anchor-failed", excel_row=self.row.row, error=scope["reason"]
             )
-            input("完成干扰后按回车继续: ")
-            report = {
-                "ok": True,
-                "paused_after": label,
-                "field_path": step.get("path"),
-            }
-            if diagnose_header_after_pause:
-                report["header_readback"] = diagnose_written_header_fields(
-                    jab,
-                    list(header_steps_so_far_labels),
-                    step.get("dynamic_index"),
-                    step.get("dynamic_prefix"),
-                    entry_scope_hwnd,
-                )
-                report["ok"] = all(
-                    item.get("present") for item in report["header_readback"]
-                )
-                if not report["ok"]:
-                    report["reason"] = "暂停恢复后检测到已写表头字段为空或不可读"
-            header_pause_reports.append(report)
-            return report
-
-        if pause_after_header_field:
-            header_steps = timings.measure(
+            raise StageAbort("header-anchor", scope["reason"])
+        self.entry_scope_hwnd = scope["scope_hwnd"]
+        self.entry_dynamic_index = scope["dynamic_index"]
+        self.entry_anchor_path = scope["anchor_path"]
+        self.stage("表头", excel_row=self.row.row)
+        if self.pause_after_header_field:
+            header_steps = self.timings.measure(
                 "header.fill",
                 run_with_jab_lock,
-                jab_lock,
+                self.jab_lock,
                 fill_header,
-                jab,
-                business,
-                scope_hwnd=entry_scope_hwnd,
-                dynamic_index=entry_dynamic_index,
-                anchor_path=entry_anchor_path,
+                self.jab,
+                self.business,
+                scope_hwnd=self.entry_scope_hwnd,
+                dynamic_index=self.entry_dynamic_index,
+                anchor_path=self.entry_anchor_path,
                 trust_provided_scope=True,
-                recover_after_failure=recover_modal_after_failure,
-                after_field=after_header_field,
+                recover_after_failure=self.recover_modal,
+                after_field=self._after_header_field,
             )
         else:
-            header_steps = timings.measure(
+            header_steps = self.timings.measure(
                 "header.fill",
                 run_with_jab_lock,
-                jab_lock,
+                self.jab_lock,
                 fill_header,
-                jab,
-                business,
-                after_field=after_header_field,
-                scope_hwnd=entry_scope_hwnd,
-                dynamic_index=entry_dynamic_index,
-                anchor_path=entry_anchor_path,
+                self.jab,
+                self.business,
+                after_field=self._after_header_field,
+                scope_hwnd=self.entry_scope_hwnd,
+                dynamic_index=self.entry_dynamic_index,
+                anchor_path=self.entry_anchor_path,
                 trust_provided_scope=True,
-                recover_after_failure=recover_modal_after_failure,
+                recover_after_failure=self.recover_modal,
             )
-        if header_pause_reports:
-            row_report["header_pause_diagnostics"] = header_pause_reports
-        row_report["header_steps"] = header_steps
-        cached_after_header = getattr(jab, "_receipt_header_scope_cache", None) or {}
+        if self.header_pause_reports:
+            self.row_report["header_pause_diagnostics"] = self.header_pause_reports
+        self.row_report["header_steps"] = header_steps
+        cached_after_header = (
+            getattr(self.jab, "_receipt_header_scope_cache", None) or {}
+        )
         if cached_after_header.get("ok"):
-            cache_receipt_header_scope(jab, header_scope_cache, cached_after_header)
+            cache_receipt_header_scope(
+                self.jab, self.header_scope_cache, cached_after_header
+            )
         if any(not step.get("ok") for step in header_steps):
             header_error = summarize_header_failure(header_steps)
-            _event("header-fill-failed", excel_row=row.row, error=header_error)
-            return fail(row_report, "header-fill", timings, header_error)
-        located = timings.measure(
+            self.event(
+                "header-fill-failed", excel_row=self.row.row, error=header_error
+            )
+            raise StageAbort("header-fill", header_error)
+        self.located = self.timings.measure(
             "body.locate",
             run_with_jab_lock,
-            jab_lock,
+            self.jab_lock,
             resolve_body_table_by_dynamic_prefix,
-            jab,
-            entry_dynamic_index,
-            entry_scope_hwnd,
+            self.jab,
+            self.entry_dynamic_index,
+            self.entry_scope_hwnd,
         )
-        row_report["body_locate"] = {
+        located = self.located
+        self.row_report["body_locate"] = {
             "source": located.get("source"),
             "cache_hit": located.get("cache_hit"),
             "fallback_used": located.get("fallback_used"),
@@ -907,80 +974,79 @@ def run_one_row(
             "seconds": located.get("seconds"),
             "started_offset_seconds": located.get("started_offset_seconds"),
         }
-        row_report["table_candidates"] = located.get("candidates", [])[:5]
+        self.row_report["table_candidates"] = located.get("candidates", [])[:5]
         if not located.get("best"):
-            _event("locate-table-failed", excel_row=row.row, error="未定位到明细表")
-            return fail(row_report, "locate-body-table", timings, "未定位到明细表")
-        counterparty_report = timings.measure(
+            self.event(
+                "locate-table-failed", excel_row=self.row.row, error="未定位到明细表"
+            )
+            raise StageAbort("locate-body-table", "未定位到明细表")
+        counterparty_report = self.timings.measure(
             "header.counterparty-type",
             run_with_jab_lock,
-            jab_lock,
+            self.jab_lock,
             ensure_header_counterparty_customer,
-            jab,
-            entry_dynamic_index,
-            entry_scope_hwnd,
+            self.jab,
+            self.entry_dynamic_index,
+            self.entry_scope_hwnd,
             located=located,
-            recover_after_failure=recover_modal_after_failure,
+            recover_after_failure=self.recover_modal,
         )
-        row_report["header_counterparty"] = counterparty_report
+        self.row_report["header_counterparty"] = counterparty_report
         if not counterparty_report.get("ok"):
-            _event(
+            self.event(
                 "header-counterparty-failed",
-                excel_row=row.row,
+                excel_row=self.row.row,
                 error=counterparty_report.get("reason"),
             )
-            return fail(
-                row_report,
+            raise StageAbort(
                 "header-counterparty-type",
-                timings,
                 counterparty_report.get("reason") or "往来对象未确认",
             )
-        extra_text_report = timings.measure(
+        extra_text_report = self.timings.measure(
             "header.extra-text-fields",
             run_with_jab_lock,
-            jab_lock,
+            self.jab_lock,
             write_extra_text_fields,
-            jab,
-            row.extra_text_fields,
-            entry_dynamic_index,
-            entry_scope_hwnd,
-            recover_after_failure=recover_modal_after_failure,
+            self.jab,
+            self.row.extra_text_fields,
+            self.entry_dynamic_index,
+            self.entry_scope_hwnd,
+            recover_after_failure=self.recover_modal,
             verify_after_write=False,
         )
-        row_report["extra_text_fields"] = extra_text_report
+        self.extra_text_report = extra_text_report
+        self.row_report["extra_text_fields"] = extra_text_report
         if not extra_text_report.get("ok"):
-            _event(
+            self.event(
                 "header-extra-text-failed",
-                excel_row=row.row,
+                excel_row=self.row.row,
                 error=extra_text_report.get("reason"),
             )
-            return fail(
-                row_report,
+            raise StageAbort(
                 "header-extra-text-fields",
-                timings,
                 extra_text_report.get("reason") or "扩展文本字段写入失败",
             )
-        header_unified_check = timings.measure(
+        header_unified_check = self.timings.measure(
             "header.unified-check",
             run_with_jab_lock,
-            jab_lock,
+            self.jab_lock,
             verify_and_repair_header_targets,
-            jab,
+            self.jab,
             header_steps,
             extra_text_report,
-            entry_dynamic_index,
-            entry_scope_hwnd,
-            recover_after_failure=recover_modal_after_failure,
+            self.entry_dynamic_index,
+            self.entry_scope_hwnd,
+            recover_after_failure=self.recover_modal,
         )
-        row_report["header_unified_check"] = header_unified_check
+        self.row_report["header_unified_check"] = header_unified_check
         if not header_unified_check.get("ok"):
             reason = header_unified_check.get("reason") or "表头统一校验失败"
-            _event(
+            self.event(
                 "header-unified-check-failed",
-                excel_row=row.row,
+                excel_row=self.row.row,
                 error=reason,
             )
-            return fail(row_report, "header-unified-check", timings, reason)
+            raise StageAbort("header-unified-check", reason)
         unified_customer_name = customer_name_from_header_unified_check(
             header_unified_check
         )
@@ -992,190 +1058,182 @@ def run_one_row(
                 "skipped_legacy_readback": True,
             }
         else:
-            customer_name = timings.measure(
+            customer_name = self.timings.measure(
                 "header.customer-name-readback",
                 run_with_jab_lock,
-                jab_lock,
+                self.jab_lock,
                 read_customer_name_after_header,
-                jab,
+                self.jab,
                 header_steps,
-                entry_dynamic_index,
-                entry_scope_hwnd,
+                self.entry_dynamic_index,
+                self.entry_scope_hwnd,
             )
-        row_report["customer_name_readback"] = customer_name
-        row_report["nc_customer_name"] = str(customer_name.get("value") or "").strip()
-        if not row_report["nc_customer_name"]:
+        self.row_report["customer_name_readback"] = customer_name
+        self.row_report["nc_customer_name"] = str(
+            customer_name.get("value") or ""
+        ).strip()
+        if not self.row_report["nc_customer_name"]:
             reason = customer_name.get("reason") or "客户名称未确认"
-            _event(
+            self.event(
                 "header-customer-readback-failed",
-                excel_row=row.row,
+                excel_row=self.row.row,
                 error=reason,
             )
-            return fail(row_report, "header-customer-name", timings, reason)
-        _stage("明细主行", excel_row=row.row)
-        row_report["before_table"] = {
+            raise StageAbort("header-customer-name", reason)
+
+    def detail_main(self):
+        located = self.located
+        self.stage("明细主行", excel_row=self.row.row)
+        self.row_report["before_table"] = {
             "ok": True,
             "skipped": True,
             "reason": "明细表 path 已定位；后台 pipeline verifier 负责预热 path 和并发读回",
         }
-        pipeline_verifier = DetailPipelineVerifier(
-            config,
+        self.pipeline_verifier = DetailPipelineVerifier(
+            self.config,
             located,
-            flow_started_at=flow_started_at,
-            jab=jab,
-            jab_lock=jab_lock,
+            flow_started_at=self.flow_started_at,
+            jab=self.jab,
+            jab_lock=self.jab_lock,
         )
-        pipeline_verifier.start()
-        pipeline_field_task_ids = []
-        pipeline_field_tasks = {}
-        pipeline_text_task_ids = []
-        pipeline_snapshot_task_ids = []
-        pipeline_row_count_task_id = None
-
-        for field_report in extra_text_report.get("fields") or []:
+        self.pipeline_verifier.start()
+        for field_report in self.extra_text_report.get("fields") or []:
             if not field_report.get("ok") or not field_report.get("value"):
                 continue
             if not field_report.get("path"):
-                return fail(
-                    row_report,
+                raise StageAbort(
                     "header-extra-text-fields",
-                    timings,
                     f"扩展文本字段 {field_report.get('label')!r} 缺少后台验证 path",
                 )
-            pipeline_text_task_ids.append(
-                pipeline_verifier.submit_path_text(
+            self.pipeline_text_task_ids.append(
+                self.pipeline_verifier.submit_path_text(
                     field_report.get("label"),
                     field_report.get("path"),
                     field_report.get("value"),
-                    scope_hwnd=entry_scope_hwnd,
+                    scope_hwnd=self.entry_scope_hwnd,
                 )
             )
-        row_report["extra_text_verify_tasks"] = pipeline_text_task_ids
-
-        def submit_detail_verify(row_index, field, business_values, _step):
-            task_id = pipeline_verifier.submit_field(
-                row_index,
-                field,
-                business_values,
-            )
-            pipeline_field_task_ids.append(task_id)
-            pipeline_field_tasks[task_id] = {
-                "row_index": int(row_index),
-                "field": dict(field),
-                "business": business_values,
-            }
-            return task_id
-
-        detail_steps = timings.measure(
+        self.row_report["extra_text_verify_tasks"] = self.pipeline_text_task_ids
+        detail_steps = self.timings.measure(
             "detail.main-line",
             run_with_jab_lock,
-            jab_lock,
+            self.jab_lock,
             write_detail_line_by_screen,
-            jab,
-            business,
+            self.jab,
+            self.business,
             located,
-            after_field=submit_detail_verify,
-            recover_after_failure=recover_modal_after_failure,
+            after_field=self._submit_detail_verify,
+            recover_after_failure=self.recover_modal,
         )
-        row_report["detail_steps"] = detail_steps
-        pipeline_snapshot_task_ids.append(
-            pipeline_verifier.submit_snapshot(
+        self.row_report["detail_steps"] = detail_steps
+        self.pipeline_snapshot_task_ids.append(
+            self.pipeline_verifier.submit_snapshot(
                 "after-main-line",
                 max_rows=3,
                 min_matches=len(detail_steps),
             )
         )
         if not all(step.get("ok") for step in detail_steps):
-            _event("detail-main-failed", excel_row=row.row, error="明细主行写入失败")
-            return fail(row_report, "detail-main-line", timings, "明细主行写入失败")
-        if row.fee > 0:
-            _stage("手续费", excel_row=row.row)
-            row_report["extra_row_delete"] = {
+            self.event(
+                "detail-main-failed", excel_row=self.row.row, error="明细主行写入失败"
+            )
+            raise StageAbort("detail-main-line", "明细主行写入失败")
+
+    def fee_and_verify(self):
+        located = self.located
+        if self.row.fee > 0:
+            self.stage("手续费", excel_row=self.row.row)
+            self.row_report["extra_row_delete"] = {
                 "ok": True,
                 "skipped": True,
                 "reason": "手续费非 0，保留主行后自动带出的第 2 行给手续费覆盖",
             }
-            add_row, fee_steps, clear_account, delete_extra = timings.measure(
+            add_row, fee_steps, clear_account, delete_extra = self.timings.measure(
                 "detail.fee-line",
                 run_with_jab_lock,
-                jab_lock,
+                self.jab_lock,
                 run_fee_only,
-                jab,
+                self.jab,
                 located,
-                str(row.fee),
-                after_field=submit_detail_verify,
-                recover_after_failure=recover_modal_after_failure,
+                str(self.row.fee),
+                after_field=self._submit_detail_verify,
+                recover_after_failure=self.recover_modal,
             )
-            row_report["fee_row_add"] = add_row
-            row_report["fee_steps"] = fee_steps
-            pipeline_snapshot_task_ids.append(
-                pipeline_verifier.submit_snapshot(
+            self.row_report["fee_row_add"] = add_row
+            self.row_report["fee_steps"] = fee_steps
+            self.pipeline_snapshot_task_ids.append(
+                self.pipeline_verifier.submit_snapshot(
                     "after-fee-line",
                     max_rows=4,
                 )
             )
-            row_report["fee_account_clear"] = clear_account
-            row_report["fee_extra_row_delete"] = delete_extra
+            self.row_report["fee_account_clear"] = clear_account
+            self.row_report["fee_extra_row_delete"] = delete_extra
             if delete_extra.get("ok"):
-                pipeline_row_count_task_id = pipeline_verifier.submit_row_count(2)
+                self.pipeline_row_count_task_id = (
+                    self.pipeline_verifier.submit_row_count(2)
+                )
             if (
                 not add_row.get("ok")
                 or not all(step.get("ok") for step in fee_steps)
                 or not clear_account.get("ok")
                 or not delete_extra.get("ok")
             ):
-                _event("fee-line-failed", excel_row=row.row, error="手续费行处理失败")
-                return fail(row_report, "detail-fee-line", timings, "手续费行处理失败")
+                self.event(
+                    "fee-line-failed", excel_row=self.row.row, error="手续费行处理失败"
+                )
+                raise StageAbort("detail-fee-line", "手续费行处理失败")
         else:
-            row_report["extra_row_delete"] = timings.measure(
+            self.row_report["extra_row_delete"] = self.timings.measure(
                 "detail.delete-extra-after-main",
                 run_with_jab_lock,
-                jab_lock,
+                self.jab_lock,
                 delete_extra_row_if_present,
-                jab,
+                self.jab,
                 located,
                 1,
-                scope_hwnd=entry_scope_hwnd,
+                scope_hwnd=self.entry_scope_hwnd,
                 defer_wait=True,
             )
-            if not row_report["extra_row_delete"].get("ok"):
-                _event(
+            if not self.row_report["extra_row_delete"].get("ok"):
+                self.event(
                     "delete-extra-failed",
-                    excel_row=row.row,
+                    excel_row=self.row.row,
                     error="主行后多余行删除失败",
                 )
-                return fail(
-                    row_report,
-                    "detail-delete-extra-after-main",
-                    timings,
-                    "主行后多余行删除失败",
+                raise StageAbort(
+                    "detail-delete-extra-after-main", "主行后多余行删除失败"
                 )
-            row_report["fee_skipped"] = {
+            self.row_report["fee_skipped"] = {
                 "ok": True,
                 "reason": "手续费为 0，跳过手续费行",
             }
-            pipeline_row_count_task_id = pipeline_verifier.submit_row_count(1)
-        expected_detail_rows = 2 if row.fee > 0 else 1
+            self.pipeline_row_count_task_id = self.pipeline_verifier.submit_row_count(1)
+        expected_detail_rows = 2 if self.row.fee > 0 else 1
         pipeline_wait_ids = []
-        if pipeline_field_task_ids:
-            pipeline_wait_ids.append(pipeline_field_task_ids[-1])
-        if pipeline_row_count_task_id:
-            pipeline_wait_ids.append(pipeline_row_count_task_id)
-        pipeline_wait_ids.extend(pipeline_text_task_ids)
+        if self.pipeline_field_task_ids:
+            pipeline_wait_ids.append(self.pipeline_field_task_ids[-1])
+        if self.pipeline_row_count_task_id:
+            pipeline_wait_ids.append(self.pipeline_row_count_task_id)
+        pipeline_wait_ids.extend(self.pipeline_text_task_ids)
         pipeline_wait_started = time.perf_counter()
-        row_report["detail_pipeline_verify"] = pipeline_verifier.wait(
+        self.row_report["detail_pipeline_verify"] = self.pipeline_verifier.wait(
             pipeline_wait_ids,
             timeout=2.0,
         )
-        row_report["detail_pipeline_state"] = verifier_snapshot(pipeline_verifier)
-        timings.add(
+        self.row_report["detail_pipeline_state"] = verifier_snapshot(
+            self.pipeline_verifier
+        )
+        self.timings.add(
             "detail.pipeline-final-wait",
             time.perf_counter() - pipeline_wait_started,
         )
         extra_text_failures = []
-        if pipeline_text_task_ids:
-            pipeline_results = row_report["detail_pipeline_verify"].get("results") or {}
-            for task_id in pipeline_text_task_ids:
+        if self.pipeline_text_task_ids:
+            pipeline_results = (
+                self.row_report["detail_pipeline_verify"].get("results") or {}
+            )
+            for task_id in self.pipeline_text_task_ids:
                 result = pipeline_results.get(task_id)
                 if result is None or not result.get("ok"):
                     extra_text_failures.append(
@@ -1185,207 +1243,237 @@ def run_one_row(
                         }
                     )
         if extra_text_failures:
-            row_report["extra_text_verify_failures"] = extra_text_failures
-            _event(
+            self.row_report["extra_text_verify_failures"] = extra_text_failures
+            self.event(
                 "extra-text-verify-failed",
-                excel_row=row.row,
+                excel_row=self.row.row,
                 error="扩展文本字段后台验证未通过",
             )
-            return fail(
-                row_report,
-                "detail-extra-text-verify",
-                timings,
-                "扩展文本字段后台验证未通过",
+            raise StageAbort(
+                "detail-extra-text-verify", "扩展文本字段后台验证未通过"
             )
-        if diagnose_detail_repair:
-            row_report["detail_pipeline_verify_before_repair_drill"] = dict(
-                row_report["detail_pipeline_verify"]
+        if self.diagnose_detail_repair:
+            self.row_report["detail_pipeline_verify_before_repair_drill"] = dict(
+                self.row_report["detail_pipeline_verify"]
             )
-            row_report["detail_pipeline_verify"] = force_one_detail_field_pending(
-                row_report["detail_pipeline_verify"],
-                pipeline_field_task_ids,
+            self.row_report["detail_pipeline_verify"] = force_one_detail_field_pending(
+                self.row_report["detail_pipeline_verify"],
+                self.pipeline_field_task_ids,
             )
-        row_report["detail_pipeline_snapshots"] = pipeline_snapshot_task_ids
-        detail_pipeline_ok = bool(row_report["detail_pipeline_verify"].get("ok"))
+        self.row_report["detail_pipeline_snapshots"] = self.pipeline_snapshot_task_ids
+        detail_pipeline_ok = bool(self.row_report["detail_pipeline_verify"].get("ok"))
         if not detail_pipeline_ok:
-            repair_report = timings.measure(
+            repair_report = self.timings.measure(
                 "detail.pipeline-repair",
                 repair_detail_pipeline_failures,
-                jab,
-                jab_lock,
+                self.jab,
+                self.jab_lock,
                 located,
-                pipeline_verifier,
-                row_report["detail_pipeline_verify"],
-                pipeline_field_tasks,
-                pipeline_row_count_task_id,
+                self.pipeline_verifier,
+                self.row_report["detail_pipeline_verify"],
+                self.pipeline_field_tasks,
+                self.pipeline_row_count_task_id,
                 expected_detail_rows,
-                entry_scope_hwnd,
-                recover_modal_after_failure,
+                self.entry_scope_hwnd,
+                self.recover_modal,
             )
-            row_report["detail_pipeline_repair"] = repair_report
+            self.row_report["detail_pipeline_repair"] = repair_report
             if repair_report.get("snapshot_task_id"):
-                pipeline_snapshot_task_ids.append(repair_report["snapshot_task_id"])
+                self.pipeline_snapshot_task_ids.append(
+                    repair_report["snapshot_task_id"]
+                )
             repair_wait_ids = repair_report.get("wait_ids") or []
             if repair_wait_ids:
                 repair_wait_started = time.perf_counter()
-                row_report["detail_pipeline_verify_after_repair"] = (
-                    pipeline_verifier.wait(
+                self.row_report["detail_pipeline_verify_after_repair"] = (
+                    self.pipeline_verifier.wait(
                         repair_wait_ids,
                         timeout=2.0,
                     )
                 )
-                row_report["detail_pipeline_state_after_repair"] = verifier_snapshot(
-                    pipeline_verifier
+                self.row_report["detail_pipeline_state_after_repair"] = (
+                    verifier_snapshot(self.pipeline_verifier)
                 )
-                timings.add(
+                self.timings.add(
                     "detail.pipeline-repair-wait",
                     time.perf_counter() - repair_wait_started,
                 )
                 detail_pipeline_ok = bool(
-                    row_report["detail_pipeline_verify_after_repair"].get("ok")
+                    self.row_report["detail_pipeline_verify_after_repair"].get("ok")
                 )
         if not detail_pipeline_ok:
-            row_report["after_table"] = timings.measure(
+            self.row_report["after_table"] = self.timings.measure(
                 "body.read-after-fallback",
                 run_with_jab_lock,
-                jab_lock,
+                self.jab_lock,
                 read_body_table,
-                jab,
+                self.jab,
                 "after_detail_fill",
-                entry_scope_hwnd,
+                self.entry_scope_hwnd,
             )
-            _event(
+            self.event(
                 "pipeline-verify-failed",
-                excel_row=row.row,
+                excel_row=self.row.row,
                 error="后台明细验证未通过，已执行整表读 fallback",
             )
-            return fail(
-                row_report,
+            raise StageAbort(
                 "detail-pipeline-verify",
-                timings,
                 "后台明细验证未通过，已执行整表读 fallback",
             )
-        row_report["after_table"] = {
+        self.row_report["after_table"] = {
             "ok": True,
             "skipped": True,
             "reason": "后台 pipeline verifier 已覆盖最后字段与最终行数，跳过同步整表读",
         }
-        guard_source = (
-            row_report.get("detail_pipeline_verify_after_repair")
-            or row_report.get("detail_pipeline_verify")
-        )
+        guard_source = self.row_report.get(
+            "detail_pipeline_verify_after_repair"
+        ) or self.row_report.get("detail_pipeline_verify")
         main_row_cells = latest_snapshot_row_cells(guard_source, row_index=0)
         exchange_rate_check = validate_main_row_exchange_rate(
             main_row_cells,
-            row.currency,
-            row.raw_amount,
+            self.row.currency,
+            self.row.raw_amount,
             row_index=0,
         )
-        row_report["detail_exchange_rate_check"] = exchange_rate_check
-        row_report["detail_exchange_rate_guard"] = exchange_rate_check
+        self.row_report["detail_exchange_rate_check"] = exchange_rate_check
+        self.row_report["detail_exchange_rate_guard"] = exchange_rate_check
         if not exchange_rate_check.get("ok"):
-            _event(
+            self.event(
                 "exchange-rate-check-failed",
-                excel_row=row.row,
+                excel_row=self.row.row,
                 error=exchange_rate_check.get("reason"),
             )
-            return fail(
-                row_report,
+            raise StageAbort(
                 "detail-exchange-rate-check",
-                timings,
                 exchange_rate_check.get("reason") or "汇率保存前校验未通过",
             )
-        account_check = timings.measure(
+        account_check = self.timings.measure(
             "header.account-readback-after-detail",
             run_with_jab_lock,
-            jab_lock,
+            self.jab_lock,
             wait_header_account_description,
-            jab,
+            self.jab,
             0.0,
             scope=build_header_scope_for_followup(
-                entry_scope_hwnd,
-                entry_dynamic_index,
+                self.entry_scope_hwnd,
+                self.entry_dynamic_index,
             ),
         )
-        row_report["header_account"] = account_check
+        self.row_report["header_account"] = account_check
         if not account_check.get("accepted"):
-            row_report["header_account_readback_warning"] = {
+            self.row_report["header_account_readback_warning"] = {
                 "ok": False,
                 "reason": "表头收款银行账户未从 JAB 后端读回；明细账号已由后台 pipeline 校验，继续保存/后验查询闭包",
                 "account_check": account_check,
             }
-            _event(
+            self.event(
                 "account-readback-warning",
-                excel_row=row.row,
+                excel_row=self.row.row,
                 warning="表头收款银行账户未从 JAB 后端读回，继续执行",
             )
-        if save_enabled:
-            _stage("保存", excel_row=row.row)
-            row_report["save_attempted"] = True
-            save_result = timings.measure(
+
+    def save(self):
+        if self.save_enabled:
+            self.stage("保存", excel_row=self.row.row)
+            self.row_report["save_attempted"] = True
+            save_result = self.timings.measure(
                 "save.ctrl-s",
                 run_with_jab_lock,
-                jab_lock,
+                self.jab_lock,
                 save_receipt_by_ctrl_s,
-                jab,
-                entry_scope_hwnd,
+                self.jab,
+                self.entry_scope_hwnd,
             )
             if not save_result.get("ok"):
-                recovery = timings.measure(
+                recovery = self.timings.measure(
                     "save.modal-recovery-after-failure",
-                    recover_modal_after_failure,
+                    self.recover_modal,
                 )
                 if recovery.get("attempted") and recovery.get("ok"):
-                    save_result = timings.measure(
+                    save_result = self.timings.measure(
                         "save.ctrl-s-retry-after-modal",
                         run_with_jab_lock,
-                        jab_lock,
+                        self.jab_lock,
                         save_receipt_by_ctrl_s,
-                        jab,
-                        entry_scope_hwnd,
+                        self.jab,
+                        self.entry_scope_hwnd,
                     )
                     save_result["retried_after_modal_recovery"] = True
                     save_result["modal_recovery"] = recovery
                 else:
                     save_result["modal_recovery"] = recovery
-            row_report["save"] = save_result
+            self.row_report["save"] = save_result
             if not save_result.get("ok"):
-                _event(
-                    "save-failed", excel_row=row.row, error=save_result.get("reason")
+                self.event(
+                    "save-failed",
+                    excel_row=self.row.row,
+                    error=save_result.get("reason"),
                 )
-                return fail(row_report, "save", timings, save_result.get("reason"))
+                raise StageAbort("save", save_result.get("reason"))
         else:
-            row_report["save"] = {
+            self.row_report["save"] = {
                 "ok": True,
                 "skipped": True,
                 "reason": "no-save 模式：已停在保存前，未触发 Ctrl+S",
             }
-        row_report["ok"] = True
-        attach_slow_step_summary(row_report, timings)
-        return row_report
-    except Exception as exc:
-        row_report["exception"] = {
-            "type": type(exc).__name__,
-            "message": str(exc),
-            "stage": current_stage.get("name") or "",
-        }
-        _event(
-            "row-exception",
-            excel_row=row.row,
-            stage=current_stage.get("name") or "",
-            error=f"{type(exc).__name__}: {exc}",
-        )
-        return fail(
-            row_report,
-            "exception",
-            timings,
-            f"{type(exc).__name__}: {exc}",
-        )
-    finally:
-        if pipeline_verifier is not None:
-            pipeline_verifier.close(timeout=0.2)
-        row_report["modal_recovery"] = {"events": modal_events}
-        jab.close()
+
+    def execute(self):
+        try:
+            self.open()
+            self.header()
+            self.detail_main()
+            self.fee_and_verify()
+            self.save()
+            self.row_report["ok"] = True
+            attach_slow_step_summary(self.row_report, self.timings)
+            return self.row_report
+        except StageAbort as abort:
+            return fail(self.row_report, abort.step, self.timings, abort.reason)
+        except Exception as exc:
+            self.row_report["exception"] = {
+                "type": type(exc).__name__,
+                "message": str(exc),
+                "stage": self.current_stage or "",
+            }
+            self.event(
+                "row-exception",
+                excel_row=self.row.row,
+                stage=self.current_stage or "",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return fail(
+                self.row_report,
+                "exception",
+                self.timings,
+                f"{type(exc).__name__}: {exc}",
+            )
+        finally:
+            if self.pipeline_verifier is not None:
+                self.pipeline_verifier.close(timeout=0.2)
+            self.row_report["modal_recovery"] = {"events": self.modal_events}
+            self.jab.close()
+
+
+def run_one_row(
+    config,
+    row,
+    save_enabled=False,
+    recorder=None,
+    pause_after_header_field=None,
+    diagnose_header_after_pause=False,
+    diagnose_detail_repair=False,
+    header_scope_cache=None,
+):
+    return RowRun(
+        config,
+        row,
+        save_enabled=save_enabled,
+        recorder=recorder,
+        pause_after_header_field=pause_after_header_field,
+        diagnose_header_after_pause=diagnose_header_after_pause,
+        diagnose_detail_repair=diagnose_detail_repair,
+        header_scope_cache=header_scope_cache,
+    ).execute()
 
 
 def open_self_made_entry(config, jab=None):
