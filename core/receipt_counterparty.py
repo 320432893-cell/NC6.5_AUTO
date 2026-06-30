@@ -45,6 +45,7 @@ COUNTERPARTY_STATE_DETAIL_UNREADABLE = "detail-unreadable"
 
 _COUNTERPARTY_NEARBY_SUFFIX_CACHE = {}
 
+
 def ensure_header_counterparty_customer(
     jab,
     dynamic_index,
@@ -99,8 +100,7 @@ def ensure_header_counterparty_customer(
     if detail.get("ok") is False and not detail_value:
         reason = str(detail.get("reason") or "")
         unreadable = any(
-            marker in reason
-            for marker in ("未定位", "命中失败", "行列不足", "异常")
+            marker in reason for marker in ("未定位", "命中失败", "行列不足", "异常")
         )
         if unreadable:
             snapshot = {
@@ -233,6 +233,7 @@ def ensure_header_counterparty_customer(
     finally:
         jab.release_contexts(found["vm_id"], found["owned_contexts"])
 
+
 def classify_counterparty_snapshot(snapshot):
     selected = (snapshot or {}).get("selected") or ""
     combo_text = (snapshot or {}).get("combo_text") or ""
@@ -263,8 +264,7 @@ def classify_counterparty_snapshot(snapshot):
     if detail.get("ok") is False and not detail_value:
         reason = str(detail.get("reason") or "")
         unreadable = any(
-            marker in reason
-            for marker in ("未定位", "命中失败", "行列不足", "异常")
+            marker in reason for marker in ("未定位", "命中失败", "行列不足", "异常")
         )
         if unreadable:
             return {
@@ -280,6 +280,7 @@ def classify_counterparty_snapshot(snapshot):
         "source": "detail-row0-col0",
         "repairable": True,
     }
+
 
 def repair_counterparty_to_customer(
     jab,
@@ -356,12 +357,14 @@ def repair_counterparty_to_customer(
         "seconds": round(time.perf_counter() - started_at, 3),
     }
 
+
 def normalize_counterparty_value(*values):
     for value in values:
         text = str(value or "").strip()
         if text in COUNTERPARTY_KNOWN_OPTIONS:
             return text
     return ""
+
 
 def select_counterparty_customer_embedded(jab, vm_id, combo_context, press_enter=True):
     target = find_counterparty_embedded_list(jab, vm_id, combo_context)
@@ -426,6 +429,7 @@ def select_counterparty_customer_embedded(jab, vm_id, combo_context, press_enter
         if target.get("owned_contexts"):
             jab.release_contexts(vm_id, target["owned_contexts"])
 
+
 def request_focus_context(jab, vm_id, context):
     if not hasattr(jab, "dll") or not hasattr(jab.dll, "requestFocus"):
         return {"ok": None, "reason": "requestFocus unavailable"}
@@ -433,6 +437,7 @@ def request_focus_context(jab, vm_id, context):
         return {"ok": bool(jab.dll.requestFocus(vm_id, context))}
     except Exception as exc:
         return {"ok": False, "error": repr(exc)}
+
 
 def press_counterparty_commit_keys(jab):
     sent = []
@@ -444,6 +449,7 @@ def press_counterparty_commit_keys(jab):
         return {"ok": True, "keys": sent}
     except Exception as exc:
         return {"ok": False, "keys": sent, "error": repr(exc)}
+
 
 def embedded_counterparty_target_summary(target):
     return {
@@ -459,8 +465,10 @@ def embedded_counterparty_target_summary(target):
         ],
     }
 
+
 def first_non_empty_counterparty_text(*values):
     return normalize_counterparty_value(*values)
+
 
 def read_detail_counterparty_value(
     jab,
@@ -578,6 +586,7 @@ def read_detail_counterparty_value(
             "error": repr(exc),
         }
 
+
 def slim_counterparty_located(located):
     if not located:
         return None
@@ -592,6 +601,7 @@ def slim_counterparty_located(located):
         "col_count": best.get("col_count"),
         "reason": located.get("reason"),
     }
+
 
 def detail_table_schema_snapshot(best):
     rows = (best or {}).get("rows") or []
@@ -610,6 +620,7 @@ def detail_table_schema_snapshot(best):
             and bool(key_cells.get("1") or key_cells.get("2") or key_cells.get("5"))
         ),
     }
+
 
 def summarize_counterparty_failure(snapshot, after_detail=None):
     snapshot = snapshot or {}
@@ -633,6 +644,7 @@ def summarize_counterparty_failure(snapshot, after_detail=None):
     if state.get("state"):
         parts.append(f"state={state.get('state')}")
     return f"往来对象未确认客户；{'; '.join(parts)}；已禁用旧下拉键盘方案"
+
 
 def read_counterparty_selected_option(jab, vm_id, combo_context):
     found = find_counterparty_embedded_list(jab, vm_id, combo_context)
@@ -659,6 +671,7 @@ def read_counterparty_selected_option(jab, vm_id, combo_context):
         if found.get("owned_contexts"):
             jab.release_contexts(vm_id, found["owned_contexts"])
 
+
 def find_counterparty_embedded_list(jab, vm_id, combo_context):
     result = {
         "ok": False,
@@ -676,7 +689,9 @@ def find_counterparty_embedded_list(jab, vm_id, combo_context):
         owned = []
         children = []
         if depth > 0:
-            for index in range(min(info.childrenCount, getattr(jab, "max_children", 1000))):
+            for index in range(
+                min(info.childrenCount, getattr(jab, "max_children", 1000))
+            ):
                 child = jab.dll.getAccessibleChildFromContext(vm_id, context, index)
                 if not child:
                     continue
@@ -750,6 +765,7 @@ def find_counterparty_embedded_list(jab, vm_id, combo_context):
     visit(combo_context, "target", 8, [])
     return best or result
 
+
 def info_to_counterparty_dict(info, path):
     if not info:
         return None
@@ -763,6 +779,7 @@ def info_to_counterparty_dict(info, path):
         "children_count": info.childrenCount,
     }
 
+
 def unique_contexts(contexts):
     result = []
     seen = set()
@@ -774,12 +791,14 @@ def unique_contexts(contexts):
         result.append(context)
     return result
 
+
 def context_key(context):
     try:
         value = getattr(context, "value", context)
         return ("int", int(value))
     except Exception:
         return ("repr", repr(context))
+
 
 def find_counterparty_combo(jab, dynamic_index, scope_hwnd=None):
     prefix = receipt_header_dynamic_prefix(dynamic_index)
@@ -819,6 +838,7 @@ def find_counterparty_combo(jab, dynamic_index, scope_hwnd=None):
         "reason": nearby.get("reason") or "往来对象 nearby 定位失败",
     }
 
+
 def build_cached_counterparty_nearby_path(dynamic_index, scope_hwnd=None):
     prefix = receipt_header_dynamic_prefix(dynamic_index)
     if not prefix:
@@ -830,6 +850,7 @@ def build_cached_counterparty_nearby_path(dynamic_index, scope_hwnd=None):
     if not suffix:
         return None
     return f"{prefix}.{suffix}"
+
 
 def cache_counterparty_nearby_suffix(dynamic_index, scope_hwnd, prefix, path):
     if not prefix or not path or not str(path).startswith(f"{prefix}."):
@@ -846,8 +867,10 @@ def cache_counterparty_nearby_suffix(dynamic_index, scope_hwnd, prefix, path):
     _COUNTERPARTY_NEARBY_SUFFIX_CACHE["last"] = cached
     return cached
 
+
 def counterparty_cache_key(scope_hwnd):
     return int(scope_hwnd) if scope_hwnd is not None else None
+
 
 def find_counterparty_combo_nearby(jab, dynamic_index, scope_hwnd=None):
     if scope_hwnd is None:
@@ -945,9 +968,7 @@ def find_counterparty_combo_nearby(jab, dynamic_index, scope_hwnd=None):
                 target = row_candidates[0]
                 selected_contexts = {target["context"], label_context}
                 release = [
-                    context
-                    for context in owned
-                    if context not in selected_contexts
+                    context for context in owned if context not in selected_contexts
                 ]
                 jab.release_contexts(vm_id.value, release)
                 return {
@@ -985,6 +1006,7 @@ def find_counterparty_combo_nearby(jab, dynamic_index, scope_hwnd=None):
         "reason": "未在往来对象标签右侧找到 combo box",
     }
 
+
 def collect_counterparty_controls_for_bounds_scan(
     jab,
     vm_id,
@@ -1015,9 +1037,7 @@ def collect_counterparty_controls_for_bounds_scan(
             continue
 
         owned.append(child)
-        states = (
-            child_info.states_en_US.strip() or child_info.states.strip()
-        ).lower()
+        states = (child_info.states_en_US.strip() or child_info.states.strip()).lower()
         showing = "visible" in states and "showing" in states
         if not require_showing or showing:
             controls.append((child, child_info, child_path))
@@ -1033,8 +1053,10 @@ def collect_counterparty_controls_for_bounds_scan(
             path=child_path,
         )
 
+
 def control_role(info):
     return (info.role_en_US.strip() or info.role.strip()).lower()
+
 
 def slim_found(found):
     return {
@@ -1042,6 +1064,7 @@ def slim_found(found):
         for key, value in (found or {}).items()
         if key not in {"context", "vm_id", "owned_contexts", "candidates"}
     }
+
 
 def find_counterparty_combo_by_path(jab, path, scope_hwnd=None):
     context, vm_id, owned_contexts, window_info = jab.find_context_by_path_once(
@@ -1067,6 +1090,7 @@ def find_counterparty_combo_by_path(jab, path, scope_hwnd=None):
         "window": window_info,
         "path": path,
     }
+
 
 def read_counterparty_combo_state(jab, vm_id, context):
     info = jab.get_context_info(vm_id, context)

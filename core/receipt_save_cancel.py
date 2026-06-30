@@ -66,6 +66,7 @@ def detail_main_line_retryable(row_report):
         return False
     return bool(name)
 
+
 def header_counterparty_retryable(row_report):
     counterparty = (row_report or {}).get("header_counterparty") or {}
     if counterparty.get("ok"):
@@ -79,6 +80,7 @@ def header_counterparty_retryable(row_report):
         return False
     actual = str(counterparty.get("actual") or after_detail.get("value") or "").strip()
     return bool(actual and actual != "客户")
+
 
 def save_receipt_by_ctrl_s(
     jab,
@@ -175,6 +177,7 @@ def save_receipt_by_ctrl_s(
         "parent_new_state": wait_parent.get("parent_new_state"),
     }
 
+
 def cancel_current_receipt_entry(
     config,
     timeout=3.0,
@@ -251,6 +254,7 @@ def cancel_current_receipt_entry(
     finally:
         jab.close()
 
+
 def should_retry_row_by_cancel_reopen(row_report):
     if not row_report or row_report.get("ok"):
         return False
@@ -261,7 +265,9 @@ def should_retry_row_by_cancel_reopen(row_report):
     failed_step = str(row_report.get("failed_step") or "")
     if failed_step not in CIRCUIT_BREAKER_RETRY_STEPS:
         return False
-    if failed_step == "header-counterparty-type" and not header_counterparty_retryable(row_report):
+    if failed_step == "header-counterparty-type" and not header_counterparty_retryable(
+        row_report
+    ):
         return False
     if failed_step == "detail-main-line" and not detail_main_line_retryable(row_report):
         return False
@@ -269,6 +275,7 @@ def should_retry_row_by_cancel_reopen(row_report):
     if save_report and not save_report.get("skipped"):
         return False
     return True
+
 
 def summarize_retry_attempt(row_report):
     return {
@@ -292,6 +299,7 @@ def summarize_retry_attempt(row_report):
         ),
     }
 
+
 def current_receipt_root_from_entry_state(entry_state):
     hits = (entry_state or {}).get("hits") or []
     for hit in hits:
@@ -300,6 +308,7 @@ def current_receipt_root_from_entry_state(entry_state):
         if hwnd:
             return root_hwnd(hwnd) or hwnd
     return None
+
 
 def wait_confirm_cancel_dialog(jab, before_dialogs, timeout=0.8, interval=0.08):
     started = time.perf_counter()
@@ -311,10 +320,7 @@ def wait_confirm_cancel_dialog(jab, before_dialogs, timeout=0.8, interval=0.08):
             item
             for item in dialogs
             if is_confirm_cancel_dialog(item)
-            and (
-                dialog_key(item) not in before_keys
-                or not before_keys
-            )
+            and (dialog_key(item) not in before_keys or not before_keys)
         ]
         attempts.append(
             {
@@ -340,12 +346,14 @@ def wait_confirm_cancel_dialog(jab, before_dialogs, timeout=0.8, interval=0.08):
             }
         time.sleep(float(interval or 0.08))
 
+
 def dialog_key(dialog):
     return (
         (dialog or {}).get("hwnd"),
         (dialog or {}).get("title"),
         (dialog or {}).get("class_name"),
     )
+
 
 def is_confirm_cancel_dialog(dialog):
     if (dialog or {}).get("class_name") != "SunAwtDialog":
@@ -354,6 +362,7 @@ def is_confirm_cancel_dialog(dialog):
         return False
     names = {button.get("name") for button in (dialog or {}).get("buttons") or []}
     return {"是(Y)", "否(N)"} <= names
+
 
 def summarize_dialog_for_report(dialog):
     if not dialog:
@@ -375,6 +384,7 @@ def summarize_dialog_for_report(dialog):
             for button in (dialog.get("buttons") or [])
         ],
     }
+
 
 def wait_receipt_parent_new_ready_after_entry_exit(
     jab,
@@ -441,6 +451,7 @@ def wait_receipt_parent_new_ready_after_entry_exit(
                 "parent_new_state": last_parent_new_state,
             }
         time.sleep(float(interval or 0.1))
+
 
 def detect_receipt_parent_new_ready(windows):
     foreground = foreground_info()

@@ -407,13 +407,7 @@ def read_row_cells_by_context(jab, readback_context, row_index, cols, step):
             "col_count": col_count,
             "reason": f"明细表快读行号越界：row={row_index}, row_count={row_count}",
         }, {}
-    read_cols = sorted(
-        {
-            int(col)
-            for col in cols
-            if 0 <= int(col) < col_count
-        }
-    )
+    read_cols = sorted({int(col) for col in cols if 0 <= int(col) < col_count})
     try:
         cells = {}
         for col in read_cols:
@@ -895,13 +889,15 @@ def write_detail_line_by_screen(
             )
             if after_field and attempt.get("ok"):
                 stage_started = time.perf_counter()
-                step["async_verify_task"] = after_field(row_index, field, business, step)
+                step["async_verify_task"] = after_field(
+                    row_index, field, business, step
+                )
                 after_field_seconds = round(time.perf_counter() - stage_started, 4)
             else:
                 after_field_seconds = 0.0
             if not attempt.get("ok"):
-                step["reason"] = (
-                    attempt.get("input_reason") or attempt.get("commit_reason")
+                step["reason"] = attempt.get("input_reason") or attempt.get(
+                    "commit_reason"
                 )
             field_loop_seconds = round(time.perf_counter() - field_loop_started, 4)
             known_field_seconds = (

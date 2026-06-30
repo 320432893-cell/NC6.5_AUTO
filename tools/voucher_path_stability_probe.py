@@ -65,8 +65,12 @@ def main():
         "samples": samples,
         "summary": summarize(samples),
     }
-    output_path = logs_dir() / f"voucher_path_stability_{time.strftime('%Y%m%d_%H%M%S')}.json"
-    output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    output_path = (
+        logs_dir() / f"voucher_path_stability_{time.strftime('%Y%m%d_%H%M%S')}.json"
+    )
+    output_path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
 
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
@@ -121,7 +125,9 @@ def pick_primary(matches):
     items = showing or matches
     if not items:
         return None
-    return min(items, key=lambda item: (item.get("window_hwnd") or 0, item.get("path") or ""))
+    return min(
+        items, key=lambda item: (item.get("window_hwnd") or 0, item.get("path") or "")
+    )
 
 
 def parent_path(path):
@@ -161,7 +167,11 @@ def summarize_toolbar_buttons(samples):
                 "same_bounds": len(set(bounds)) == 1 if bounds else False,
                 "bounds": [list(item) for item in unique(bounds)],
                 "window_hwnds": unique(
-                    [item.get("window_hwnd") for item in items if item.get("window_hwnd")]
+                    [
+                        item.get("window_hwnd")
+                        for item in items
+                        if item.get("window_hwnd")
+                    ]
                 ),
             }
         )

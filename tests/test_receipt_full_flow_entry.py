@@ -58,6 +58,7 @@ def patch_all(monkeypatch, name, value):
     if not patched:
         raise AttributeError(name)
 
+
 REAL_ENSURE_HEADER_COUNTERPARTY_CUSTOMER = ensure_header_counterparty_customer
 
 
@@ -153,7 +154,9 @@ class Args:
 
 @pytest.fixture(autouse=True)
 def default_counterparty_header_ok(monkeypatch):
-    patch_all(monkeypatch, "ensure_header_counterparty_customer",
+    patch_all(
+        monkeypatch,
+        "ensure_header_counterparty_customer",
         lambda *_args, **_kwargs: {
             "ok": True,
             "skipped": True,
@@ -182,102 +185,120 @@ def test_extract_header_accepted_text_rejects_java_object_string():
 
 
 def test_header_unified_check_failure_triggers_cancel_reopen_retry():
-    assert should_retry_row_by_cancel_reopen(
-        {
-            "ok": False,
-            "failed_step": "header-unified-check",
-            "reason": "表头统一校验补写后仍有缺失",
-            "save": {"skipped": True},
-        }
-    ) is True
+    assert (
+        should_retry_row_by_cancel_reopen(
+            {
+                "ok": False,
+                "failed_step": "header-unified-check",
+                "reason": "表头统一校验补写后仍有缺失",
+                "save": {"skipped": True},
+            }
+        )
+        is True
+    )
 
 
 def test_detail_main_line_field_failure_triggers_cancel_reopen_retry():
-    assert should_retry_row_by_cancel_reopen(
-        {
-            "ok": False,
-            "failed_step": "detail-main-line",
-            "reason": "明细主行写入失败",
-            "save": {"skipped": True},
-            "detail_steps": [
-                {
-                    "ok": False,
-                    "name": "收款银行账户",
-                    "reason": "即时校验未匹配：字段=收款银行账户",
-                }
-            ],
-        }
-    ) is True
+    assert (
+        should_retry_row_by_cancel_reopen(
+            {
+                "ok": False,
+                "failed_step": "detail-main-line",
+                "reason": "明细主行写入失败",
+                "save": {"skipped": True},
+                "detail_steps": [
+                    {
+                        "ok": False,
+                        "name": "收款银行账户",
+                        "reason": "即时校验未匹配：字段=收款银行账户",
+                    }
+                ],
+            }
+        )
+        is True
+    )
 
 
 def test_detail_main_line_stop_hotkey_does_not_retry():
-    assert should_retry_row_by_cancel_reopen(
-        {
-            "ok": False,
-            "failed_step": "detail-main-line",
-            "reason": "明细主行写入失败",
-            "save": {"skipped": True},
-            "detail_steps": [
-                {
-                    "ok": False,
-                    "name": "科目",
-                    "reason": "检测到紧急停止键 ctrl+shift+q",
-                }
-            ],
-        }
-    ) is False
+    assert (
+        should_retry_row_by_cancel_reopen(
+            {
+                "ok": False,
+                "failed_step": "detail-main-line",
+                "reason": "明细主行写入失败",
+                "save": {"skipped": True},
+                "detail_steps": [
+                    {
+                        "ok": False,
+                        "name": "科目",
+                        "reason": "检测到紧急停止键 ctrl+shift+q",
+                    }
+                ],
+            }
+        )
+        is False
+    )
 
 
 def test_detail_main_line_table_shape_failure_does_not_retry():
-    assert should_retry_row_by_cancel_reopen(
-        {
-            "ok": False,
-            "failed_step": "detail-main-line",
-            "reason": "明细主行写入失败",
-            "save": {"skipped": True},
-            "detail_steps": [
-                {
-                    "ok": False,
-                    "name": "明细表",
-                    "reason": "明细表尺寸异常：0 行 x 0 列，目标第 1 行",
-                }
-            ],
-        }
-    ) is False
+    assert (
+        should_retry_row_by_cancel_reopen(
+            {
+                "ok": False,
+                "failed_step": "detail-main-line",
+                "reason": "明细主行写入失败",
+                "save": {"skipped": True},
+                "detail_steps": [
+                    {
+                        "ok": False,
+                        "name": "明细表",
+                        "reason": "明细表尺寸异常：0 行 x 0 列，目标第 1 行",
+                    }
+                ],
+            }
+        )
+        is False
+    )
 
 
 def test_header_counterparty_api_repair_failure_triggers_cancel_reopen_retry():
-    assert should_retry_row_by_cancel_reopen(
-        {
-            "ok": False,
-            "failed_step": "header-counterparty-type",
-            "reason": "往来对象未确认客户",
-            "save": {"skipped": True},
-            "header_counterparty": {
+    assert (
+        should_retry_row_by_cancel_reopen(
+            {
                 "ok": False,
-                "actual": "供应商",
-                "state": {"state": "repairable-conflict"},
-                "repair": {"method": "embedded-selection-api", "ok": True},
-                "after_detail": {"value": "供应商"},
-            },
-        }
-    ) is True
+                "failed_step": "header-counterparty-type",
+                "reason": "往来对象未确认客户",
+                "save": {"skipped": True},
+                "header_counterparty": {
+                    "ok": False,
+                    "actual": "供应商",
+                    "state": {"state": "repairable-conflict"},
+                    "repair": {"method": "embedded-selection-api", "ok": True},
+                    "after_detail": {"value": "供应商"},
+                },
+            }
+        )
+        is True
+    )
 
 
 def test_header_counterparty_locator_failure_does_not_retry():
-    assert should_retry_row_by_cancel_reopen(
-        {
-            "ok": False,
-            "failed_step": "header-counterparty-type",
-            "reason": "nearby scope 不是 Java 窗口",
-            "save": {"skipped": True},
-            "header_counterparty": {
+    assert (
+        should_retry_row_by_cancel_reopen(
+            {
                 "ok": False,
-                "actual": "供应商",
-                "detail": {"value": "供应商"},
-            },
-        }
-    ) is False
+                "failed_step": "header-counterparty-type",
+                "reason": "nearby scope 不是 Java 窗口",
+                "save": {"skipped": True},
+                "header_counterparty": {
+                    "ok": False,
+                    "actual": "供应商",
+                    "detail": {"value": "供应商"},
+                },
+            }
+        )
+        is False
+    )
 
 
 def test_read_customer_name_after_header_uses_customer_description(monkeypatch):
@@ -291,7 +312,9 @@ def test_read_customer_name_after_header_uses_customer_description(monkeypatch):
         def release_contexts(self, _vm_id, _contexts):
             pass
 
-    patch_all(monkeypatch, "find_receipt_header_field_by_dynamic_path",
+    patch_all(
+        monkeypatch,
+        "find_receipt_header_field_by_dynamic_path",
         lambda *_args, **_kwargs: {
             "ok": True,
             "context": object(),
@@ -336,7 +359,9 @@ def test_read_customer_name_after_header_polls_until_customer_description(monkey
         def release_contexts(self, _vm_id, _contexts):
             pass
 
-    patch_all(monkeypatch, "find_receipt_header_field_by_dynamic_path",
+    patch_all(
+        monkeypatch,
+        "find_receipt_header_field_by_dynamic_path",
         lambda *_args, **_kwargs: {
             "ok": True,
             "context": object(),
@@ -380,7 +405,9 @@ def test_read_customer_name_after_header_failure_reports_readback(monkeypatch):
         def release_contexts(self, _vm_id, _contexts):
             pass
 
-    patch_all(monkeypatch, "find_receipt_header_field_by_dynamic_path",
+    patch_all(
+        monkeypatch,
+        "find_receipt_header_field_by_dynamic_path",
         lambda *_args, **_kwargs: {
             "ok": True,
             "context": object(),
@@ -477,7 +504,9 @@ def test_select_plan_rows_can_limit_count_after_start_row():
     args.start_row = 4
     args.limit = 2
 
-    selected = select_plan_rows([plan_row(2), plan_row(4), plan_row(5), plan_row(6)], [], args)
+    selected = select_plan_rows(
+        [plan_row(2), plan_row(4), plan_row(5), plan_row(6)], [], args
+    )
 
     assert [row.row for row in selected] == [4, 5]
 
@@ -539,7 +568,10 @@ def test_post_query_failure_reasons_extracts_group_reason_when_top_level_failed(
                     "ok": False,
                     "target_rows": [851, 852],
                     "reason": "查询失败-鼠标位于屏幕角落",
-                    "match": {"matched": {}, "issues": {"851": "查询失败-鼠标位于屏幕角落"}},
+                    "match": {
+                        "matched": {},
+                        "issues": {"851": "查询失败-鼠标位于屏幕角落"},
+                    },
                 }
             ],
         }
@@ -553,7 +585,9 @@ def test_format_query_exception_translates_pyautogui_failsafe():
     class FailSafeException(Exception):
         pass
 
-    exc = FailSafeException("PyAutoGUI fail-safe triggered from mouse moving to a corner of the screen")
+    exc = FailSafeException(
+        "PyAutoGUI fail-safe triggered from mouse moving to a corner of the screen"
+    )
 
     assert format_query_exception(exc) == (
         "鼠标位于屏幕角落，PyAutoGUI 安全保护中断了查询快捷键，请把鼠标移出屏幕角落后重试"
@@ -627,7 +661,9 @@ def test_extract_entry_anchor_path_uses_exact_finance_org_anchor():
 def test_open_self_made_entry_always_runs_new_probe(monkeypatch):
     calls = []
 
-    patch_all(monkeypatch, "run_receipt_new_probe",
+    patch_all(
+        monkeypatch,
+        "run_receipt_new_probe",
         lambda: calls.append("new-probe") or {"ok": True, "mode": "new-self-made"},
     )
 
@@ -642,10 +678,14 @@ def test_open_self_made_entry_reuses_existing_jab(monkeypatch):
     calls = []
     jab = object()
 
-    patch_all(monkeypatch, "run_receipt_new_probe",
+    patch_all(
+        monkeypatch,
+        "run_receipt_new_probe",
         lambda: (_ for _ in ()).throw(AssertionError("不应起子进程开单")),
     )
-    patch_all(monkeypatch, "run_receipt_new_probe_with_jab",
+    patch_all(
+        monkeypatch,
+        "run_receipt_new_probe_with_jab",
         lambda actual_jab: (
             calls.append(actual_jab) or {"ok": True, "mode": "in-process"}
         ),
@@ -675,10 +715,14 @@ def test_save_receipt_uses_sendinput_ctrl_s_not_jab_button(monkeypatch):
             calls["maximize"].append(hwnd)
             return True
 
-    patch_all(monkeypatch, "foreground_matches_window",
+    patch_all(
+        monkeypatch,
+        "foreground_matches_window",
         lambda window: {"ok": True, "target_window": window, "foreground": {}},
     )
-    patch_all(monkeypatch, "collect_receipt_new_windows",
+    patch_all(
+        monkeypatch,
+        "collect_receipt_new_windows",
         lambda _jab: [{"hwnd": 12345}],
     )
     monkeypatch.setattr(
@@ -694,13 +738,19 @@ def test_save_receipt_uses_sendinput_ctrl_s_not_jab_button(monkeypatch):
         calls["states"] += 1
         return {"ok": False, "reason": "已回到新增态"}
 
-    patch_all(monkeypatch, "detect_self_made_entry_state",
+    patch_all(
+        monkeypatch,
+        "detect_self_made_entry_state",
         fake_detect,
     )
-    patch_all(monkeypatch, "root_hwnd",
+    patch_all(
+        monkeypatch,
+        "root_hwnd",
         lambda hwnd: hwnd,
     )
-    patch_all(monkeypatch, "send_hotkey_ctrl_s",
+    patch_all(
+        monkeypatch,
+        "send_hotkey_ctrl_s",
         lambda: calls.__setitem__("hotkey", calls["hotkey"] + 1),
     )
 
@@ -724,18 +774,24 @@ def test_save_receipt_stops_before_oracle_when_foreground_guard_fails(monkeypatc
         def maximize_window_by_handle(self, hwnd):
             return True
 
-    patch_all(monkeypatch, "foreground_matches_window",
+    patch_all(
+        monkeypatch,
+        "foreground_matches_window",
         lambda _window: {"ok": False, "reason": "当前前台窗口不是目标 NC 窗口"},
     )
-    patch_all(monkeypatch, "root_hwnd",
+    patch_all(
+        monkeypatch,
+        "root_hwnd",
         lambda hwnd: hwnd,
     )
-    patch_all(monkeypatch, "send_hotkey_ctrl_s",
-        lambda: (_ for _ in ()).throw(
-            AssertionError("前台保护失败时不应触发 Ctrl+S")
-        ),
+    patch_all(
+        monkeypatch,
+        "send_hotkey_ctrl_s",
+        lambda: (_ for _ in ()).throw(AssertionError("前台保护失败时不应触发 Ctrl+S")),
     )
-    patch_all(monkeypatch, "collect_receipt_new_windows",
+    patch_all(
+        monkeypatch,
+        "collect_receipt_new_windows",
         lambda _jab: (_ for _ in ()).throw(
             AssertionError("Ctrl+S 未发出时不应继续等保存 oracle")
         ),
@@ -756,19 +812,29 @@ def test_save_receipt_promotes_scope_hwnd_to_root_before_hotkey(monkeypatch):
             calls["maximize"].append(hwnd)
             return True
 
-    patch_all(monkeypatch, "root_hwnd",
+    patch_all(
+        monkeypatch,
+        "root_hwnd",
         lambda hwnd: 13579 if hwnd == 24680 else hwnd,
     )
-    patch_all(monkeypatch, "foreground_matches_window",
+    patch_all(
+        monkeypatch,
+        "foreground_matches_window",
         lambda window: calls["guard"].append(window) or {"ok": True},
     )
-    patch_all(monkeypatch, "send_hotkey_ctrl_s",
+    patch_all(
+        monkeypatch,
+        "send_hotkey_ctrl_s",
         lambda: calls.__setitem__("hotkey", calls["hotkey"] + 1),
     )
-    patch_all(monkeypatch, "collect_receipt_new_windows",
+    patch_all(
+        monkeypatch,
+        "collect_receipt_new_windows",
         lambda _jab: [{"hwnd": 13579}],
     )
-    patch_all(monkeypatch, "detect_self_made_entry_state",
+    patch_all(
+        monkeypatch,
+        "detect_self_made_entry_state",
         lambda _windows: {"ok": False, "reason": "已回到新增态"},
     )
     monkeypatch.setattr(
@@ -796,23 +862,33 @@ def test_save_receipt_does_not_treat_missing_entry_buttons_as_success_without_ne
         def maximize_window_by_handle(self, hwnd):
             return True
 
-    patch_all(monkeypatch, "foreground_matches_window",
+    patch_all(
+        monkeypatch,
+        "foreground_matches_window",
         lambda _window: {"ok": True},
     )
-    patch_all(monkeypatch, "collect_receipt_new_windows",
+    patch_all(
+        monkeypatch,
+        "collect_receipt_new_windows",
         lambda _jab: [{"hwnd": 12345}],
     )
-    patch_all(monkeypatch, "detect_self_made_entry_state",
+    patch_all(
+        monkeypatch,
+        "detect_self_made_entry_state",
         lambda _windows: {"ok": False, "reason": "三按钮读不到"},
     )
     monkeypatch.setattr(
         "core.receipt_save_cancel.detect_receipt_parent_new_ready",
         lambda _windows: {"ok": False, "usable_new_button_count": 0},
     )
-    patch_all(monkeypatch, "root_hwnd",
+    patch_all(
+        monkeypatch,
+        "root_hwnd",
         lambda hwnd: hwnd,
     )
-    patch_all(monkeypatch, "send_hotkey_ctrl_s",
+    patch_all(
+        monkeypatch,
+        "send_hotkey_ctrl_s",
         lambda: None,
     )
 
@@ -902,7 +978,9 @@ def test_run_one_row_uses_detail_pipeline_verifier(monkeypatch):
         def close(self, timeout=1.0):
             calls["closed"] = timeout
 
-    patch_all(monkeypatch, "open_self_made_entry",
+    patch_all(
+        monkeypatch,
+        "open_self_made_entry",
         lambda _config, _jab=None: {
             "ok": True,
             "entry_state": {
@@ -924,7 +1002,9 @@ def test_run_one_row_uses_detail_pipeline_verifier(monkeypatch):
         },
     )
     patch_all(monkeypatch, "JABOperator", FakeJAB)
-    patch_all(monkeypatch, "fill_header",
+    patch_all(
+        monkeypatch,
+        "fill_header",
         lambda _jab, _business, **kwargs: (
             calls["fill_header_kwargs"].append(kwargs)
             or [
@@ -937,7 +1017,9 @@ def test_run_one_row_uses_detail_pipeline_verifier(monkeypatch):
             ]
         ),
     )
-    patch_all(monkeypatch, "locate_receipt_body_table_cached",
+    patch_all(
+        monkeypatch,
+        "locate_receipt_body_table_cached",
         lambda _jab, max_rows=5, **kwargs: (
             calls["body_locate_kwargs"].append(kwargs)
             or {
@@ -950,7 +1032,9 @@ def test_run_one_row_uses_detail_pipeline_verifier(monkeypatch):
     def fail_sync_read_before(*_args, **_kwargs):
         raise AssertionError("完整流程不应在明细写入前同步读整表")
 
-    patch_all(monkeypatch, "read_body_table",
+    patch_all(
+        monkeypatch,
+        "read_body_table",
         fail_sync_read_before,
     )
 
@@ -961,22 +1045,29 @@ def test_run_one_row_uses_detail_pipeline_verifier(monkeypatch):
         step["async_verify_task"] = after_field(0, field, business, step)
         return [step]
 
-    patch_all(monkeypatch, "write_detail_line_by_screen",
+    patch_all(
+        monkeypatch,
+        "write_detail_line_by_screen",
         fake_write_detail,
     )
-    patch_all(monkeypatch, "delete_extra_row_if_present",
+    patch_all(
+        monkeypatch,
+        "delete_extra_row_if_present",
         lambda *_args, **kwargs: (
             calls["delete_extra_kwargs"].append(kwargs) or {"ok": True}
         ),
     )
-    patch_all(monkeypatch, "wait_header_account_description",
+    patch_all(
+        monkeypatch,
+        "wait_header_account_description",
         lambda _jab, _timeout=0.0, scope=None: (
             calls["account_scope"].append(scope) or {"accepted": True}
         ),
     )
-    patch_all(monkeypatch, "DetailPipelineVerifier", FakeVerifier
-    )
-    patch_all(monkeypatch, "recover_cancelable_modal_now",
+    patch_all(monkeypatch, "DetailPipelineVerifier", FakeVerifier)
+    patch_all(
+        monkeypatch,
+        "recover_cancelable_modal_now",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("no-save 正常路径不应主动检查弹窗")
         ),
@@ -1067,26 +1158,32 @@ def test_run_one_row_verifies_extra_text_fields_in_pipeline(monkeypatch):
         def wait(self, task_ids, timeout=2.0):
             calls["wait"].append(list(task_ids))
             result = pipeline_wait_ok_with_cny_snapshot(task_ids)
-            result.update({
-                "ok": True,
-                "submitted": list(task_ids),
-                "done": len(task_ids),
-                "results": {
-                    "field-0": {"ok": True},
-                    "rows-0": {"ok": True},
-                    "text-0": {"ok": True, "type": "path_text"},
-                },
-            })
+            result.update(
+                {
+                    "ok": True,
+                    "submitted": list(task_ids),
+                    "done": len(task_ids),
+                    "results": {
+                        "field-0": {"ok": True},
+                        "rows-0": {"ok": True},
+                        "text-0": {"ok": True, "type": "path_text"},
+                    },
+                }
+            )
             return result
 
         def close(self, timeout=1.0):
             pass
 
     patch_all(monkeypatch, "JABOperator", FakeJAB)
-    patch_all(monkeypatch, "open_self_made_entry",
+    patch_all(
+        monkeypatch,
+        "open_self_made_entry",
         lambda _config, _jab=None: open_report_with_header_anchor(),
     )
-    patch_all(monkeypatch, "fill_header",
+    patch_all(
+        monkeypatch,
+        "fill_header",
         lambda _jab, _business, **_kwargs: [
             {
                 "ok": True,
@@ -1096,16 +1193,22 @@ def test_run_one_row_verifies_extra_text_fields_in_pipeline(monkeypatch):
             }
         ],
     )
-    patch_all(monkeypatch, "locate_receipt_body_table_cached",
+    patch_all(
+        monkeypatch,
+        "locate_receipt_body_table_cached",
         lambda *_args, **_kwargs: {
             "best": {"path": "0.1", "row_count": 1, "col_count": 25, "window": {}},
             "candidates": [],
         },
     )
-    patch_all(monkeypatch, "write_detail_line_by_screen",
+    patch_all(
+        monkeypatch,
+        "write_detail_line_by_screen",
         lambda *_args, **_kwargs: [{"ok": True}],
     )
-    patch_all(monkeypatch, "write_extra_text_fields",
+    patch_all(
+        monkeypatch,
+        "write_extra_text_fields",
         lambda *_args, **_kwargs: {
             "ok": True,
             "fields": [
@@ -1118,17 +1221,22 @@ def test_run_one_row_verifies_extra_text_fields_in_pipeline(monkeypatch):
             ],
         },
     )
-    patch_all(monkeypatch, "delete_extra_row_if_present",
+    patch_all(
+        monkeypatch,
+        "delete_extra_row_if_present",
         lambda *_args, **_kwargs: {"ok": True},
     )
-    patch_all(monkeypatch, "wait_header_account_description",
+    patch_all(
+        monkeypatch,
+        "wait_header_account_description",
         lambda *_args, **_kwargs: {"accepted": True},
     )
-    patch_all(monkeypatch, "verify_and_repair_header_targets",
+    patch_all(
+        monkeypatch,
+        "verify_and_repair_header_targets",
         lambda *_args, **_kwargs: {"ok": True, "reads": [], "missing": []},
     )
-    patch_all(monkeypatch, "DetailPipelineVerifier", FakeVerifier
-    )
+    patch_all(monkeypatch, "DetailPipelineVerifier", FakeVerifier)
 
     report = run_one_row(
         {},
@@ -1163,10 +1271,14 @@ def test_write_extra_text_field_rewrites_when_first_paste_does_not_land(monkeypa
         def release_contexts(self, _vm_id, _contexts):
             pass
 
-    patch_all(monkeypatch, "get_receipt_header_path_template",
+    patch_all(
+        monkeypatch,
+        "get_receipt_header_path_template",
         lambda dynamic_index: {"text_suffix_template": "memo.{index}.0"},
     )
-    patch_all(monkeypatch, "find_receipt_header_field_by_dynamic_path",
+    patch_all(
+        monkeypatch,
+        "find_receipt_header_field_by_dynamic_path",
         lambda *_args, **_kwargs: {
             "ok": True,
             "context": object(),
@@ -1214,10 +1326,14 @@ def test_write_extra_text_field_can_defer_readback(monkeypatch):
         def release_contexts(self, _vm_id, _contexts):
             pass
 
-    patch_all(monkeypatch, "get_receipt_header_path_template",
+    patch_all(
+        monkeypatch,
+        "get_receipt_header_path_template",
         lambda dynamic_index: {"text_suffix_template": "memo.{index}.0"},
     )
-    patch_all(monkeypatch, "find_receipt_header_field_by_dynamic_path",
+    patch_all(
+        monkeypatch,
+        "find_receipt_header_field_by_dynamic_path",
         lambda *_args, **_kwargs: {
             "ok": True,
             "context": object(),
@@ -1261,10 +1377,14 @@ def test_write_extra_text_field_fails_when_rewrite_still_does_not_land(monkeypat
         def release_contexts(self, _vm_id, _contexts):
             pass
 
-    patch_all(monkeypatch, "get_receipt_header_path_template",
+    patch_all(
+        monkeypatch,
+        "get_receipt_header_path_template",
         lambda dynamic_index: {"text_suffix_template": "memo.{index}.0"},
     )
-    patch_all(monkeypatch, "find_receipt_header_field_by_dynamic_path",
+    patch_all(
+        monkeypatch,
+        "find_receipt_header_field_by_dynamic_path",
         lambda *_args, **_kwargs: {
             "ok": True,
             "context": object(),
@@ -1275,7 +1395,9 @@ def test_write_extra_text_field_fails_when_rewrite_still_does_not_land(monkeypat
             "source": "dynamic-path",
         },
     )
-    patch_all(monkeypatch, "guarded_paste_header_value",
+    patch_all(
+        monkeypatch,
+        "guarded_paste_header_value",
         lambda *_args: {"ok": True, "enter_ok": True},
     )
     monkeypatch.setattr(full_flow.time, "sleep", lambda *_args, **_kwargs: None)
@@ -1368,7 +1490,9 @@ def test_header_unified_check_fails_when_header_repair_still_missing(monkeypatch
         def release_contexts(self, _vm_id, _contexts):
             pass
 
-    patch_all(monkeypatch, "guarded_paste_header_value",
+    patch_all(
+        monkeypatch,
+        "guarded_paste_header_value",
         lambda *_args: {"ok": True, "enter_ok": True},
     )
 
@@ -1480,7 +1604,9 @@ def test_header_unified_check_rejects_wrong_date_after_two_repairs(monkeypatch):
         def release_contexts(self, _vm_id, _contexts):
             pass
 
-    patch_all(monkeypatch, "guarded_paste_header_value",
+    patch_all(
+        monkeypatch,
+        "guarded_paste_header_value",
         lambda *_args: {"ok": True, "enter_ok": True},
     )
 
@@ -1551,7 +1677,9 @@ def test_ensure_header_counterparty_customer_skips_when_already_customer(monkeyp
             pass
 
     jab = FakeJAB()
-    monkeypatch.setattr(cp, "read_detail_counterparty_value",
+    monkeypatch.setattr(
+        cp,
+        "read_detail_counterparty_value",
         lambda *_args, **_kwargs: {
             "ok": True,
             "source": "detail-row0-col0",
@@ -1570,7 +1698,9 @@ def test_ensure_header_counterparty_customer_skips_when_already_customer(monkeyp
     assert jab.actions == []
 
 
-def test_ensure_header_counterparty_customer_skips_when_embedded_selected_customer(monkeypatch):
+def test_ensure_header_counterparty_customer_skips_when_embedded_selected_customer(
+    monkeypatch,
+):
     class FakeNode:
         def __init__(
             self,
@@ -1647,7 +1777,9 @@ def test_ensure_header_counterparty_customer_skips_when_embedded_selected_custom
             pass
 
     jab = FakeJAB()
-    monkeypatch.setattr(cp, "read_detail_counterparty_value",
+    monkeypatch.setattr(
+        cp,
+        "read_detail_counterparty_value",
         lambda *_args, **_kwargs: {
             "ok": True,
             "source": "detail-row0-col0",
@@ -1764,12 +1896,16 @@ def test_ensure_header_counterparty_customer_repairs_conflict_with_selection_api
             },
         ]
     )
-    monkeypatch.setattr(cp, "read_detail_counterparty_value",
+    monkeypatch.setattr(
+        cp,
+        "read_detail_counterparty_value",
         lambda *_args, **_kwargs: next(reads),
     )
 
     jab = FakeJAB()
-    monkeypatch.setattr(cp, "find_counterparty_combo",
+    monkeypatch.setattr(
+        cp,
+        "find_counterparty_combo",
         lambda *_args, **_kwargs: {
             "ok": True,
             "source": "nearby",
@@ -1890,13 +2026,17 @@ def test_ensure_header_counterparty_customer_repairs_blank_detail_with_embedded_
             },
         ]
     )
-    monkeypatch.setattr(cp, "read_detail_counterparty_value",
+    monkeypatch.setattr(
+        cp,
+        "read_detail_counterparty_value",
         lambda *_args, **_kwargs: next(reads),
     )
     monkeypatch.setattr(full_flow.time, "sleep", lambda *_args, **_kwargs: None)
 
     jab = FakeJAB()
-    monkeypatch.setattr(cp, "find_counterparty_combo",
+    monkeypatch.setattr(
+        cp,
+        "find_counterparty_combo",
         lambda *_args, **_kwargs: {
             "ok": True,
             "source": "nearby",
@@ -1921,7 +2061,14 @@ def test_ensure_header_counterparty_customer_fails_when_conflict_repair_not_conf
     monkeypatch,
 ):
     class FakeNode:
-        def __init__(self, role, name="", description="", states="enabled,visible,showing", children=None):
+        def __init__(
+            self,
+            role,
+            name="",
+            description="",
+            states="enabled,visible,showing",
+            children=None,
+        ):
             self.name = name
             self.description = description
             self.role = role
@@ -2004,12 +2151,16 @@ def test_ensure_header_counterparty_customer_fails_when_conflict_repair_not_conf
             },
         ]
     )
-    monkeypatch.setattr(cp, "read_detail_counterparty_value",
+    monkeypatch.setattr(
+        cp,
+        "read_detail_counterparty_value",
         lambda *_args, **_kwargs: next(reads),
     )
 
     jab = FakeJAB()
-    monkeypatch.setattr(cp, "find_counterparty_combo",
+    monkeypatch.setattr(
+        cp,
+        "find_counterparty_combo",
         lambda *_args, **_kwargs: {
             "ok": True,
             "source": "nearby",
@@ -2029,7 +2180,9 @@ def test_ensure_header_counterparty_customer_fails_when_conflict_repair_not_conf
     assert ("add", 1, jab.list_node, 0) in jab.selection_calls
 
 
-def test_ensure_header_counterparty_customer_skips_when_detail_row0_col0_customer(monkeypatch):
+def test_ensure_header_counterparty_customer_skips_when_detail_row0_col0_customer(
+    monkeypatch,
+):
     class FakeJAB:
         def __init__(self):
             self.actions = []
@@ -2050,7 +2203,9 @@ def test_ensure_header_counterparty_customer_skips_when_detail_row0_col0_custome
         def release_contexts(self, _vm_id, _contexts):
             pass
 
-    monkeypatch.setattr(cp, "read_detail_counterparty_value",
+    monkeypatch.setattr(
+        cp,
+        "read_detail_counterparty_value",
         lambda *_args, **_kwargs: {
             "ok": True,
             "source": "detail-row0-col0",
@@ -2095,15 +2250,21 @@ def test_ensure_header_counterparty_customer_skips_lower_detail_without_header_l
             pass
 
     monkeypatch.setattr(cp, "_COUNTERPARTY_NEARBY_SUFFIX_CACHE", {})
-    monkeypatch.setattr(cp, "find_counterparty_combo",
+    monkeypatch.setattr(
+        cp,
+        "find_counterparty_combo",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("lower detail 已是客户时不应定位上方往来对象")
         ),
     )
-    patch_all(monkeypatch, "receipt_header_dynamic_prefix",
+    patch_all(
+        monkeypatch,
+        "receipt_header_dynamic_prefix",
         lambda dynamic_index: "0.0.1.0.0.0.0.5",
     )
-    monkeypatch.setattr(cp, "read_detail_counterparty_value",
+    monkeypatch.setattr(
+        cp,
+        "read_detail_counterparty_value",
         lambda *_args, **_kwargs: {
             "ok": True,
             "source": "detail-row0-col0",
@@ -2128,7 +2289,9 @@ def test_find_counterparty_combo_uses_cached_nearby_suffix(monkeypatch):
         pass
 
     monkeypatch.setattr(cp, "_COUNTERPARTY_NEARBY_SUFFIX_CACHE", {})
-    patch_all(monkeypatch, "receipt_header_dynamic_prefix",
+    patch_all(
+        monkeypatch,
+        "receipt_header_dynamic_prefix",
         lambda dynamic_index: "0.0.1.0.0.0.0.5",
     )
     cp._COUNTERPARTY_NEARBY_SUFFIX_CACHE[2002] = {
@@ -2148,7 +2311,9 @@ def test_find_counterparty_combo_uses_cached_nearby_suffix(monkeypatch):
         }
 
     monkeypatch.setattr(cp, "find_counterparty_combo_by_path", fake_find_by_path)
-    monkeypatch.setattr(cp, "find_counterparty_combo_nearby",
+    monkeypatch.setattr(
+        cp,
+        "find_counterparty_combo_nearby",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("nearby should not run when cached path works")
         ),
@@ -2238,7 +2403,9 @@ def test_find_counterparty_combo_nearby_handles_label_path_triples(monkeypatch):
         def release_contexts(self, _vm_id, contexts):
             self.released.extend(contexts or [])
 
-    patch_all(monkeypatch, "receipt_header_dynamic_prefix",
+    patch_all(
+        monkeypatch,
+        "receipt_header_dynamic_prefix",
         lambda dynamic_index: "0.0.1.0.0.0.0.2",
     )
 
@@ -2254,7 +2421,9 @@ def test_find_counterparty_combo_nearby_handles_label_path_triples(monkeypatch):
     assert result["target"]["label"]["name"] == "往来对象"
 
 
-def test_ensure_header_counterparty_customer_fails_when_existing_non_target_value(monkeypatch):
+def test_ensure_header_counterparty_customer_fails_when_existing_non_target_value(
+    monkeypatch,
+):
     class FakeJAB:
         def __init__(self):
             self.actions = []
@@ -2275,7 +2444,9 @@ def test_ensure_header_counterparty_customer_fails_when_existing_non_target_valu
         def release_contexts(self, _vm_id, _contexts):
             pass
 
-    monkeypatch.setattr(cp, "read_detail_counterparty_value",
+    monkeypatch.setattr(
+        cp,
+        "read_detail_counterparty_value",
         lambda *_args, **_kwargs: {
             "ok": True,
             "source": "detail-row0-col0",
@@ -2309,7 +2480,9 @@ def test_ensure_header_counterparty_customer_trusts_detail_over_stale_header_tex
         def release_contexts(self, _vm_id, _contexts):
             pass
 
-    monkeypatch.setattr(cp, "read_detail_counterparty_value",
+    monkeypatch.setattr(
+        cp,
+        "read_detail_counterparty_value",
         lambda *_args, **_kwargs: {
             "ok": True,
             "source": "detail-row0-col0",
@@ -2344,8 +2517,15 @@ def test_ensure_header_counterparty_customer_failure_includes_detail_diagnostic(
         def release_contexts(self, _vm_id, _contexts):
             pass
 
-    monkeypatch.setattr(cp, "read_detail_counterparty_value",
-        lambda *_args, **_kwargs: {"ok": False, "value": "", "text": "", "reason": "明细表 path 未定位"},
+    monkeypatch.setattr(
+        cp,
+        "read_detail_counterparty_value",
+        lambda *_args, **_kwargs: {
+            "ok": False,
+            "value": "",
+            "text": "",
+            "reason": "明细表 path 未定位",
+        },
     )
     result = REAL_ENSURE_HEADER_COUNTERPARTY_CUSTOMER(FakeJAB(), 5, scope_hwnd=2002)
 
@@ -2398,7 +2578,9 @@ def test_run_one_row_resolves_header_scope_by_finance_org_fast_path(monkeypatch)
         def close(self, timeout=1.0):
             pass
 
-    patch_all(monkeypatch, "open_self_made_entry",
+    patch_all(
+        monkeypatch,
+        "open_self_made_entry",
         lambda _config, _jab=None: {
             "ok": True,
             "entry_state": {
@@ -2416,7 +2598,9 @@ def test_run_one_row_resolves_header_scope_by_finance_org_fast_path(monkeypatch)
         },
     )
     patch_all(monkeypatch, "JABOperator", FakeJAB)
-    patch_all(monkeypatch, "find_finance_org_header_scope_by_paths",
+    patch_all(
+        monkeypatch,
+        "find_finance_org_header_scope_by_paths",
         lambda _jab, hwnd, **kwargs: (
             calls["finance_scope"].append((hwnd, kwargs))
             or {
@@ -2431,7 +2615,9 @@ def test_run_one_row_resolves_header_scope_by_finance_org_fast_path(monkeypatch)
             }
         ),
     )
-    patch_all(monkeypatch, "fill_header",
+    patch_all(
+        monkeypatch,
+        "fill_header",
         lambda jab, _business, **kwargs: (
             calls["fill_header_kwargs"].append(kwargs)
             or calls["fill_header_scope_cache"].append(
@@ -2440,7 +2626,9 @@ def test_run_one_row_resolves_header_scope_by_finance_org_fast_path(monkeypatch)
             or [{"ok": True, "label": "客户", "accepted_text": "ACME LTD"}]
         ),
     )
-    patch_all(monkeypatch, "locate_receipt_body_table_cached",
+    patch_all(
+        monkeypatch,
+        "locate_receipt_body_table_cached",
         lambda _jab, max_rows=5, **kwargs: (
             calls["body_locate_kwargs"].append(kwargs)
             or {
@@ -2454,20 +2642,27 @@ def test_run_one_row_resolves_header_scope_by_finance_org_fast_path(monkeypatch)
             }
         ),
     )
-    patch_all(monkeypatch, "write_detail_line_by_screen",
+    patch_all(
+        monkeypatch,
+        "write_detail_line_by_screen",
         lambda *_args, **_kwargs: [{"ok": True}],
     )
-    patch_all(monkeypatch, "delete_extra_row_if_present",
+    patch_all(
+        monkeypatch,
+        "delete_extra_row_if_present",
         lambda *_args, **_kwargs: {"ok": True},
     )
-    patch_all(monkeypatch, "wait_header_account_description",
+    patch_all(
+        monkeypatch,
+        "wait_header_account_description",
         lambda *_args, **_kwargs: {"accepted": True},
     )
-    patch_all(monkeypatch, "verify_and_repair_header_targets",
+    patch_all(
+        monkeypatch,
+        "verify_and_repair_header_targets",
         lambda *_args, **_kwargs: {"ok": True, "reads": [], "missing": []},
     )
-    patch_all(monkeypatch, "DetailPipelineVerifier", FakeVerifier
-    )
+    patch_all(monkeypatch, "DetailPipelineVerifier", FakeVerifier)
 
     report = run_one_row({}, plan_row(10), save_enabled=False)
 
@@ -2486,9 +2681,7 @@ def test_run_one_row_resolves_header_scope_by_finance_org_fast_path(monkeypatch)
     assert calls["fill_header_scope_cache"][0]["semantic_label_path"] == (
         "0.fast.semantic.label"
     )
-    assert calls["fill_header_scope_cache"][0]["label_path"] == (
-        "0.fast.visible.label"
-    )
+    assert calls["fill_header_scope_cache"][0]["label_path"] == ("0.fast.visible.label")
     assert calls["body_locate_kwargs"][0]["scope_hwnd"] == 919586
     assert calls["body_locate_kwargs"][0]["cached"] is None
 
@@ -2529,7 +2722,9 @@ def test_run_one_row_stops_when_current_canvas_header_scope_missing(monkeypatch)
         def close(self):
             return None
 
-    patch_all(monkeypatch, "open_self_made_entry",
+    patch_all(
+        monkeypatch,
+        "open_self_made_entry",
         lambda _config, _jab=None: {
             "ok": True,
             "entry_state": {
@@ -2547,18 +2742,24 @@ def test_run_one_row_stops_when_current_canvas_header_scope_missing(monkeypatch)
         },
     )
     patch_all(monkeypatch, "JABOperator", FakeJAB)
-    patch_all(monkeypatch, "find_finance_org_header_scope_by_paths",
+    patch_all(
+        monkeypatch,
+        "find_finance_org_header_scope_by_paths",
         lambda *_args, **_kwargs: {
             "ok": False,
             "reason": "当前 canvas 未通过财务组织(O) dynamic path 扫描",
         },
     )
-    patch_all(monkeypatch, "fill_header",
+    patch_all(
+        monkeypatch,
+        "fill_header",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("锚点失败后不应进入表头写入")
         ),
     )
-    patch_all(monkeypatch, "locate_receipt_body_table_cached",
+    patch_all(
+        monkeypatch,
+        "locate_receipt_body_table_cached",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("锚点失败后不应定位明细表")
         ),
@@ -2660,22 +2861,26 @@ def test_run_one_row_repairs_pending_detail_field_with_cached_path(monkeypatch):
                         }
                     },
                 }
-            result = pipeline_wait_ok_with_cny_snapshot(["field-0", "rows-0", "field-1"])
-            result.update({
-                "ok": True,
-                "submitted": ["field-0", "rows-0", "field-1"],
-                "done": 3,
-                "pending": 0,
-                "failed": [],
-                "results": {
-                    "rows-0": {"ok": True, "type": "row_count"},
-                    "field-1": {
-                        "ok": True,
-                        "type": "field",
-                        "name": "收款银行账户",
+            result = pipeline_wait_ok_with_cny_snapshot(
+                ["field-0", "rows-0", "field-1"]
+            )
+            result.update(
+                {
+                    "ok": True,
+                    "submitted": ["field-0", "rows-0", "field-1"],
+                    "done": 3,
+                    "pending": 0,
+                    "failed": [],
+                    "results": {
+                        "rows-0": {"ok": True, "type": "row_count"},
+                        "field-1": {
+                            "ok": True,
+                            "type": "field",
+                            "name": "收款银行账户",
+                        },
                     },
-                },
-            })
+                }
+            )
             return result
 
         def snapshot(self):
@@ -2684,7 +2889,9 @@ def test_run_one_row_repairs_pending_detail_field_with_cached_path(monkeypatch):
         def close(self, timeout=1.0):
             calls["closed"] = timeout
 
-    patch_all(monkeypatch, "open_self_made_entry",
+    patch_all(
+        monkeypatch,
+        "open_self_made_entry",
         lambda _config, _jab=None: {
             "ok": True,
             "entry_state": {
@@ -2705,7 +2912,9 @@ def test_run_one_row_repairs_pending_detail_field_with_cached_path(monkeypatch):
         },
     )
     patch_all(monkeypatch, "JABOperator", FakeJAB)
-    patch_all(monkeypatch, "fill_header",
+    patch_all(
+        monkeypatch,
+        "fill_header",
         lambda *_args, **_kwargs: [
             {"ok": True, "label": "客户", "accepted_text": "ACME LTD"}
         ],
@@ -2715,10 +2924,14 @@ def test_run_one_row_repairs_pending_detail_field_with_cached_path(monkeypatch):
         calls["locate"] += 1
         return located
 
-    patch_all(monkeypatch, "locate_receipt_body_table_cached",
+    patch_all(
+        monkeypatch,
+        "locate_receipt_body_table_cached",
         fake_locate,
     )
-    patch_all(monkeypatch, "read_body_table",
+    patch_all(
+        monkeypatch,
+        "read_body_table",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("修复成功后不应整表读 fallback")
         ),
@@ -2774,21 +2987,30 @@ def test_run_one_row_repairs_pending_detail_field_with_cached_path(monkeypatch):
             "target": {"row": row_index, "col": field["col"]},
         }
 
-    patch_all(monkeypatch, "write_detail_line_by_screen",
+    patch_all(
+        monkeypatch,
+        "write_detail_line_by_screen",
         fake_write_detail,
     )
-    patch_all(monkeypatch, "write_field_once",
+    patch_all(
+        monkeypatch,
+        "write_field_once",
         fake_write_field_once,
     )
-    patch_all(monkeypatch, "delete_extra_row_if_present",
+    patch_all(
+        monkeypatch,
+        "delete_extra_row_if_present",
         lambda *_args, **_kwargs: {"ok": True},
     )
-    patch_all(monkeypatch, "wait_header_account_description",
+    patch_all(
+        monkeypatch,
+        "wait_header_account_description",
         lambda *_args, **_kwargs: {"accepted": True},
     )
-    patch_all(monkeypatch, "DetailPipelineVerifier", RepairingVerifier
-    )
-    patch_all(monkeypatch, "recover_cancelable_modal_now",
+    patch_all(monkeypatch, "DetailPipelineVerifier", RepairingVerifier)
+    patch_all(
+        monkeypatch,
+        "recover_cancelable_modal_now",
         lambda *_args, **_kwargs: {"ok": False, "attempted": False},
     )
 
@@ -2987,34 +3209,47 @@ def test_run_one_row_recovers_modal_only_after_save_failure(monkeypatch):
             pass
 
     patch_all(monkeypatch, "JABOperator", LocalFakeJAB)
-    patch_all(monkeypatch, "open_self_made_entry",
+    patch_all(
+        monkeypatch,
+        "open_self_made_entry",
         lambda _config, _jab=None: open_report_with_header_anchor(),
     )
-    patch_all(monkeypatch, "fill_header",
+    patch_all(
+        monkeypatch,
+        "fill_header",
         lambda *_args, **_kwargs: [
             {"ok": True, "label": "客户", "accepted_text": "ACME LTD"}
         ],
     )
-    patch_all(monkeypatch, "locate_receipt_body_table_cached",
+    patch_all(
+        monkeypatch,
+        "locate_receipt_body_table_cached",
         lambda *_args, **_kwargs: {
             "best": {"path": "0.1", "row_count": 1, "col_count": 25, "window": {}},
             "candidates": [],
         },
     )
-    patch_all(monkeypatch, "write_detail_line_by_screen",
+    patch_all(
+        monkeypatch,
+        "write_detail_line_by_screen",
         lambda *_args, **_kwargs: [{"ok": True}],
     )
-    patch_all(monkeypatch, "delete_extra_row_if_present",
+    patch_all(
+        monkeypatch,
+        "delete_extra_row_if_present",
         lambda *_args, **_kwargs: {"ok": True},
     )
-    patch_all(monkeypatch, "wait_header_account_description",
+    patch_all(
+        monkeypatch,
+        "wait_header_account_description",
         lambda *_args, **_kwargs: {"accepted": True},
     )
-    patch_all(monkeypatch, "verify_and_repair_header_targets",
+    patch_all(
+        monkeypatch,
+        "verify_and_repair_header_targets",
         lambda *_args, **_kwargs: {"ok": True, "reads": [], "missing": []},
     )
-    patch_all(monkeypatch, "DetailPipelineVerifier", LocalFakeVerifier
-    )
+    patch_all(monkeypatch, "DetailPipelineVerifier", LocalFakeVerifier)
 
     def fake_save(*_args, **_kwargs):
         calls["save"] += 1
@@ -3022,9 +3257,10 @@ def test_run_one_row_recovers_modal_only_after_save_failure(monkeypatch):
             return {"ok": False, "reason": "前台窗口不是目标 NC 窗口"}
         return {"ok": True, "triggered": True}
 
-    patch_all(monkeypatch, "save_receipt_by_ctrl_s", fake_save
-    )
-    patch_all(monkeypatch, "recover_cancelable_modal_now",
+    patch_all(monkeypatch, "save_receipt_by_ctrl_s", fake_save)
+    patch_all(
+        monkeypatch,
+        "recover_cancelable_modal_now",
         lambda *_args, **_kwargs: (
             calls.__setitem__("recover", calls["recover"] + 1)
             or {"ok": True, "attempted": True}
@@ -3070,36 +3306,51 @@ def test_run_one_row_stops_when_customer_name_readback_is_empty(monkeypatch):
         def close(self, timeout=1.0):
             pass
 
-    patch_all(monkeypatch, "open_self_made_entry",
+    patch_all(
+        monkeypatch,
+        "open_self_made_entry",
         lambda _config, _jab=None: open_report_with_header_anchor(),
     )
     patch_all(monkeypatch, "JABOperator", LocalFakeJAB)
-    patch_all(monkeypatch, "fill_header",
+    patch_all(
+        monkeypatch,
+        "fill_header",
         lambda _jab, _business, **_kwargs: [
             {"ok": True, "label": "客户", "value": "YW03574"}
         ],
     )
-    patch_all(monkeypatch, "locate_receipt_body_table_cached",
+    patch_all(
+        monkeypatch,
+        "locate_receipt_body_table_cached",
         lambda _jab, max_rows=5, **_kwargs: {
             "best": {"path": "0.1", "row_count": 1, "col_count": 25, "window": {}},
             "candidates": [],
         },
     )
-    patch_all(monkeypatch, "read_body_table",
+    patch_all(
+        monkeypatch,
+        "read_body_table",
         lambda _jab, step: {"ok": True, "step": step, "rows": []},
     )
-    patch_all(monkeypatch, "write_detail_line_by_screen",
+    patch_all(
+        monkeypatch,
+        "write_detail_line_by_screen",
         lambda *_args, **_kwargs: [{"ok": True}],
     )
-    patch_all(monkeypatch, "delete_extra_row_if_present",
+    patch_all(
+        monkeypatch,
+        "delete_extra_row_if_present",
         lambda *_args, **_kwargs: {"ok": True},
     )
-    patch_all(monkeypatch, "wait_header_account_description",
+    patch_all(
+        monkeypatch,
+        "wait_header_account_description",
         lambda *_args, **_kwargs: {"accepted": True},
     )
-    patch_all(monkeypatch, "DetailPipelineVerifier", LocalFakeVerifier
-    )
-    patch_all(monkeypatch, "recover_cancelable_modal_now",
+    patch_all(monkeypatch, "DetailPipelineVerifier", LocalFakeVerifier)
+    patch_all(
+        monkeypatch,
+        "recover_cancelable_modal_now",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("no-save 正常路径不应主动检查弹窗")
         ),
@@ -3147,11 +3398,15 @@ def test_run_one_row_continues_when_header_account_readback_is_empty(monkeypatch
         def close(self, timeout=1.0):
             pass
 
-    patch_all(monkeypatch, "open_self_made_entry",
+    patch_all(
+        monkeypatch,
+        "open_self_made_entry",
         lambda _config, _jab=None: open_report_with_header_anchor(),
     )
     patch_all(monkeypatch, "JABOperator", LocalFakeJAB)
-    patch_all(monkeypatch, "fill_header",
+    patch_all(
+        monkeypatch,
+        "fill_header",
         lambda _jab, _business, **_kwargs: [
             {
                 "ok": True,
@@ -3161,33 +3416,46 @@ def test_run_one_row_continues_when_header_account_readback_is_empty(monkeypatch
             }
         ],
     )
-    patch_all(monkeypatch, "locate_receipt_body_table_cached",
+    patch_all(
+        monkeypatch,
+        "locate_receipt_body_table_cached",
         lambda _jab, max_rows=5, **_kwargs: {
             "best": {"path": "0.1", "row_count": 1, "col_count": 25, "window": {}},
             "candidates": [],
         },
     )
-    patch_all(monkeypatch, "read_body_table",
+    patch_all(
+        monkeypatch,
+        "read_body_table",
         lambda _jab, step: {"ok": True, "step": step, "rows": []},
     )
-    patch_all(monkeypatch, "write_detail_line_by_screen",
+    patch_all(
+        monkeypatch,
+        "write_detail_line_by_screen",
         lambda *_args, **_kwargs: [{"ok": True}],
     )
-    patch_all(monkeypatch, "delete_extra_row_if_present",
+    patch_all(
+        monkeypatch,
+        "delete_extra_row_if_present",
         lambda *_args, **_kwargs: {"ok": True},
     )
-    patch_all(monkeypatch, "wait_header_account_description",
+    patch_all(
+        monkeypatch,
+        "wait_header_account_description",
         lambda _jab, timeout=5.0, **_kwargs: (
             account_readback_timeouts.append(timeout)
             or {"accepted": False, "description": "", "text": ""}
         ),
     )
-    patch_all(monkeypatch, "verify_and_repair_header_targets",
+    patch_all(
+        monkeypatch,
+        "verify_and_repair_header_targets",
         lambda *_args, **_kwargs: {"ok": True, "reads": [], "missing": []},
     )
-    patch_all(monkeypatch, "DetailPipelineVerifier", LocalFakeVerifier
-    )
-    patch_all(monkeypatch, "recover_cancelable_modal_now",
+    patch_all(monkeypatch, "DetailPipelineVerifier", LocalFakeVerifier)
+    patch_all(
+        monkeypatch,
+        "recover_cancelable_modal_now",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("no-save 正常路径不应主动检查弹窗")
         ),
@@ -3224,12 +3492,16 @@ def test_pause_after_customer_diagnoses_cleared_header_and_stops(monkeypatch):
         def release_contexts(self, vm_id, contexts):
             return None
 
-    patch_all(monkeypatch, "open_self_made_entry",
+    patch_all(
+        monkeypatch,
+        "open_self_made_entry",
         lambda _config, _jab=None: open_report_with_header_anchor(),
     )
     patch_all(monkeypatch, "JABOperator", LocalFakeJAB)
     monkeypatch.setattr("builtins.input", lambda _prompt: "")
-    patch_all(monkeypatch, "find_receipt_header_field_by_dynamic_path",
+    patch_all(
+        monkeypatch,
+        "find_receipt_header_field_by_dynamic_path",
         lambda _jab, label, dynamic_index, **_kwargs: {
             "ok": True,
             "context": object(),
@@ -3239,7 +3511,9 @@ def test_pause_after_customer_diagnoses_cleared_header_and_stops(monkeypatch):
             "dynamic_prefix": "0.0.1.0.0.0.0.5",
         },
     )
-    patch_all(monkeypatch, "locate_receipt_body_table_cached",
+    patch_all(
+        monkeypatch,
+        "locate_receipt_body_table_cached",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(
             AssertionError("表头诊断失败后不应继续定位明细表")
         ),

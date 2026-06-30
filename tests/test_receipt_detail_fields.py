@@ -59,7 +59,9 @@ def test_exchange_rate_check_accepts_currency_expected_values():
     assert validate_main_row_exchange_rate({"6": "7.12"}, "美元", "1090")["ok"] is True
     assert validate_main_row_exchange_rate({"6": "1"}, "CNY", "1090")["ok"] is True
     assert validate_main_row_exchange_rate({"6": "1.0"}, "RMB", "1090")["ok"] is True
-    assert validate_main_row_exchange_rate({"6": "1.0000"}, "人民币", "1090")["ok"] is True
+    assert (
+        validate_main_row_exchange_rate({"6": "1.0000"}, "人民币", "1090")["ok"] is True
+    )
 
 
 def test_exchange_rate_check_blocks_missing_rate():

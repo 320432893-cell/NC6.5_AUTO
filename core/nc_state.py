@@ -75,7 +75,9 @@ class NCStateDetector:
         )
 
     def wait_for_page_state(self, expected, items=None, command="", timeout=None):
-        deadline = time.time() + float(timeout if timeout is not None else self.state_wait_timeout)
+        deadline = time.time() + float(
+            timeout if timeout is not None else self.state_wait_timeout
+        )
         last_state = None
         while True:
             last_state = self.detect_page_state(items=items)

@@ -64,7 +64,9 @@ def write_voucher_plan_cache(
         created_at=datetime.now().isoformat(timespec="seconds"),
     )
     path = plan_cache_path()
-    path.write_text(json.dumps(asdict(cache), ensure_ascii=False, indent=2), encoding="utf-8")
+    path.write_text(
+        json.dumps(asdict(cache), ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     return path
 
 
@@ -112,7 +114,9 @@ def validate_voucher_plan_cache(
         )
 
 
-def matches_from_plan_cache(cache: dict, pending: list[ExcelVoucherItem]) -> list[PendingMatch]:
+def matches_from_plan_cache(
+    cache: dict, pending: list[ExcelVoucherItem]
+) -> list[PendingMatch]:
     by_row = {item.row: item for item in pending}
     matches = []
     for row in cache.get("rows") or []:

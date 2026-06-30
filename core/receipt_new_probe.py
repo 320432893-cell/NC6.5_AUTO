@@ -358,7 +358,6 @@ def open_new_menu_with_known_buttons(
     return open_new_menu(jab, args)
 
 
-
 def open_new_menu(jab, args):
     if args.method == "probe-button":
         return {"ok": True, "method": "probe-button"}
@@ -435,9 +434,7 @@ def wait_self_made_entry_ready(
                 "ok": False,
                 "wait_seconds": elapsed(start),
                 "attempts": attempts,
-                "reason": (
-                    "自制菜单已点击，但未确认 popup 关闭且进入新建编辑态"
-                ),
+                "reason": ("自制菜单已点击，但未确认 popup 关闭且进入新建编辑态"),
             }
         time.sleep(min(interval, remaining))
 
@@ -642,7 +639,9 @@ def detect_entry_state_from_button_target(jab, target, foreground=None):
             "names": names,
             "hits": [],
         }
-    annotate_foreground_root_for_targets([{"window": window_info or window}], foreground)
+    annotate_foreground_root_for_targets(
+        [{"window": window_info or window}], foreground
+    )
     return {
         "ok": True,
         "partial_ok": True,
@@ -877,7 +876,6 @@ def collect_window_controls_limited(jab, window, max_depth=8, max_children=120):
     return window
 
 
-
 def find_named_controls_in_windows(
     windows,
     name_query="新增",
@@ -1013,7 +1011,6 @@ def window_class_name(hwnd):
     buffer = ctypes.create_unicode_buffer(256)
     ctypes.windll.user32.GetClassNameW(wintypes.HWND(int(hwnd)), buffer, 256)
     return buffer.value
-
 
 
 def trigger_button_async(

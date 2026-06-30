@@ -86,7 +86,7 @@ def resolve_entry_header_scope(
                 "purpose": (
                     "开单快速确认只提供当前 Canvas；优先用财务组织(O)"
                     "稳定 path 解析表头 dynamic_index"
-                )
+                ),
             }
             if finance_scope.get("ok"):
                 entry_dynamic_index = finance_scope.get("dynamic_index")

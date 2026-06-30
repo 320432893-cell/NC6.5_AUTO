@@ -288,8 +288,7 @@ class NCPageProbe:
             same_row = max(y_values) - min(y_values) <= max(
                 40,
                 max(
-                    (picked[name].get("bounds") or [0, 0, 0, 0])[3]
-                    for name in required
+                    (picked[name].get("bounds") or [0, 0, 0, 0])[3] for name in required
                 ),
             )
             if ordered and same_row:
@@ -414,11 +413,10 @@ class NCPageProbe:
         amount_col,
         partner_col,
     ):
-        min_cols = max(
-            column
-            for column in (amount_col, partner_col, 0)
-            if column is not None
-        ) + 1
+        min_cols = (
+            max(column for column in (amount_col, partner_col, 0) if column is not None)
+            + 1
+        )
         summaries = self.jab.read_table_summaries(min_rows=1, min_cols=min_cols)
         main = choose_main_summary_table(summaries)
         if not main:

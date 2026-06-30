@@ -14,14 +14,21 @@ BLOB_RATIO = 0.80  # 最大连通分量占比 ≥ 此值 = 内聚单块,判不�
 def components(path):
     src = Path(path).read_text(encoding="utf-8")
     tree = ast.parse(src)
-    funcs = {n.name: n for n in tree.body
-             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    funcs = {
+        n.name: n
+        for n in tree.body
+        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
     names = set(funcs)
     adj = collections.defaultdict(set)
     for nm, node in funcs.items():
         for x in ast.walk(node):
-            if isinstance(x, ast.Name) and isinstance(x.ctx, ast.Load) \
-                    and x.id in names and x.id != nm:
+            if (
+                isinstance(x, ast.Name)
+                and isinstance(x.ctx, ast.Load)
+                and x.id in names
+                and x.id != nm
+            ):
                 adj[nm].add(x.id)
                 adj[x.id].add(nm)
     seen, comps = set(), []
@@ -52,12 +59,19 @@ def main():
             continue
         biggest = len(comps[0])
         ratio = biggest / len(names)
-        verdict = ("不拆(内聚单块,硬拆=制造循环依赖)" if ratio >= BLOB_RATIO
-                   else f"可拆({len(comps)} 个子簇,按簇切+import-linter锁)")
-        print(f"{path}: {len(names)} 函数 → {len(comps)} 连通分量, "
-              f"最大块 {biggest}({ratio:.0%}) → {verdict}")
+        verdict = (
+            "不拆(内聚单块,硬拆=制造循环依赖)"
+            if ratio >= BLOB_RATIO
+            else f"可拆({len(comps)} 个子簇,按簇切+import-linter锁)"
+        )
+        print(
+            f"{path}: {len(names)} 函数 → {len(comps)} 连通分量, "
+            f"最大块 {biggest}({ratio:.0%}) → {verdict}"
+        )
         for c in comps[:6]:
-            print(f"    [{len(c)}] {', '.join(sorted(c)[:5])}{'...' if len(c) > 5 else ''}")
+            print(
+                f"    [{len(c)}] {', '.join(sorted(c)[:5])}{'...' if len(c) > 5 else ''}"
+            )
 
 
 if __name__ == "__main__":

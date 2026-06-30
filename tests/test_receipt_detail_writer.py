@@ -27,9 +27,7 @@ def test_detail_settlement_fields_keep_keyboard_write_with_immediate_verify():
 
 def test_amount_fields_keep_sensitive_neighbor_guard():
     amount_fields = [
-        field
-        for field in DETAIL_FIELDS + FEE_FIELDS
-        if field["name"] == "贷方原币金额"
+        field for field in DETAIL_FIELDS + FEE_FIELDS if field["name"] == "贷方原币金额"
     ]
 
     assert len(amount_fields) == 2
@@ -57,9 +55,7 @@ def test_subject_fields_verify_immediately_with_neighbor_guard():
 
 def test_business_type_fields_verify_immediately():
     business_type_fields = [
-        field
-        for field in DETAIL_FIELDS + FEE_FIELDS
-        if field["name"] == "收款业务类型"
+        field for field in DETAIL_FIELDS + FEE_FIELDS if field["name"] == "收款业务类型"
     ]
 
     assert len(business_type_fields) == 2
@@ -73,14 +69,12 @@ def test_fee_account_clear_verifies_immediately():
     main_account = next(
         field
         for field in DETAIL_FIELDS
-        if field["name"] == "收款银行账户"
-        and field["value_key"] == "bank_account"
+        if field["name"] == "收款银行账户" and field["value_key"] == "bank_account"
     )
     fee_account = next(
         field
         for field in FEE_FIELDS
-        if field["name"] == "收款银行账户"
-        and field["value_key"] == "fee_account"
+        if field["name"] == "收款银行账户" and field["value_key"] == "fee_account"
     )
 
     assert main_account["immediate_verify"] is True
@@ -166,7 +160,9 @@ def test_write_field_once_passes_failure_recovery_hook_without_calling_it(monkey
     assert hooks == [recover_after_failure]
 
 
-def test_write_field_once_refocuses_target_cell_even_when_current_col_exists(monkeypatch):
+def test_write_field_once_refocuses_target_cell_even_when_current_col_exists(
+    monkeypatch,
+):
     field = {"col": 7, "name": "贷方原币金额", "value_key": "amount"}
     focused = []
 
@@ -207,7 +203,9 @@ def test_write_field_once_refocuses_target_cell_even_when_current_col_exists(mon
     assert "path" in result["navigation"]["reason"]
 
 
-def test_write_field_once_enters_bank_account_from_neighbor_col_without_mouse(monkeypatch):
+def test_write_field_once_enters_bank_account_from_neighbor_col_without_mouse(
+    monkeypatch,
+):
     field = {
         "col": 4,
         "name": "收款银行账户",
@@ -264,7 +262,10 @@ def test_write_field_once_uses_keyboard_only_activation(monkeypatch):
     monkeypatch.setattr(
         writer,
         "focus_detail_cell",
-        lambda _jab, _located, row, col: {"ok": True, "target": {"row": row, "col": col}},
+        lambda _jab, _located, row, col: {
+            "ok": True,
+            "target": {"row": row, "col": col},
+        },
     )
     monkeypatch.setattr(
         writer,
@@ -494,7 +495,9 @@ def test_write_detail_line_rewrites_bank_account_before_next_field(monkeypatch):
     monkeypatch.setattr(writer, "focus_detail_cell", fake_focus)
     monkeypatch.setattr(writer, "move_selected_cell_by_arrows", fake_move)
     monkeypatch.setattr(writer, "keyboard_write_selected_cell", fake_keyboard_write)
-    monkeypatch.setattr(writer, "read_row_cells", lambda *_args, **_kwargs: next(snapshots))
+    monkeypatch.setattr(
+        writer, "read_row_cells", lambda *_args, **_kwargs: next(snapshots)
+    )
 
     steps = writer.write_detail_line_by_screen(
         jab=object(),
@@ -609,7 +612,9 @@ def test_write_detail_line_rewrites_settlement_immediately(monkeypatch):
 
     monkeypatch.setattr(writer, "focus_detail_cell", fake_focus)
     monkeypatch.setattr(writer, "keyboard_write_selected_cell", fake_keyboard_write)
-    monkeypatch.setattr(writer, "read_row_cells", lambda *_args, **_kwargs: next(snapshots))
+    monkeypatch.setattr(
+        writer, "read_row_cells", lambda *_args, **_kwargs: next(snapshots)
+    )
 
     steps = writer.write_detail_line_by_screen(
         jab=object(),

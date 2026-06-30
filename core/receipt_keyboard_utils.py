@@ -72,11 +72,13 @@ class INPUT(ctypes.Structure):
     def mi(self, value):
         self.union.mi = value
 
+
 def is_stop_hotkey_pressed():
     if not hasattr(ctypes, "windll"):
         return False
     user32 = ctypes.windll.user32
     return bool(user32.GetAsyncKeyState(VK_SPACE) & 0x8000)
+
 
 def normalize_amount(value):
     if value is None:

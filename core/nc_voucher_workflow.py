@@ -723,9 +723,7 @@ class NCVoucherWorkflow:
                     self.voucher_window_title
                 )
             voucher_counts = [
-                table
-                for table in table_counts
-                if table.get("col_count") == 13
+                table for table in table_counts if table.get("col_count") == 13
             ]
             last_table_counts = voucher_counts
             target_count = next(

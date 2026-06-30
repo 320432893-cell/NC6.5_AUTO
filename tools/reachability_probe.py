@@ -29,9 +29,9 @@ def refs_in(node):
 
 
 def collect():
-    funcs = {}          # name -> [(file, lineno)]
-    edges = {}          # name -> set(被它引用的名字)
-    seeds = set()       # 入口直接引用的名字(模块级 + __main__ + 测试)
+    funcs = {}  # name -> [(file, lineno)]
+    edges = {}  # name -> set(被它引用的名字)
+    seeds = set()  # 入口直接引用的名字(模块级 + __main__ + 测试)
     for d in SCAN_DIRS:
         for path in sorted((ROOT / d).rglob("*.py")):
             if "archive/" in str(path) or "/.venv/" in str(path):
@@ -95,7 +95,9 @@ def main():
         reachable |= nxt
         frontier = nxt
     dead = sorted(set(funcs) - reachable)
-    print(f"扫描 {SCAN_DIRS} + tests/  |  函数/方法 {len(funcs)}  入口种子 {len(seeds & set(funcs))}")
+    print(
+        f"扫描 {SCAN_DIRS} + tests/  |  函数/方法 {len(funcs)}  入口种子 {len(seeds & set(funcs))}"
+    )
     print(f"从入口不可达(候选死码) {len(dead)} 个:\n")
     for name in dead:
         locs = ", ".join(f"{f}:{ln}" for f, ln in funcs[name])

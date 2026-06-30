@@ -337,7 +337,13 @@ def test_header_fill_writes_customer_before_date(monkeypatch):
         dynamic_index=2,
     )
 
-    assert [item[0] for item in calls] == ["财务组织", "客户", "单据日期", "币种", "结算方式"]
+    assert [item[0] for item in calls] == [
+        "财务组织",
+        "客户",
+        "单据日期",
+        "币种",
+        "结算方式",
+    ]
     assert calls[3] == ("币种", "USD", ["USD", "美元"])
 
 
@@ -1192,7 +1198,10 @@ def test_header_dynamic_field_short_semantic_failure_does_not_deep_scan(
         result["path_attempt"]["live_semantic_timeout"]
         == trial.HEADER_LIVE_SEMANTIC_FALLBACK_TIMEOUT
     )
-    assert result["path_attempt"]["dynamic_path_attempt"]["reason"] == "dynamic path missing"
+    assert (
+        result["path_attempt"]["dynamic_path_attempt"]["reason"]
+        == "dynamic path missing"
+    )
 
 
 def test_header_live_semantic_prefers_scoped_fast_before_deep_semantic(monkeypatch):
@@ -1218,8 +1227,9 @@ def test_header_live_semantic_prefers_scoped_fast_before_deep_semantic(monkeypat
     monkeypatch.setattr(
         trial,
         "find_receipt_header_field_by_semantic_label",
-        lambda *_args, **_kwargs: deep_calls.append(True)
-        or {"ok": False, "reason": "should not run"},
+        lambda *_args, **_kwargs: (
+            deep_calls.append(True) or {"ok": False, "reason": "should not run"}
+        ),
     )
 
     result = trial.find_receipt_header_field_by_live_semantic(
@@ -1430,7 +1440,9 @@ def test_finance_org_uses_control_name_without_write_path_in_formal_flow(monkeyp
     assert "dynamic_write_attempt" not in result
 
 
-def test_finance_org_formal_flow_prefers_control_name_even_if_write_path_exists(monkeypatch):
+def test_finance_org_formal_flow_prefers_control_name_even_if_write_path_exists(
+    monkeypatch,
+):
     legacy_result = {
         "ok": True,
         "method": "legacy-control-name-guarded-paste-enter",
@@ -1489,7 +1501,9 @@ def test_finance_org_header_scope_prefers_shallow_semantic(monkeypatch):
     assert result["preferred_dynamic_index"] is None
 
 
-def test_finance_org_header_scope_falls_back_to_deep_semantic_without_path_probe(monkeypatch):
+def test_finance_org_header_scope_falls_back_to_deep_semantic_without_path_probe(
+    monkeypatch,
+):
     calls = []
 
     def fake_semantic(_jab, _scope_hwnd, **kwargs):
@@ -1589,9 +1603,7 @@ def test_finance_org_shallow_semantic_canonical_label_path_uses_dynamic_index(
 
     assert result["ok"] is True
     assert result["dynamic_index"] == 2
-    assert result["label_path"] == (
-        "0.0.1.0.0.0.0.2.0.0.0.1.1.0.0.0.0.1.1.0"
-    )
+    assert result["label_path"] == ("0.0.1.0.0.0.0.2.0.0.0.1.1.0.0.0.0.1.1.0")
 
 
 def test_finance_org_formal_flow_only_uses_control_name(monkeypatch):
@@ -1828,11 +1840,13 @@ def test_finance_org_acceptance_uses_scope_probe_only_after_current_context_poll
     monkeypatch.setattr(
         trial,
         "probe_finance_org_accepted_text_in_scope",
-        lambda *_args, **_kwargs: calls.__setitem__(
-            "scope_probe",
-            calls["scope_probe"] + 1,
-        )
-        or {"ok": False, "accepted": False},
+        lambda *_args, **_kwargs: (
+            calls.__setitem__(
+                "scope_probe",
+                calls["scope_probe"] + 1,
+            )
+            or {"ok": False, "accepted": False}
+        ),
     )
 
     result = trial.confirm_finance_org_accepted(
@@ -1967,4 +1981,7 @@ def test_header_dynamic_field_blocks_when_path_fails(monkeypatch):
         result["path_attempt"]["live_semantic_timeout"]
         == trial.HEADER_LIVE_SEMANTIC_FALLBACK_TIMEOUT
     )
-    assert result["path_attempt"]["dynamic_path_attempt"]["reason"] == "dynamic path missing"
+    assert (
+        result["path_attempt"]["dynamic_path_attempt"]["reason"]
+        == "dynamic path missing"
+    )

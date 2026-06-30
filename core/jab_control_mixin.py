@@ -130,7 +130,6 @@ class JABControlMixin:
         except Exception as exc:
             log.warning(f"JAB 保存按钮 path 写入配置失败: {exc}")
 
-
     def normalize_amount(self, value):
         return normalize_amount(value)
 

@@ -636,4 +636,3 @@ def collect_labels_and_texts(
             require_showing=require_showing,
             depth=depth + 1,
         )
-

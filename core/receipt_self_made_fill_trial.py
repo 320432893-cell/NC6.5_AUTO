@@ -247,7 +247,9 @@ def fill_header(
                     dynamic_index,
                     label,
                 )
-                if inferred_template and not get_receipt_header_path_template(dynamic_index):
+                if inferred_template and not get_receipt_header_path_template(
+                    dynamic_index
+                ):
                     learned_header_template = inferred_template
                     set_receipt_header_path_template(dynamic_index, inferred_template)
                     result["header_path_template_learned"] = learned_header_template
@@ -569,9 +571,7 @@ def _find_finance_org_header_scope_by_shallow_semantic(
                     "scope_hwnd": scope_hwnd,
                     "mode": scan_mode,
                     "dynamic_index": dynamic_index,
-                    "dynamic_prefix": receipt_header_dynamic_prefix(
-                        dynamic_index
-                    ),
+                    "dynamic_prefix": receipt_header_dynamic_prefix(dynamic_index),
                     "finance_org_dynamic_index": dynamic_index,
                     "finance_org_dynamic_prefix": receipt_header_dynamic_prefix(
                         dynamic_index
@@ -1884,9 +1884,7 @@ def build_receipt_header_dynamic_label_path(dynamic_index, label):
         if path:
             return path
     if label == "财务组织":
-        return (
-            f"{HEADER_DYNAMIC_PREFIX_BASE}.{dynamic_index}.{FINANCE_ORG_COMPACT_LABEL_SUFFIX}"
-        )
+        return f"{HEADER_DYNAMIC_PREFIX_BASE}.{dynamic_index}.{FINANCE_ORG_COMPACT_LABEL_SUFFIX}"
     index = HEADER_FORM_TEXT_INDEXES.get(label)
     if index is None:
         return None
@@ -2373,7 +2371,9 @@ def backend_field_accepts(info, text, value=None, accepted_text=None):
     if not info:
         return False
     if accepted_text:
-        return any(context_contains(info, item) for item in accepted_text_values(accepted_text))
+        return any(
+            context_contains(info, item) for item in accepted_text_values(accepted_text)
+        )
     expected = str(value).strip() if value is not None else ""
     actual_text = str(text or "").strip()
     description = info.description.strip()

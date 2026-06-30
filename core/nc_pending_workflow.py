@@ -287,7 +287,6 @@ class NCPendingWorkflow:
                 "excel_rows": [match.item.row for match in saved_matches],
             }
 
-
     def ensure_full_pending_match(self, pending, matches, issues) -> None:
         if self.duplicate_match_policy == "skip":
             return

@@ -26,7 +26,7 @@ def _suffix_from_path(path, dynamic_index):
     prefix = f"{receipt_header_dynamic_prefix(dynamic_index)}."
     if not path or dynamic_index is None or not str(path).startswith(prefix):
         return None
-    return str(path)[len(prefix):]
+    return str(path)[len(prefix) :]
 
 
 def main():
@@ -61,8 +61,13 @@ def main():
     finally:
         jab.close()
 
-    output_path = logs_dir() / f"receipt_business_memo_probe_{time.strftime('%Y%m%d_%H%M%S')}.json"
-    output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    output_path = (
+        logs_dir()
+        / f"receipt_business_memo_probe_{time.strftime('%Y%m%d_%H%M%S')}.json"
+    )
+    output_path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:

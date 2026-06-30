@@ -247,7 +247,9 @@ def validate_main_row_exchange_rate(cells, currency, amount, row_index=0):
         }
     if normalized_currency == "USD":
         ok = Decimal("6") < actual_decimal < Decimal("10")
-        reason = None if ok else f"美元汇率不在有效区间：{actual!r}，必须大于 6 且小于 10"
+        reason = (
+            None if ok else f"美元汇率不在有效区间：{actual!r}，必须大于 6 且小于 10"
+        )
     elif normalized_currency == "CNY":
         ok = actual_decimal == Decimal("1")
         reason = None if ok else f"人民币汇率必须等于 1：{actual!r}"
@@ -269,6 +271,7 @@ def validate_main_row_exchange_rate(cells, currency, amount, row_index=0):
         "reason": reason,
         "policy": "NC 自动带出汇率，自动化只校验不写入；保存前按币种校验汇率",
     }
+
 
 def field_expected_value(field, business):
     value = str(business[field["value_key"]])

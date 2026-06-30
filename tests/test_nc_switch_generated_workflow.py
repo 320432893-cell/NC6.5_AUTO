@@ -57,7 +57,9 @@ def test_open_query_hotkey_retries_until_query_window(monkeypatch):
             return 12345
         return None
 
-    monkeypatch.setattr("core.nc_switch_generated_workflow.time.monotonic", fake_monotonic)
+    monkeypatch.setattr(
+        "core.nc_switch_generated_workflow.time.monotonic", fake_monotonic
+    )
     monkeypatch.setattr(workflow, "find_query_window", fake_find_query_window)
 
     query_hwnd = workflow.open_query_with_hotkey_until_window(
@@ -93,7 +95,9 @@ def test_open_query_hotkey_timeout_is_capped_at_two_seconds(monkeypatch):
         current_time["value"] += timeout
         return None
 
-    monkeypatch.setattr("core.nc_switch_generated_workflow.time.monotonic", fake_monotonic)
+    monkeypatch.setattr(
+        "core.nc_switch_generated_workflow.time.monotonic", fake_monotonic
+    )
     monkeypatch.setattr(workflow, "find_query_window", fake_find_query_window)
 
     query_hwnd = workflow.open_query_with_hotkey_until_window(

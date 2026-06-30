@@ -14,8 +14,8 @@
 
 - 配置编辑：`config.json` 的 `receipt_entry.schema_version=2`，尤其是 `finance_organizations`、`banks`、`accounts`、账户候选值、录入策略和明细/手续费策略。
 - 本地预检：`core/receipt_entry.py`、`core/receipt_plan.py`、`core/receipt_plan_issue.py`、`core/receipt_sheet.py` 和 `tools/receipt_entry_check.py`。
-- 完整录入测试：`tools/receipt_full_flow_entry.py` 是正式业务入口（编排层）；其按职责拆分的子模块为 `tools/receipt_counterparty.py`（往来对象）、`tools/receipt_save_cancel.py`（保存/取消熔断）、`tools/receipt_report.py`（结果汇总/摘要）、`tools/receipt_locator_cache.py`（定位缓存）、`tools/receipt_row_stages.py`（表头 scope 解析）。现场测试只直接用 `tools/receipt_full_flow_save_query_write_test.py`，在同一个文件内选择保存、不保存、故障恢复或 verify 审查。
-- 查询与后验：`tools/receipt_query_fill.py` 及拆分出的 `tools/receipt_query_*` 模块。
+- 完整录入测试：`tools/receipt_full_flow_entry.py` 是正式业务入口（编排层）；其按职责拆分的子模块为 `core/receipt_counterparty.py`（往来对象）、`core/receipt_save_cancel.py`（保存/取消熔断）、`core/receipt_report.py`（结果汇总/摘要）、`core/receipt_locator_cache.py`（定位缓存）、`core/receipt_row_stages.py`（表头 scope 解析）。现场测试只直接用 `tools/receipt_full_flow_save_query_write_test.py`，在同一个文件内选择保存、不保存、故障恢复或 verify 审查。
+- 查询与后验：查询逻辑库是 `core/receipt_query_fill.py` 及拆分出的 `core/receipt_query_*` 模块；可执行 CLI 入口是 `tools/receipt_query_cli.py`。
 - JAB 底层边界：`core/jab_operator.py`、`core/jab_window.py`、`core/jab_probe.py`、`core/jab_environment.py`、`core/jab_*` mixin/helper；全局键盘、前台窗口和 pyautogui 只能留在这里。`jab_probe`/`jab_environment` 是最底层 JAB 原语，住 core（`.importlinter` 守 `core 不反依赖 tools`）。
 - 工程检查：`tools/check.py`、`tools/validate_config.py`、`tools/check_architecture.py` 和对应测试。
 
@@ -72,13 +72,13 @@
 辅助探测工具：
 
 - `core/jab_probe.py`（JAB 原语，2026-06-27 从 tools/ 下沉 core/）
-- `tools/receipt_body_table_locator.py`
+- `core/receipt_body_table_locator.py`
 - `tools/receipt_full_flow_entry.py`：收款单完整流程正式业务入口，消费 `ReceiptPlanRow`。桌面正式入口默认传 `--save --query-after-save`，底层 CLI 的 `--save` 是真实保存安全闸。
 - `tools/receipt_full_flow_save_query_write_test.py`：现场测试入口，一个文件内选择完整流程保存、不保存、故障恢复诊断或 verify 审查；默认保存、后验查询并写 Sheet2 本批结果。
 - `tools/receipt_detail_entry.py`：收款单明细主行/手续费行正式 Python 入口；供脚本化测试明细写入能力，不保存、不暂存。
 - `tools/receipt_entry_check.py`
-- `tools/receipt_query_fill.py`
-- `tools/receipt_self_made_fill_trial.py`
+- `tools/receipt_query_cli.py`：收款单查询/后验 CLI 入口（逻辑库在 `core/receipt_query_fill.py`）。
+- `core/receipt_self_made_fill_trial.py`：开单/表头试填逻辑库，被完整流程 import，非独立可执行入口。
 - `tools/close_awt_popup_residue.py`
 - `tools/receipt_business_memo_probe.py`：收款单表头 `商务领款备忘` path 现场探测，只作诊断。
 - `tools/receipt_finance_org_path_probe.py`：财务组织 label path 现场探测，只作诊断。
@@ -86,7 +86,7 @@
 - `tools/query_jab.bat`
 - `tools/run_jab_probe.bat`
 
-仍存在的 `tools/tmp_*` 只作为现场探测、复盘或窄场景诊断参考，不是正式批量入口：`tmp_receipt_tables_probe.py`、`tmp_receipt_detail_main_line_run.py`。其中 `tmp_receipt_detail_main_line_run.py` 只是兼容壳，会转发到正式入口 `tools/receipt_detail_entry.py`；旧表头账户参照探针、明细单元格老探针、明细 bounds/click/layout 探针、JAB 恢复探针和 header scope 探针已移入 `tools/archive/`。这些探针只能用于诊断 JAB 返回异常、鼠标坐标风险或历史问题复盘，不得被正式流程 import，也不得作为恢复鼠标/bounds 录入方案的依据。
+`tmp_*` 临时脚本已清理：`tmp_receipt_tables_probe.py` 已转正为 `tools/receipt_tables_probe.py`，`tmp_receipt_detail_main_line_run.py` 已删除（明细主行/手续费能力已落入正式入口 `tools/receipt_detail_entry.py`）。旧表头账户参照探针、明细单元格老探针、明细 bounds/click/layout 探针、JAB 恢复探针和 header scope 探针已移入 `tools/archive/`。这些 archive 探针只能用于诊断 JAB 返回异常、鼠标坐标风险或历史问题复盘，不得被正式流程 import，也不得作为恢复鼠标/bounds 录入方案的依据。
 
 历史探针和人工现场测试入口已收口到 `tools/archive/`。这些文件只作复盘证据，不是测试人员默认入口，也不能被正式流程 import；需要重新启用时先移回合适目录并补检查闭包。
 
@@ -213,32 +213,32 @@ cd /mnt/h/python脚本/.venv/nc_auto_v2
 收款单查询窗口只填条件、不点确定；默认会先在收款单录入页按 F3 打开查询条件窗口。正式入口用 `pyautogui.press("f3")` 重试，直到 Win32 检测到可见 `title=查询条件`、`class=SunAwtDialog`；现场不要改回只发裸 SendInput F3：
 
 ```bash
-/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_query_fill.py --org-code A001 --date-from 2026-05-01 --date-to 2026-06-02
+/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_query_cli.py --org-code A001 --date-from 2026-05-01 --date-to 2026-06-02
 ```
 
 收款单查询后读取可见结果表：
 
 ```bash
-/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_query_fill.py --org-code A001 --date-from 2026-05-01 --date-to 2026-06-02 --confirm --read-results
+/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_query_cli.py --org-code A001 --date-from 2026-05-01 --date-to 2026-06-02 --confirm --read-results
 ```
 
 收款单查询后只读匹配预演；查询后会把每页条数改为 500，并按分页读取。结果页 ready 优先看结果表 path，路径策略是模块动态前缀 `0.0.1.0.0.0.0.{index}` + 结果区固定后缀，再拼结果表后缀 `0.0.0`、页码 label `1.6`、每页行数 `1.7`、下一页 `1.2`。同一轮查询会缓存结果表 path、分页 hwnd 和分页控件 path；如果每页已经是 500，不再写入和 Enter。输出 JSON 包含 `page_report`、金额范围、名称样本和重复原因；日期只用于查询范围，不参与匹配诊断。注意：这是历史/诊断工具，不是当前新主线的录入前筛选步骤：
 
 ```bash
-/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_query_fill.py --org-code A001 --date-from 2026-03-31 --date-to 2026-05-31 --confirm --dry-run-match --max-rows 600 --max-cols 140
+/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_query_cli.py --org-code A001 --date-from 2026-03-31 --date-to 2026-05-31 --confirm --dry-run-match --max-rows 600 --max-cols 140
 ```
 
 收款单查询 dry-run 只做只读匹配诊断，不写回 Excel 主表状态列。唯一匹配、未命中、重复和人工确认行会在 JSON `match_summary` 中报告；`金额和对手方均未匹配` 是诊断原因口径。当前用户口径是假定交给机器的行均未做过，录入完成后再按主体查询 NC 做后验验证：
 
 ```bash
-/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_query_fill.py --org-code A001 --date-from 2026-03-31 --date-to 2026-05-31 --confirm --dry-run-match --max-rows 600 --max-cols 140
+/mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_query_cli.py --org-code A001 --date-from 2026-03-31 --date-to 2026-05-31 --confirm --dry-run-match --max-rows 600 --max-cols 140
 ```
 
 写回前必须先确认当前 NC 页面是目标 `收款单录入`。工具会做页面和结果表守卫；如果结果表的匹配名称列疑似读成 `收款单` 单据类型列，会拒绝继续。
 
 `收款财务组织` 当前按字段 label 聚焦右侧输入框后直接写组织编码，例如 `A001`、`A006`。不要点输入框右侧未知按钮；不要为了提交该输入框额外按 Enter，除非现场已确认该主体必须这样做。写入是否有效以后置查询结果和 Excel 主体匹配数为准，不能只看 JAB 文本读回。
 
-收款单明细测试直接调用 `tools/receipt_detail_entry.py`。它不保存、不暂存，只定位当前自制录入页的 25 列明细表，并调用正式 `tools/receipt_detail_*` 模块。运行前必须把 NC 停在【收款单自制录入】界面，且没有参照窗口或提示框遮挡：
+收款单明细测试直接调用 `tools/receipt_detail_entry.py`。它不保存、不暂存，只定位当前自制录入页的 25 列明细表，并调用正式 `core/receipt_detail_*` 模块。运行前必须把 NC 停在【收款单自制录入】界面，且没有参照窗口或提示框遮挡：
 
 ```bash
 /mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/receipt_detail_entry.py
@@ -268,13 +268,13 @@ cd /mnt/h/python脚本/.venv/nc_auto_v2
 | `tools/receipt_entry_check.py --write` | 是 | 是，重写 Sheet2 当前计划结果区 | 否 | 否 | 收款单计划结果写入 |
 | `tools/receipt_full_flow_entry.py` | 是 | 写本批 Sheet2 结果 | 是 | 桌面正式默认保存，CLI 需 `--save` | 收款单完整流程正式入口 |
 | `tools/receipt_full_flow_save_query_write_test.py` | 是 | 默认保存后写 Sheet2 本批结果 | 是 | 可选保存 | 现场测试：保存/不保存/故障恢复/verify 审查 |
-| `tools/receipt_query_fill.py --confirm --read-results` | 是 | 否 | 是 | 否 | 收款单查询/抽取组件 |
-| `tools/receipt_query_fill.py --dry-run-match` | 是 | 否 | 是 | 否 | 历史查重/诊断入口，只读 |
-| `tools/receipt_self_made_fill_trial.py` | 是 | 否 | 是 | 默认否 | 单行/分阶段现场试填 |
+| `tools/receipt_query_cli.py --confirm --read-results` | 是 | 否 | 是 | 否 | 收款单查询/抽取组件 |
+| `tools/receipt_query_cli.py --dry-run-match` | 是 | 否 | 是 | 否 | 历史查重/诊断入口，只读 |
+| `core/receipt_self_made_fill_trial.py` | 是 | 否 | 是 | 默认否 | 单行/分阶段现场试填 |
 | `tools/receipt_detail_entry.py` | 否 | 否 | 是，写当前明细表 | 否 | 明细正式测试入口 |
 | `tools/tmp_*` | 视脚本而定 | 视脚本而定 | 视脚本而定 | 禁止当正式入口 | 探测/复盘参考 |
 
-收款单完整流程正式入口已经可以消费 `ReceiptPlanRow` 执行真实保存和后验查询。桌面正式入口默认保存、默认后验查询、默认写 Sheet2；不保存只作为演练/测试功能。本主线不写 Sheet1 状态列；`tools/receipt_query_fill.py --dry-run-match` 只保留为只读历史查重/诊断入口。
+收款单完整流程正式入口已经可以消费 `ReceiptPlanRow` 执行真实保存和后验查询。桌面正式入口默认保存、默认后验查询、默认写 Sheet2；不保存只作为演练/测试功能。本主线不写 Sheet1 状态列；`tools/receipt_query_cli.py --dry-run-match` 只保留为只读历史查重/诊断入口。
 
 ## NC 现场操作纪律
 
@@ -302,7 +302,7 @@ NC 表头层级很深，JAB 默认搜索深度必须保持 `max_depth=50`。`25`
 
 `新增 -> 自制` 的成功标准是上方编辑态按钮出现，优先看 `保存(Ctrl+S)`，`暂存` 或 `取消(Ctrl+Q)` 任一出现也可证明已进入录入态；只看到 JAB action 返回成功或菜单项被点击，不算进入自制录入态。25 列明细表只作为填明细前的单独校验，不作为开单成功条件。完整流程复用同一个主 JAB 完成开单、表头、明细和保存；`自制` 后不得再起子进程或重新启动主 JAB 造成空等。
 
-`tools/receipt_self_made_fill_trial.py` 默认只负责开单和表头阶段；表头字段主路是“当前 canvas + `财务组织(O)` 锚点 scope + 语义定位学习/复用”，不再把固定后缀 path 当作主路。完整流程开单成功后立即写表头首字段；下方表格 path 预热只在财务组织写入成功后后台启动，不得阻塞财务组织写入。明细填入默认禁用，必须显式传 `--fill-detail` 才会尝试进入明细；明细正式入口统一调用 `tools/receipt_detail_*`，使用受保护前台键盘和剪贴板粘贴，不能回退到坐标或无守卫 typing。
+`core/receipt_self_made_fill_trial.py` 默认只负责开单和表头阶段；表头字段主路是“当前 canvas + `财务组织(O)` 锚点 scope + 语义定位学习/复用”，不再把固定后缀 path 当作主路。完整流程开单成功后立即写表头首字段；下方表格 path 预热只在财务组织写入成功后后台启动，不得阻塞财务组织写入。明细填入默认禁用，必须显式传 `--fill-detail` 才会尝试进入明细；明细正式入口统一调用 `core/receipt_detail_*`，使用受保护前台键盘和剪贴板粘贴，不能回退到坐标或无守卫 typing。
 
 可取消 Java 弹窗恢复不是正常路径前置扫描。完整流程只在某个动作失败、异常、前台窗口不匹配、JAB 写入失败、剪贴板失败或键盘写入失败后，才检查是否出现 `SunAwtDialog` 且带 `取消/Alt+C` 控件的可恢复弹窗；命中后先聚焦弹窗，再发送 `Alt+C`，随后只重试刚才失败的当前动作一次。
 
@@ -429,7 +429,7 @@ C:\Users\Queclink\Desktop\6.1凭证.xlsx
 
 收款单自制录入明细表：
 
-- 当前用 `tools/receipt_body_table_locator.py` 按 25 列 body table 特征定位，空白录入态通常是 1 行 25 列，旁边另有独立的合计表。
+- 当前用 `core/receipt_body_table_locator.py` 按 25 列 body table 特征定位，空白录入态通常是 1 行 25 列，旁边另有独立的合计表。
 - JAB selection API 的 child index 规则是 `row * 25 + col`。
 - 已探测关键列位按 0 基记录：`col=1` 收款业务类型，`col=3` 币种，`col=4` 收款银行账户，`col=5` 科目，`col=7` 金额/贷方原币金额，`col=11` 结算方式。当前业务口径不写明细币种列，币种只在表头写 `USD`/`CNY` 后回车。
 - 选中表格单元格不等于键盘焦点进入编辑器。正式明细写入必须先确认当前前台窗口属于本次定位到的 NC 表格，再发送方向键、剪贴板粘贴和 Enter；禁止无前台守卫盲填。

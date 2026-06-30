@@ -204,7 +204,11 @@ def append_group_summary_row(ws, columns, row_number, organization_name, results
     for column in range(1, max_column + 1):
         cell = ws.cell(row=row_number, column=column)
         apply_summary_style(cell)
-    ws.cell(row=row_number, column=columns["原Sheet1行号"], value=f"主体合计：{organization_name}")
+    ws.cell(
+        row=row_number,
+        column=columns["原Sheet1行号"],
+        value=f"主体合计：{organization_name}",
+    )
     ws.cell(row=row_number, column=columns["执行主体名称"], value=f"{row_count} 条")
     for header, value in totals.items():
         ws.cell(row=row_number, column=columns[header], value=str(value))

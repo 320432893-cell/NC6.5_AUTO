@@ -60,8 +60,11 @@ def gate_importlinter():
     if not cmd:
         return "skip(无 lint-imports)"
     r = run(cmd)
-    return "🟢 kept" if "broken" in r.stdout and " 0 broken" in r.stdout else (
-        "🔴 broken" if "broken" in r.stdout else "skip(无契约)")
+    return (
+        "🟢 kept"
+        if "broken" in r.stdout and " 0 broken" in r.stdout
+        else ("🔴 broken" if "broken" in r.stdout else "skip(无契约)")
+    )
 
 
 def gate_vulture():
@@ -79,11 +82,24 @@ def gate_vulture():
 def drift():
     wl = 0
     if WHITELIST.exists():
-        wl = sum(1 for ln in WHITELIST.read_text(encoding="utf-8").splitlines()
-                 if "# unused" in ln)
-    skips = run(["git", "grep", "-rEc",
-                 r"@pytest.mark.skip|pytest.mark.xfail|skipif", "--", "tests/"])
-    skip_n = sum(int(ln.split(":")[-1]) for ln in skips.stdout.splitlines() if ":" in ln)
+        wl = sum(
+            1
+            for ln in WHITELIST.read_text(encoding="utf-8").splitlines()
+            if "# unused" in ln
+        )
+    skips = run(
+        [
+            "git",
+            "grep",
+            "-rEc",
+            r"@pytest.mark.skip|pytest.mark.xfail|skipif",
+            "--",
+            "tests/",
+        ]
+    )
+    skip_n = sum(
+        int(ln.split(":")[-1]) for ln in skips.stdout.splitlines() if ":" in ln
+    )
     over = []
     for d in ("core", "tools"):
         for f in sorted((ROOT / d).glob("*.py")):
@@ -97,18 +113,40 @@ def drift():
 def fan_in(modnames):
     rows = []
     for m in modnames:
-        r = run(["git", "grep", "-rl", "-E",
-                 rf"(from (core|tools)\.{m} import|import (core|tools)\.{m}\b)",
-                 "--", "core", "tools"])
-        files = [x for x in r.stdout.splitlines() if "archive/" not in x and f"/{m}.py" not in x]
+        r = run(
+            [
+                "git",
+                "grep",
+                "-rl",
+                "-E",
+                rf"(from (core|tools)\.{m} import|import (core|tools)\.{m}\b)",
+                "--",
+                "core",
+                "tools",
+            ]
+        )
+        files = [
+            x
+            for x in r.stdout.splitlines()
+            if "archive/" not in x and f"/{m}.py" not in x
+        ]
         rows.append((len(files), m))
     rows.sort(reverse=True)
     return rows
 
 
 def git_age(symbol, path):
-    r = run(["git", "log", "--diff-filter=A", f"-S def {symbol}",
-             "--format=%as", "--", path])
+    r = run(
+        [
+            "git",
+            "log",
+            "--diff-filter=A",
+            f"-S def {symbol}",
+            "--format=%as",
+            "--",
+            path,
+        ]
+    )
     dates = r.stdout.split()
     return dates[-1] if dates else "?"
 
@@ -129,7 +167,9 @@ def main():
 
     L = []
     L.append(f"# 每日体检报告 · {ts}")
-    L.append("\n> 机械引擎产出(只读);判断/动手见 rules/review/daily.md。**不代表架构无恙,只证 L4/L5。**")
+    L.append(
+        "\n> 机械引擎产出(只读);判断/动手见 rules/review/daily.md。**不代表架构无恙,只证 L4/L5。**"
+    )
     L.append("\n## 机器闸")
     L.append("| 闸 | 状态 |\n|---|---|")
     L.append(f"| ruff(正式码) | {ruff_s} |")
@@ -142,7 +182,9 @@ def main():
     L.append("\n## 漂移仪表")
     L.append(f"- 白名单条目: {wl}")
     L.append(f"- skip/xfail: {skip_n}  {'🔴' if skip_n else '🟢'}")
-    L.append(f"- 超 {LINE_RATCHET} 行正式文件: {len(over)} 个  {'🔴' if over else '🟢'}")
+    L.append(
+        f"- 超 {LINE_RATCHET} 行正式文件: {len(over)} 个  {'🔴' if over else '🟢'}"
+    )
     for n, f in over[:15]:
         L.append(f"    - {n}  {f}")
     L.append("\n## 承重扇入(本次改动模块,fan-in≥1,top12)")
@@ -171,10 +213,14 @@ def main():
 
     report.write_text("\n".join(L) + "\n", encoding="utf-8")
     with DRIFT_LOG.open("a", encoding="utf-8") as fh:
-        fh.write(f"{stamp}\twhitelist={wl}\tskip={skip_n}\tover{LINE_RATCHET}={len(over)}\n")
+        fh.write(
+            f"{stamp}\twhitelist={wl}\tskip={skip_n}\tover{LINE_RATCHET}={len(over)}\n"
+        )
     print(f"报告已写 {report.relative_to(ROOT)}")
     print(f"闸: ruff {ruff_s} | import-linter {il_s} | vulture {vul_s}")
-    print(f"漂移: 白名单{wl} skip{skip_n} 超{LINE_RATCHET}行{len(over)}个(趋势见 {DRIFT_LOG.relative_to(ROOT)})")
+    print(
+        f"漂移: 白名单{wl} skip{skip_n} 超{LINE_RATCHET}行{len(over)}个(趋势见 {DRIFT_LOG.relative_to(ROOT)})"
+    )
 
 
 if __name__ == "__main__":

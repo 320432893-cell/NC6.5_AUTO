@@ -125,9 +125,8 @@ class ReceiptEntryConfig:
 
     @property
     def excel_text_field_mappings(self):
-        mappings = (
-            self.receipt_cfg.get("excel_text_field_mappings")
-            or list(DEFAULT_EXCEL_TEXT_FIELD_MAPPINGS)
+        mappings = self.receipt_cfg.get("excel_text_field_mappings") or list(
+            DEFAULT_EXCEL_TEXT_FIELD_MAPPINGS
         )
         result = []
         if not isinstance(mappings, list):

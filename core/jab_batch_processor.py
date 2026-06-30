@@ -130,7 +130,9 @@ class JABBatchProcessor:
     def generate_and_collect_saved(self, *args, **kwargs):
         return self.pending_workflow.generate_and_collect_saved(*args, **kwargs)
 
-    def generate_and_backfill(self, limit=None, max_batches=None, start_row=None, end_row=None):
+    def generate_and_backfill(
+        self, limit=None, max_batches=None, start_row=None, end_row=None
+    ):
         result = self.generate_and_collect_saved(
             limit=limit,
             max_batches=max_batches,
@@ -181,7 +183,9 @@ class JABBatchProcessor:
         return self.state_detector.require_page_state(expected, items, command)
 
     def wait_for_page_state(self, expected, items=None, command="", timeout=None):
-        return self.state_detector.wait_for_page_state(expected, items, command, timeout)
+        return self.state_detector.wait_for_page_state(
+            expected, items, command, timeout
+        )
 
     def detect_page_state(self, items=None):
         return self.state_detector.detect_page_state(items)

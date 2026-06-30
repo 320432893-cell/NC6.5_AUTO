@@ -10,7 +10,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 FROZEN_BASE = Path(getattr(sys, "_MEIPASS", ROOT))
-OUTPUT_BASE = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else ROOT
+OUTPUT_BASE = (
+    Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else ROOT
+)
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -119,7 +121,9 @@ def diagnose_field(jab, label, dynamic_index, scope_hwnd):
     )
     semantic_snapshot = context_snapshot(jab, semantic_label)
     live_path = live_found.get("path") if live_found.get("ok") else None
-    path_matches_live = bool(path_found.get("ok") and live_path == path_found.get("path"))
+    path_matches_live = bool(
+        path_found.get("ok") and live_path == path_found.get("path")
+    )
     return {
         "label": label,
         "expected_text_path": expected_text_path,
@@ -158,11 +162,20 @@ def visible_nc_windows(jab):
     rows = []
     fg = foreground_info()
     for hwnd, title, class_name, pid, visible in enum_windows(include_children=True):
-        if class_name not in {"YonyouUWnd", "SunAwtFrame", "SunAwtCanvas", "SunAwtWindow"}:
+        if class_name not in {
+            "YonyouUWnd",
+            "SunAwtFrame",
+            "SunAwtCanvas",
+            "SunAwtWindow",
+        }:
             continue
         java = False
         try:
-            java = bool(jab.dll.isJavaWindow(hwnd)) if class_name.startswith("SunAwt") else False
+            java = (
+                bool(jab.dll.isJavaWindow(hwnd))
+                if class_name.startswith("SunAwt")
+                else False
+            )
         except Exception:
             java = False
         rows.append(
@@ -174,7 +187,9 @@ def visible_nc_windows(jab):
                 "title": title,
                 "visible": bool(visible),
                 "is_java": java,
-                "is_foreground_root": bool(fg.get("root") and root_hwnd(hwnd) == fg.get("root")),
+                "is_foreground_root": bool(
+                    fg.get("root") and root_hwnd(hwnd) == fg.get("root")
+                ),
             }
         )
     return rows
@@ -197,8 +212,10 @@ def diagnose(config):
         jab.ensure_started()
         report["jab_loaded_path"] = getattr(jab, "loaded_path", None)
         report["jab_health"] = check_jab_ready(jab)
-        query_cfg = (config.get("receipt_query") or {})
-        report["receipt_parent_guard"] = guard_receipt_parent_page(jab, config, query_cfg)
+        query_cfg = config.get("receipt_query") or {}
+        report["receipt_parent_guard"] = guard_receipt_parent_page(
+            jab, config, query_cfg
+        )
         report["foreground"] = foreground_info()
         report["windows"]["visible_nc"] = visible_nc_windows(jab)
         scope_reports = []
@@ -269,7 +286,10 @@ def conclude(report):
         for field in scope.get("fields") or []:
             risk = field.get("risk") or {}
             if not risk.get("ok"):
-                issues.extend(f"{field.get('label')}: {reason}" for reason in risk.get("reasons") or [])
+                issues.extend(
+                    f"{field.get('label')}: {reason}"
+                    for reason in risk.get("reasons") or []
+                )
     return {
         "ok": not issues,
         "issues": issues,
@@ -295,7 +315,9 @@ def write_outputs(report):
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     json_path = logs / f"receipt_header_diagnose_{stamp}.json"
     txt_path = logs / f"receipt_header_diagnose_{stamp}.txt"
-    json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    json_path.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     lines = [
         "NC 收款单表头诊断报告",
         f"生成时间: {report.get('generated_at')}",
@@ -328,7 +350,13 @@ def main(argv=None):
     report = diagnose(config)
     json_path, txt_path = write_outputs(report)
     if args.json:
-        print(json.dumps({**report, "json_path": str(json_path), "txt_path": str(txt_path)}, ensure_ascii=False, indent=2))
+        print(
+            json.dumps(
+                {**report, "json_path": str(json_path), "txt_path": str(txt_path)},
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
     else:
         print(f"诊断完成: {txt_path}")
         print(f"JSON 明细: {json_path}")

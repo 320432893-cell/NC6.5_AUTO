@@ -21,7 +21,7 @@ def py_files():
 
 
 def check():
-    hard = []   # 硬违规:跨模块 import 单下划线私有名
+    hard = []  # 硬违规:跨模块 import 单下划线私有名
     notes = []  # 提示:状态命名(供 review/grep)
     for f in py_files():
         rel = f.relative_to(ROOT)
@@ -31,16 +31,23 @@ def check():
             continue
         for node in ast.walk(tree):
             # 硬:from core/tools.X import _private(单下划线,非 dunder)
-            if isinstance(node, ast.ImportFrom) and node.module and \
-                    node.module.split(".")[0] in DIRS:
+            if (
+                isinstance(node, ast.ImportFrom)
+                and node.module
+                and node.module.split(".")[0] in DIRS
+            ):
                 for a in node.names:
                     if re.match(r"_[^_]", a.name):
-                        hard.append(f"{rel}:{node.lineno}  跨模块 import 私有 `{a.name}`"
-                                    f"(来自 {node.module})——私有不应外露")
+                        hard.append(
+                            f"{rel}:{node.lineno}  跨模块 import 私有 `{a.name}`"
+                            f"(来自 {node.module})——私有不应外露"
+                        )
             # 提示:状态命名的顶层 def/class
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 if node.name.startswith(STATUS_PREFIX):
-                    notes.append(f"{rel}:{node.lineno}  {node.name}  (状态命名,grep 可查)")
+                    notes.append(
+                        f"{rel}:{node.lineno}  {node.name}  (状态命名,grep 可查)"
+                    )
     return hard, notes
 
 

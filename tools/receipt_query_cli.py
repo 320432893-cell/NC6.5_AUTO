@@ -92,9 +92,7 @@ def main():
         recorder.set_stage(
             "打开查询",
             step_index=1,
-            total_steps=1
-            + int(confirm)
-            + int(read_results or dry_run_match)
+            total_steps=1 + int(confirm) + int(read_results or dry_run_match),
         )
         try:
             result = run_fill_receipt_query(

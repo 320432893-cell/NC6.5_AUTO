@@ -152,7 +152,9 @@ def test_generate_front_prefers_tracked_popup_and_cleans_it(monkeypatch):
         "click_control",
         lambda name, **kwargs: calls.append(("click_control", name, kwargs)) or True,
     )
-    monkeypatch.setattr(jab_popup, "collect_visible_popup_windows", lambda jab: ["before"])
+    monkeypatch.setattr(
+        jab_popup, "collect_visible_popup_windows", lambda jab: ["before"]
+    )
     monkeypatch.setattr(
         jab_popup,
         "wait_for_new_popup_with_menu_item",
@@ -165,10 +167,10 @@ def test_generate_front_prefers_tracked_popup_and_cleans_it(monkeypatch):
     monkeypatch.setattr(
         jab_popup,
         "click_menu_item_in_popup",
-        lambda jab, windows, menu_name, popup_hwnd=None: calls.append(
-            ("popup_click", windows, menu_name, popup_hwnd)
-        )
-        or {"ok": True},
+        lambda jab, windows, menu_name, popup_hwnd=None: (
+            calls.append(("popup_click", windows, menu_name, popup_hwnd))
+            or {"ok": True}
+        ),
     )
     monkeypatch.setattr(
         jab_popup,

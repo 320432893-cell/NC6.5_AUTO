@@ -1435,7 +1435,9 @@ def test_dry_run_match_report_writes_specific_statuses(tmp_path):
     assert report["match_summary"]["exception_rows"] == [4, 5]
     assert report["match_summary"]["skipped_duplicate_rows"] == [4]
     assert report["match_summary"]["planned"] == 4
-    assert report["variants"][0]["issue_samples"][2]["reason"] == format_receipt_name_amount_mismatch_reason(
+    assert report["variants"][0]["issue_samples"][2][
+        "reason"
+    ] == format_receipt_name_amount_mismatch_reason(
         excel_amount=Decimal("400.00"),
         excel_name="Christoff Pretorius",
         nc_amounts=["450.00"],

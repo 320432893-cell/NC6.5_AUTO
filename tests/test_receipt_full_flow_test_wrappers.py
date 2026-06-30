@@ -86,7 +86,12 @@ def test_wrapper_keeps_explicit_config(monkeypatch):
         lambda: {"ok": True},
     )
 
-    assert save_query_write.main(["--config", "custom.json", "--start-row", "811", "--limit", "1"]) == 0
+    assert (
+        save_query_write.main(
+            ["--config", "custom.json", "--start-row", "811", "--limit", "1"]
+        )
+        == 0
+    )
     assert calls == [
         [
             "--config",
@@ -354,7 +359,9 @@ def test_with_default_excel_path_finds_project_file(tmp_path, monkeypatch):
     excel.parent.mkdir()
     excel.write_bytes(b"placeholder")
 
-    assert with_default_excel_path(["--start-row", "811", "--limit", "1"], excel.parent) == [
+    assert with_default_excel_path(
+        ["--start-row", "811", "--limit", "1"], excel.parent
+    ) == [
         "--start-row",
         "811",
         "--limit",

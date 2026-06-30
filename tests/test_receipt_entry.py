@@ -552,10 +552,13 @@ def test_counterparty_normalization_ignores_prefix_and_punctuation():
     assert normalize_counterparty("1/AZUGA INC. AZUGA INC - OPERATING") == (
         "AZUGAINCAZUGAINCOPERATING"
     )
-    assert counterparty_similarity(
-        "TECNOMOTUM SOCIEDAD ANONIMA PROMOT+",
-        "TECNOMOTUM SOCIEDAD ANONIMA PROMOTO",
-    ) == 98
+    assert (
+        counterparty_similarity(
+            "TECNOMOTUM SOCIEDAD ANONIMA PROMOT+",
+            "TECNOMOTUM SOCIEDAD ANONIMA PROMOTO",
+        )
+        == 98
+    )
     assert names_match(
         "TECNOMOTUM SOCIEDAD ANONIMA PROMOT+",
         "TECNOMOTUM SOCIEDAD ANONIMA PROMOTO",

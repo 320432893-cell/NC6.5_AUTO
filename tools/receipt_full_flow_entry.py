@@ -380,10 +380,16 @@ def main(argv=None):
         report["post_query_requested"] = bool(args.query_after_save)
         report["post_query_executed"] = False
         if args.query_after_save and report["rows"] and exit_code == 0:
-            recorder.set_stage("后验查询", step_index=len(report["rows"]), total_steps=len(selected_rows))
+            recorder.set_stage(
+                "后验查询",
+                step_index=len(report["rows"]),
+                total_steps=len(selected_rows),
+            )
             recorder.event(
                 "post-query-start",
-                saved_rows=[row.get("excel_row") for row in report["rows"] if row.get("ok")],
+                saved_rows=[
+                    row.get("excel_row") for row in report["rows"] if row.get("ok")
+                ],
             )
             batch_results, post_query = run_post_save_batch_query(
                 config,
@@ -528,7 +534,8 @@ def build_header_verify_expectations(row, business, extra_text_fields):
         },
         "币种": {
             "mode": "currency",
-            "expected": business.get("header_currency_code") or business.get("currency"),
+            "expected": business.get("header_currency_code")
+            or business.get("currency"),
             "source": "excel.currency_column",
         },
         "结算方式": {
@@ -625,7 +632,9 @@ def evaluate_header_target_read(target, actual_value, text="", name="", descript
         }
     if mode == "date_exact":
         expected_key = normalize_header_date_value(expected)
-        actual_key = normalize_header_date_value(actual_value or text or name or description)
+        actual_key = normalize_header_date_value(
+            actual_value or text or name or description
+        )
         ok = bool(expected_key and actual_key and expected_key == actual_key)
         return {
             "ok": ok,
@@ -637,12 +646,21 @@ def evaluate_header_target_read(target, actual_value, text="", name="", descript
             else f"{label}核验失败：expected={expected_key!r} actual={actual_key!r}",
         }
     if mode == "currency":
-        ok = header_currency_matches(expected, (target or {}).get("accepted_text"), actual_value, text, name, description)
+        ok = header_currency_matches(
+            expected,
+            (target or {}).get("accepted_text"),
+            actual_value,
+            text,
+            name,
+            description,
+        )
         return {
             "ok": ok,
             "mode": mode,
             "expected": normalize_header_currency_value(expected),
-            "actual": normalize_header_currency_value(actual_value, text, name, description),
+            "actual": normalize_header_currency_value(
+                actual_value, text, name, description
+            ),
             "reason": None if ok else f"{label}核验失败：币种不一致",
         }
     expected_key = normalize_verify_text(expected)
@@ -727,7 +745,9 @@ def read_header_target_by_exact_path(jab, target, scope_hwnd):
             "window": window_info,
             "snapshot": snapshot,
             "verification": verification,
-            "reason": None if ok else verification.get("reason") or f"{label} 未读回目标值",
+            "reason": None
+            if ok
+            else verification.get("reason") or f"{label} 未读回目标值",
         }
     finally:
         jab.release_contexts(vm_id, owned_contexts)
@@ -893,7 +913,9 @@ def verify_and_repair_header_targets(
             "seconds": round(time.perf_counter() - started_at, 3),
         }
     targets_by_path = {target.get("path"): target for target in targets}
-    reads = [read_header_target_by_exact_path(jab, target, scope_hwnd) for target in targets]
+    reads = [
+        read_header_target_by_exact_path(jab, target, scope_hwnd) for target in targets
+    ]
     missing = [item for item in reads if not item.get("ok")]
     repairs = []
     rereads = []
@@ -916,7 +938,9 @@ def verify_and_repair_header_targets(
             repairs.append(repair)
             attempt_repairs.append(repair)
         rereads = [
-            read_header_target_by_exact_path(jab, targets_by_path[item.get("path")], scope_hwnd)
+            read_header_target_by_exact_path(
+                jab, targets_by_path[item.get("path")], scope_hwnd
+            )
             for item in missing
             if item.get("path") in targets_by_path
         ]
@@ -1181,9 +1205,7 @@ class RowRun:
             )
         if any(not step.get("ok") for step in header_steps):
             header_error = summarize_header_failure(header_steps)
-            self.event(
-                "header-fill-failed", excel_row=self.row.row, error=header_error
-            )
+            self.event("header-fill-failed", excel_row=self.row.row, error=header_error)
             raise StageAbort("header-fill", header_error)
         self.located = self.timings.measure(
             "body.locate",
@@ -1503,9 +1525,7 @@ class RowRun:
                 excel_row=self.row.row,
                 error="扩展文本字段后台验证未通过",
             )
-            raise StageAbort(
-                "detail-extra-text-verify", "扩展文本字段后台验证未通过"
-            )
+            raise StageAbort("detail-extra-text-verify", "扩展文本字段后台验证未通过")
         if self.diagnose_detail_repair:
             self.row_report["detail_pipeline_verify_before_repair_drill"] = dict(
                 self.row_report["detail_pipeline_verify"]
@@ -2067,7 +2087,9 @@ def write_extra_text_field_by_dynamic_path(
         if semantic_found.get("ok"):
             semantic_found["source"] = "semantic-live-after-template-miss"
             semantic_found["dynamic_index"] = dynamic_index
-            semantic_found["dynamic_prefix"] = receipt_header_dynamic_prefix(dynamic_index)
+            semantic_found["dynamic_prefix"] = receipt_header_dynamic_prefix(
+                dynamic_index
+            )
             inferred_template = infer_header_path_template_from_field(
                 semantic_found.get("path"),
                 dynamic_index,
@@ -2131,14 +2153,19 @@ def write_extra_text_field_by_dynamic_path(
     context = found["context"]
     vm_id = found["vm_id"]
     owned_contexts = found["owned_contexts"]
+
     def write_current_context(initial_recovery=None):
         modal_recovery = initial_recovery
         attempts = []
         max_attempts = 2
         for attempt_no in range(1, max_attempts + 1):
             write_started_at = time.perf_counter()
-            info_before = jab.get_context_info(vm_id, context) if verify_after_write else None
-            before = jab.get_text_context_value(vm_id, context) if verify_after_write else ""
+            info_before = (
+                jab.get_context_info(vm_id, context) if verify_after_write else None
+            )
+            before = (
+                jab.get_text_context_value(vm_id, context) if verify_after_write else ""
+            )
             paste_started_at = time.perf_counter()
             paste = guarded_paste_header_value(
                 jab,
@@ -2164,7 +2191,9 @@ def write_extra_text_field_by_dynamic_path(
             if verify_after_write:
                 info_after = jab.get_context_info(vm_id, context)
                 after = jab.get_text_context_value(vm_id, context)
-                backend_state = describe_backend_field_state(info_after, after, value=value)
+                backend_state = describe_backend_field_state(
+                    info_after, after, value=value
+                )
                 accepted = bool(
                     backend_state.get("accepted") or backend_state.get("written")
                 )

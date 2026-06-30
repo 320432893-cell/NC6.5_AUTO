@@ -132,7 +132,9 @@ def test_generate_stops_before_page_guard_when_excel_preflight_fails(monkeypatch
 
 # ---- 直测「重复/未全量 → 停手」规则(规则已迁到纯方法,不再经旧 generate 现场匹配)----
 def _pending_wf(duplicate_policy="stop"):
-    return NCPendingWorkflow(FakeProcessor([], matches=[], issues=[], duplicate_policy=duplicate_policy))
+    return NCPendingWorkflow(
+        FakeProcessor([], matches=[], issues=[], duplicate_policy=duplicate_policy)
+    )
 
 
 def test_ensure_full_pending_match_raises_on_issue():

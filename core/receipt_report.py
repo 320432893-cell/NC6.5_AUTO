@@ -20,6 +20,7 @@ if str(ROOT) not in sys.path:
 
 SLOW_STEP_THRESHOLD_SECONDS = 0.5
 
+
 def build_batch_results(selected_rows, row_reports):
     reports_by_row = {int(report.get("excel_row")): report for report in row_reports}
     results = []
@@ -38,6 +39,7 @@ def build_batch_results(selected_rows, row_reports):
         )
     return results
 
+
 def post_query_failure_reasons(post_query):
     if not post_query:
         return {"*": "后验查询失败"}
@@ -54,12 +56,14 @@ def post_query_failure_reasons(post_query):
         return {"*": post_query.get("reason") or "后验查询失败"}
     return issues
 
+
 def post_query_skip_reason(rows, exit_code):
     if not rows:
         return "没有完成任何收款单录入行，未执行后验查询"
     if exit_code != 0:
         return "录入/保存阶段未全部成功，未执行后验查询"
     return "后验查询条件未满足"
+
 
 def format_row_failure_reason(report):
     failed_step = str(report.get("failed_step") or "").strip()
@@ -72,6 +76,7 @@ def format_row_failure_reason(report):
         )
     return reason or "录入失败"
 
+
 def fail(row_report, failed_step, timings, reason):
     row_report.update(
         {
@@ -82,6 +87,7 @@ def fail(row_report, failed_step, timings, reason):
     )
     attach_slow_step_summary(row_report, timings)
     return row_report
+
 
 def attach_slow_step_summary(
     row_report,
@@ -127,11 +133,13 @@ def attach_slow_step_summary(
     slow_steps.sort(key=lambda item: item["seconds"], reverse=True)
     row_report["slow_steps"] = slow_steps[:30]
 
+
 def find_report_step(row_report, name):
     for step in (row_report or {}).get("steps") or []:
         if step.get("name") == name:
             return step
     return None
+
 
 def summarize_header_failure(header_steps):
     for step in header_steps or []:
@@ -148,6 +156,7 @@ def summarize_header_failure(header_steps):
         return f"表头字段写入失败: {label or step.get('step') or '未知字段'} - {reason}"
     return "表头字段写入失败"
 
+
 def serializable(value):
     if isinstance(value, Decimal):
         return str(value)
@@ -156,6 +165,7 @@ def serializable(value):
     if isinstance(value, list | tuple):
         return [serializable(item) for item in value]
     return value
+
 
 def write_last_report(report):
     path = ROOT / "logs" / "last_receipt_full_flow_report.json"
@@ -172,6 +182,7 @@ def write_last_report(report):
     )
     return path
 
+
 def print_report(report, args):
     if args.json:
         text = json.dumps(report, ensure_ascii=False, indent=2, default=str)
@@ -181,6 +192,7 @@ def print_report(report, args):
     summary_path = ROOT / "logs" / "last_receipt_failure_summary.txt"
     for line in build_console_report_lines(report, report_path, summary_path):
         print(line)
+
 
 def build_console_report_lines(report, report_path=None, summary_path=None):
     lines = ["收款单完整流程结果摘要"]
@@ -247,12 +259,14 @@ def build_console_report_lines(report, report_path=None, summary_path=None):
         lines.append(f"摘要文件：{summary_path}")
     return lines
 
+
 def first_failed_step(steps):
     for step in steps or []:
         if step.get("ok"):
             continue
         return step
     return None
+
 
 def format_header_failure_lines(step):
     lines = []
@@ -285,6 +299,7 @@ def format_header_failure_lines(step):
         )
     return lines
 
+
 def format_timings(timings):
     chunks = []
     for item in timings:
@@ -294,6 +309,7 @@ def format_timings(timings):
             continue
         chunks.append(f"{name}={seconds}s")
     return ", ".join(chunks)
+
 
 def user_excel_locked_message(exc):
     return (

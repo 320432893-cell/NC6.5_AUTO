@@ -26,8 +26,8 @@ def iter_py():
 
 
 def main():
-    defs = defaultdict(list)        # name -> [file:line]
-    dispatch = []                   # (file:line, 类型, 片段)
+    defs = defaultdict(list)  # name -> [file:line]
+    dispatch = []  # (file:line, 类型, 片段)
     for p in iter_py():
         rel = str(p.relative_to(ROOT))
         try:

@@ -132,13 +132,13 @@ Sheet1 银行 -> receipt_entry.accounts -> organization_code -> finance_organiza
 
 明细表正式模块：
 
-- `tools/receipt_body_table_locator.py` 定位 25 列收款单明细表。
-- `tools/receipt_detail_fields.py` 定义字段和读回校验。
-- `tools/receipt_detail_screen_writer.py` 执行受保护前台键盘写入。
-- `tools/receipt_detail_writer.py` 编排主行字段写入。
-- `tools/receipt_detail_rows.py` 编排手续费行。
-- `tools/receipt_detail_row_cleanup.py` 清账户和删除多余行。
-- `tools/receipt_detail_async_verifier.py` 后台并发验证。
+- `core/receipt_body_table_locator.py` 定位 25 列收款单明细表。
+- `core/receipt_detail_fields.py` 定义字段和读回校验。
+- `core/receipt_detail_screen_writer.py` 执行受保护前台键盘写入。
+- `core/receipt_detail_writer.py` 编排主行字段写入。
+- `core/receipt_detail_rows.py` 编排手续费行。
+- `core/receipt_detail_row_cleanup.py` 清账户和删除多余行。
+- `core/receipt_detail_async_verifier.py` 后台并发验证。
 
 明细输入原则：
 

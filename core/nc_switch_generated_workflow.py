@@ -512,7 +512,6 @@ class NCSwitchGeneratedWorkflow:
         log.info(f"JAB action 子进程完成: output={output[:500]}")
         return True
 
-
     def open_query_with_hotkey_until_window(self, open_query, timeout=None):
         requested_timeout = float(
             timeout if timeout is not None else open_query.get("timeout", 2)

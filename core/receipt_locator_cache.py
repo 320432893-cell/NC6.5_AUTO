@@ -21,6 +21,7 @@ if str(ROOT) not in sys.path:
 
 _BODY_TABLE_SUFFIX_CACHE = {}
 
+
 def cache_receipt_header_scope(jab, shared_cache, scope):
     if not isinstance(scope, dict) or not scope.get("ok"):
         return
@@ -32,6 +33,7 @@ def cache_receipt_header_scope(jab, shared_cache, scope):
     if isinstance(shared_cache, dict):
         shared_cache.clear()
         shared_cache.update(cached)
+
 
 def build_body_table_cached_path(dynamic_index, scope_hwnd=None):
     if dynamic_index is None:
@@ -52,6 +54,7 @@ def build_body_table_cached_path(dynamic_index, scope_hwnd=None):
             },
         }
     }
+
 
 def resolve_body_table_by_dynamic_prefix(jab, dynamic_index, scope_hwnd=None):
     cached = build_body_table_cached_path(dynamic_index, scope_hwnd=scope_hwnd)
@@ -87,6 +90,7 @@ def resolve_body_table_by_dynamic_prefix(jab, dynamic_index, scope_hwnd=None):
         "learned_suffix": learned,
     }
 
+
 def cache_body_table_suffix(dynamic_index, scope_hwnd, path):
     prefix = receipt_header_dynamic_prefix(dynamic_index)
     if not prefix or not path or not str(path).startswith(f"{prefix}."):
@@ -103,8 +107,10 @@ def cache_body_table_suffix(dynamic_index, scope_hwnd, path):
     _BODY_TABLE_SUFFIX_CACHE["last"] = cached
     return cached
 
+
 def body_table_cache_key(scope_hwnd):
     return int(scope_hwnd) if scope_hwnd is not None else None
+
 
 def build_header_scope_for_followup(scope_hwnd, dynamic_index):
     if not scope_hwnd or dynamic_index is None:
@@ -115,6 +121,7 @@ def build_header_scope_for_followup(scope_hwnd, dynamic_index):
         "dynamic_index": dynamic_index,
         "mode": "provided-canvas-anchor",
     }
+
 
 def extract_entry_scope_hwnd(report):
     state = (report or {}).get("entry_state") or {}
@@ -149,6 +156,7 @@ def extract_entry_scope_hwnd(report):
                 return int(window["hwnd"])
     return None
 
+
 def extract_entry_dynamic_index(report):
     state = (report or {}).get("entry_state") or {}
     dynamic_index = extract_dynamic_index_from_entry_state(state)
@@ -160,6 +168,7 @@ def extract_entry_dynamic_index(report):
         if dynamic_index is not None:
             return dynamic_index
     return None
+
 
 def extract_entry_anchor_path(report):
     state = (report or {}).get("entry_state") or {}
@@ -173,6 +182,7 @@ def extract_entry_anchor_path(report):
             return path
     return None
 
+
 def extract_anchor_path_from_entry_state(state):
     for hit in (state or {}).get("hits") or []:
         control = hit.get("control") or {}
@@ -184,6 +194,7 @@ def extract_anchor_path_from_entry_state(state):
             if path:
                 return str(path)
     return None
+
 
 def extract_dynamic_index_from_entry_state(state):
     for hit in (state or {}).get("hits") or []:
@@ -200,6 +211,7 @@ def extract_dynamic_index_from_entry_state(state):
             return dynamic_index
     return None
 
+
 def extract_receipt_module_dynamic_index(path):
     prefix = "0.0.1.0.0.0.0."
     text = str(path or "")
@@ -210,6 +222,7 @@ def extract_receipt_module_dynamic_index(path):
         return int(part)
     except ValueError:
         return None
+
 
 def extract_entry_state_hwnd(state, prefer_canvas=False):
     if prefer_canvas:
