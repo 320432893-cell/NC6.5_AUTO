@@ -8,7 +8,7 @@ from typing import Any
 
 from core.receipt_entry import ReceiptEntryWorkbook
 from core.receipt_matching import ReceiptEntryDryRunMatcher
-from tools.receipt_query_pagination import (
+from core.receipt_query_pagination import (
     click_next_page,
     parse_page_label,
     read_page_label,
@@ -16,9 +16,9 @@ from tools.receipt_query_pagination import (
     refresh_receipt_results,
     wait_receipt_result_stable,
 )
-from tools.receipt_query_pagination_paths import with_runtime_pagination_paths
-from tools.receipt_query_report import build_dry_run_match_report_from_preview
-from tools.receipt_query_result_tables import (
+from core.receipt_query_pagination_paths import with_runtime_pagination_paths
+from core.receipt_query_report import build_dry_run_match_report_from_preview
+from core.receipt_query_result_tables import (
     first_non_empty_cell,
     read_receipt_result_tables_runtime,
     read_receipt_tables,

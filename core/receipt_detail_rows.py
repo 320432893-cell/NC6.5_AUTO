@@ -1,29 +1,29 @@
 # 职责：编排收款单明细手续费行增行、写入、清空账户和删多余行流程
 # 不做什么：不定义字段映射，不负责 CLI/打印，不直接实现通用删行循环
-# 允许依赖层：tools.receipt_detail_fields/reader/writer/row_cleanup、tools.receipt_body_table_locator
+# 允许依赖层：core.receipt_detail_fields/reader/writer/row_cleanup、core.receipt_body_table_locator
 # 谁不应该 import：配置校验、Sheet 写入、收款匹配模块不应 import
 
 import time
 
-from tools.receipt_body_table_locator import locate_receipt_body_table_cached
-from tools.receipt_detail_fields import (
+from core.receipt_body_table_locator import locate_receipt_body_table_cached
+from core.receipt_detail_fields import (
     ACCOUNT_COL,
     FEE_FIELDS,
     build_fee_business,
     cells_from_steps,
     normalize_text,
 )
-from tools.receipt_detail_reader import (
+from core.receipt_detail_reader import (
     read_located_body_table,
     wait_body_row_count,
 )
-from tools.receipt_detail_row_cleanup import (
+from core.receipt_detail_row_cleanup import (
     delete_extra_row_if_present,
     read_fee_prepare_row_count,
     skip_fee_extra_row_delete_enabled,
 )
-from tools.receipt_detail_writer import write_detail_line_by_screen
-from tools.receipt_keyboard_utils import guarded_send_ctrl_i
+from core.receipt_detail_writer import write_detail_line_by_screen
+from core.receipt_keyboard_utils import guarded_send_ctrl_i
 
 ADD_FEE_ROW_HOTKEY = "Ctrl+I"
 

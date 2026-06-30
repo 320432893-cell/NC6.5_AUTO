@@ -1,6 +1,6 @@
 # 覆盖的业务场景：收款单明细后台 verifier 复用主流程 JAB，不再新建/关闭 JAB 会话
 
-from tools.receipt_detail_async_verifier import DetailPipelineVerifier
+from core.receipt_detail_async_verifier import DetailPipelineVerifier
 
 
 def test_pipeline_verifier_reuses_external_jab_without_lifecycle(monkeypatch):
@@ -25,11 +25,11 @@ def test_pipeline_verifier_reuses_external_jab_without_lifecycle(monkeypatch):
             return False
 
     monkeypatch.setattr(
-        "tools.receipt_detail_async_verifier.JABOperator",
+        "core.receipt_detail_async_verifier.JABOperator",
         ForbiddenJAB,
     )
     monkeypatch.setattr(
-        "tools.receipt_detail_async_verifier.locate_receipt_body_table_cached",
+        "core.receipt_detail_async_verifier.locate_receipt_body_table_cached",
         lambda *_args, **_kwargs: (
             calls.__setitem__("preload", calls["preload"] + 1)
             or {"best": {"path": "0.1", "row_count": 1, "col_count": 25}}

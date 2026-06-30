@@ -15,12 +15,12 @@ if str(ROOT) not in sys.path:
 from core.jab_environment import prepare_java_access_bridge  # noqa: E402
 from core.jab_operator import JABOperator  # noqa: E402
 from core.utils import load_config  # noqa: E402
-from tools.receipt_modal_guard import (  # noqa: E402
+from core.receipt_modal_guard import (  # noqa: E402
     collect_visible_java_dialogs,
     recover_cancelable_modal_now,
 )
 from tools.receipt_full_flow_entry import main as run_full_flow  # noqa: E402
-from tools.receipt_full_flow_test_prompts import (  # noqa: E402
+from core.receipt_full_flow_test_prompts import (  # noqa: E402
     build_interactive_args,
     with_default_excel_path,
 )

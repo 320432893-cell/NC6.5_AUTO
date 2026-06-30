@@ -1,25 +1,25 @@
 # 职责：按字段映射写入收款单明细行，并把字段校验交给调用方的后台 verifier
 # 不做什么：不增删明细行，不读取 Excel，不处理 CLI/打印
-# 允许依赖层：tools.receipt_detail_fields/reader/screen_writer、tools.receipt_body_table_locator
+# 允许依赖层：core.receipt_detail_fields/reader/screen_writer、core.receipt_body_table_locator
 # 谁不应该 import：配置校验、Sheet 写入、收款匹配模块不应 import
 
 import time
 from decimal import Decimal, InvalidOperation
 
-from tools.receipt_detail_fields import (
+from core.receipt_detail_fields import (
     DETAIL_FIELDS,
     field_expected_value,
     field_matches,
     make_detail_step,
 )
-from tools.receipt_detail_reader import read_row_cells
-from tools.receipt_detail_screen_writer import (
+from core.receipt_detail_reader import read_row_cells
+from core.receipt_detail_screen_writer import (
     KEYBOARD_INPUT_COMMIT_KEY,
     focus_detail_cell,
     keyboard_write_selected_cell,
     move_selected_cell_by_arrows,
 )
-from tools.receipt_keyboard_utils import STOP_HOTKEY, is_stop_hotkey_pressed
+from core.receipt_keyboard_utils import STOP_HOTKEY, is_stop_hotkey_pressed
 
 DETAIL_DIAGNOSTIC_COLS = (4, 5, 6, 7, 8, 11)
 

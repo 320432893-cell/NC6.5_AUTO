@@ -1,6 +1,6 @@
 # 职责: 识别收款单保存前可取消的 NC Java 模态弹窗，并用 Alt+C 恢复页面
 # 不做什么: 不写表头/明细，不保存/暂存，不枚举业务弹窗白名单
-# 允许依赖层: 标准库 ctypes/time、core.jab_probe、tools.receipt_keyboard_utils
+# 允许依赖层: 标准库 ctypes/time、core.jab_probe、core.receipt_keyboard_utils
 # 谁不应该 import: core、配置校验、Excel/Sheet 写入模块不应 import
 
 import ctypes
@@ -9,7 +9,7 @@ import sys
 import time
 
 from core.jab_probe import JOBJECT, enum_windows
-from tools.receipt_keyboard_utils import send_hotkey_alt_c
+from core.receipt_keyboard_utils import send_hotkey_alt_c
 
 
 def recover_cancelable_modal_now(jab, stage="", settle_timeout=0.25):

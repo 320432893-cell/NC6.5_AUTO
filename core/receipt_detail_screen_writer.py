@@ -1,6 +1,6 @@
 # 职责：通过 JAB 选中收款单明细单元格，并用前台守卫键盘输入写入
 # 不做什么：不决定业务字段顺序，不增删明细行，不读取 Excel
-# 允许依赖层：标准库 ctypes/sys/time、core.jab_probe、tools.receipt_keyboard_utils
+# 允许依赖层：标准库 ctypes/sys/time、core.jab_probe、core.receipt_keyboard_utils
 # 谁不应该 import：配置校验、Sheet 写入、收款匹配模块不应 import
 
 import ctypes
@@ -8,7 +8,7 @@ import sys
 import time
 
 from core.jab_probe import AccessibleTableCellInfo
-from tools.receipt_keyboard_utils import (
+from core.receipt_keyboard_utils import (
     get_clipboard_text,
     read_window_info,
     restore_clipboard_text,

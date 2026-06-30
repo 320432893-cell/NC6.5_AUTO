@@ -3,7 +3,7 @@
 # 依赖的服务/环境：本地 Python，不依赖 NC/GUI/JAB
 # 运行方式：.venv/bin/python -m pytest -q tests/test_receipt_detail_fields.py
 
-from tools.receipt_detail_fields import (
+from core.receipt_detail_fields import (
     DETAIL_FIELDS,
     apply_readback_to_steps,
     cells_from_steps,

@@ -2,8 +2,8 @@
 # 覆盖的业务场景：收款单明细 writer 只负责写入，不保留同步读回/重试旧逻辑
 # 运行方式：.venv/bin/python -m pytest -q tests/test_receipt_detail_writer.py
 
-from tools import receipt_detail_writer as writer
-from tools.receipt_detail_fields import DETAIL_FIELDS, FEE_FIELDS
+from core import receipt_detail_writer as writer
+from core.receipt_detail_fields import DETAIL_FIELDS, FEE_FIELDS
 
 
 def test_detail_settlement_fields_keep_keyboard_write_with_immediate_verify():
@@ -754,7 +754,7 @@ def test_write_detail_line_allows_amount_when_only_local_amount_changes(monkeypa
 
 
 def test_keyboard_write_recovers_after_clipboard_open_failure(monkeypatch):
-    from tools import receipt_detail_screen_writer as screen
+    from core import receipt_detail_screen_writer as screen
 
     calls = {"clipboard": 0, "recover": 0}
 

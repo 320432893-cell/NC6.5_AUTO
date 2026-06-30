@@ -1,6 +1,6 @@
 # 职责：后台用阶段性快照批量验证收款单明细字段和最终行数
 # 不做什么：不写入 NC，不决定业务字段顺序，不处理保存/暂存
-# 允许依赖层：core JAB 操作、tools.receipt_detail_fields/reader
+# 允许依赖层：core JAB 操作、core.receipt_detail_fields/reader
 # 谁不应该 import：底层 core、Excel/Sheet 写入模块不应 import
 # 生命周期：正式完整流程组件
 
@@ -12,9 +12,9 @@ import time
 import uuid
 
 from core.jab_operator import JABOperator
-from tools.receipt_body_table_locator import locate_receipt_body_table_cached
-from tools.receipt_detail_fields import field_expected_value, field_matches
-from tools.receipt_detail_reader import read_body_table_by_path
+from core.receipt_body_table_locator import locate_receipt_body_table_cached
+from core.receipt_detail_fields import field_expected_value, field_matches
+from core.receipt_detail_reader import read_body_table_by_path
 
 
 class DetailPipelineVerifier:

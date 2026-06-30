@@ -2,7 +2,7 @@
 # 运行方式：.venv/bin/python -m pytest -q tests/test_receipt_full_flow_test_wrappers.py
 
 from tools import receipt_full_flow_save_query_write_test as save_query_write
-from tools.receipt_full_flow_test_prompts import (
+from core.receipt_full_flow_test_prompts import (
     DEFAULT_EXCEL_NAME,
     build_interactive_args,
     with_default_excel_path,
@@ -348,7 +348,7 @@ def test_wrapper_prompts_detail_repair_drill_mode(monkeypatch):
 
 def test_with_default_excel_path_finds_project_file(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "tools.receipt_full_flow_test_prompts.Path.home", lambda: tmp_path
+        "core.receipt_full_flow_test_prompts.Path.home", lambda: tmp_path
     )
     excel = tmp_path / "project" / DEFAULT_EXCEL_NAME
     excel.parent.mkdir()

@@ -1,6 +1,6 @@
 # 职责：收款单查询填充工具的 CLI 参数解析和终端输出。
 # 不做什么：不实现查询条件填写、不读结果表、不做分页匹配、不直接封装 JAB 底层能力。
-# 允许依赖层：tools.receipt_query_fill 的流程函数、core.utils 配置加载。
+# 允许依赖层：core.receipt_query_fill 的流程函数、core.utils 配置加载。
 # 谁不应该 import：core 层模块不应 import；测试应优先测具体流程/读表模块而非 CLI 输出。
 
 import argparse
@@ -17,7 +17,7 @@ if str(ROOT) not in sys.path:
 
 from core.run_state import RunStateRecorder  # noqa: E402
 from core.utils import load_config  # noqa: E402
-from tools.receipt_query_fill import (  # noqa: E402
+from core.receipt_query_fill import (  # noqa: E402
     ReceiptPageGuardError,
     fill_receipt_query as run_fill_receipt_query,
 )

@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.receipt_keyboard_utils import (  # noqa: E402
+from core.receipt_keyboard_utils import (  # noqa: E402
     foreground_matches_window,
     get_clipboard_text,
     restore_clipboard_text,
@@ -20,7 +20,7 @@ from tools.receipt_keyboard_utils import (  # noqa: E402
     send_hotkey_ctrl_v,
     set_clipboard_text,
 )
-from tools.receipt_body_table_locator import locate_receipt_body_table  # noqa: E402
+from core.receipt_body_table_locator import locate_receipt_body_table  # noqa: E402
 
 
 CURRENCY_NAMES = {"USD": "美元", "CNY": "人民币"}
@@ -58,7 +58,7 @@ def run_receipt_new_probe():
 def run_receipt_new_probe_with_jab(jab=None):
     if jab is not None:
         from argparse import Namespace
-        from tools import receipt_new_probe
+        from core import receipt_new_probe
 
         args = Namespace(
             config="config.json",

@@ -1,6 +1,6 @@
 # 职责：提供收款单明细主行/手续费行正式测试 CLI 入口
 # 不做什么：不打开收款单、不写表头、不保存/暂存、不读取 Excel 批量计划
-# 允许依赖层：core 配置/JAB、tools.receipt_detail_*、tools.receipt_self_made_fill_trial 读表兼容函数
+# 允许依赖层：core 配置/JAB、tools.receipt_detail_*、core.receipt_self_made_fill_trial 读表兼容函数
 # 谁不应该 import：Sheet 写入、收款匹配、凭证批量模块不应 import
 
 import argparse
@@ -18,20 +18,20 @@ from core.jab_operator import JABOperator  # noqa: E402
 from core.receipt_config import ReceiptEntryConfig  # noqa: E402
 from core.run_state import RunStateRecorder  # noqa: E402
 from core.utils import load_config  # noqa: E402
-from tools.jab_health_check import check_jab_ready  # noqa: E402
-from tools.receipt_keyboard_utils import (  # noqa: E402
+from core.jab_health_check import check_jab_ready  # noqa: E402
+from core.receipt_keyboard_utils import (  # noqa: E402
     STOP_HOTKEY,
     is_stop_hotkey_pressed,
 )
-from tools.receipt_body_table_locator import locate_receipt_body_table_cached  # noqa: E402
-from tools.receipt_detail_report import print_header, print_summary  # noqa: E402
-from tools.receipt_detail_row_cleanup import (  # noqa: E402
+from core.receipt_body_table_locator import locate_receipt_body_table_cached  # noqa: E402
+from core.receipt_detail_report import print_header, print_summary  # noqa: E402
+from core.receipt_detail_row_cleanup import (  # noqa: E402
     cleanup_rows_after_first,
     delete_extra_row_if_present,
 )
-from tools.receipt_detail_rows import StepTimer, run_fee_only  # noqa: E402
-from tools.receipt_detail_writer import write_detail_line_by_screen  # noqa: E402
-from tools.receipt_self_made_fill_trial import (  # noqa: E402
+from core.receipt_detail_rows import StepTimer, run_fee_only  # noqa: E402
+from core.receipt_detail_writer import write_detail_line_by_screen  # noqa: E402
+from core.receipt_self_made_fill_trial import (  # noqa: E402
     read_body_table,
     wait_header_account_description,
 )

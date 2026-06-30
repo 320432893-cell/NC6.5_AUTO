@@ -24,10 +24,10 @@ if str(ROOT) not in sys.path:
 
 from core.jab_operator import JABOperator  # noqa: E402
 from core.utils import load_config  # noqa: E402
-from tools.jab_health_check import check_jab_ready  # noqa: E402
+from core.jab_health_check import check_jab_ready  # noqa: E402
 from core.jab_probe import JOBJECT, enum_windows  # noqa: E402
-from tools.receipt_keyboard_utils import STOP_HOTKEY, is_stop_hotkey_pressed  # noqa: E402
-from tools.receipt_body_table_locator import KEY_COLUMNS, table_bounds  # noqa: E402
+from core.receipt_keyboard_utils import STOP_HOTKEY, is_stop_hotkey_pressed  # noqa: E402
+from core.receipt_body_table_locator import KEY_COLUMNS, table_bounds  # noqa: E402
 
 START_DELAY_SECONDS = 2
 MAX_ROWS = 3

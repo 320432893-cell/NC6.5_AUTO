@@ -2,7 +2,7 @@
 # 覆盖的业务场景：收款单动作失败后 Java dialog 聚焦并 Alt+C 恢复
 # 依赖的服务/环境：本地 Python，不依赖 NC/GUI/JAB
 
-from tools.receipt_modal_guard import recover_cancelable_modal_now
+from core.receipt_modal_guard import recover_cancelable_modal_now
 
 
 def test_recover_cancelable_modal_now_sends_alt_c(monkeypatch):
@@ -21,11 +21,11 @@ def test_recover_cancelable_modal_now_sends_alt_c(monkeypatch):
     ]
 
     monkeypatch.setattr(
-        "tools.receipt_modal_guard.collect_visible_java_dialogs",
+        "core.receipt_modal_guard.collect_visible_java_dialogs",
         lambda _jab: snapshots.pop(0) if snapshots else [],
     )
     monkeypatch.setattr(
-        "tools.receipt_modal_guard.send_hotkey_alt_c",
+        "core.receipt_modal_guard.send_hotkey_alt_c",
         lambda: calls.__setitem__("alt_c", calls["alt_c"] + 1),
     )
 

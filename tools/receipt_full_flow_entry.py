@@ -19,19 +19,19 @@ from core.jab_operator import JABOperator  # noqa: E402
 from core.receipt_entry import ReceiptEntryWorkbook  # noqa: E402
 from core.run_state import RunStateRecorder  # noqa: E402
 from core.utils import load_config  # noqa: E402
-from tools.receipt_detail_async_verifier import DetailPipelineVerifier  # noqa: E402
-from tools.receipt_detail_fields import validate_main_row_exchange_rate  # noqa: E402
-from tools.receipt_detail_row_cleanup import delete_extra_row_if_present  # noqa: E402
-from tools.receipt_detail_rows import StepTimer, run_fee_only  # noqa: E402
-from tools.receipt_detail_writer import (  # noqa: E402
+from core.receipt_detail_async_verifier import DetailPipelineVerifier  # noqa: E402
+from core.receipt_detail_fields import validate_main_row_exchange_rate  # noqa: E402
+from core.receipt_detail_row_cleanup import delete_extra_row_if_present  # noqa: E402
+from core.receipt_detail_rows import StepTimer, run_fee_only  # noqa: E402
+from core.receipt_detail_writer import (  # noqa: E402
     write_detail_line_by_screen,
     write_field_once,
 )
-from tools.receipt_modal_guard import (  # noqa: E402
+from core.receipt_modal_guard import (  # noqa: E402
     recover_cancelable_modal_now,
 )
-from tools.receipt_post_save_query import run_post_save_batch_query  # noqa: E402
-from tools.receipt_self_made_fill_trial import (  # noqa: E402
+from core.receipt_post_save_query import run_post_save_batch_query  # noqa: E402
+from core.receipt_self_made_fill_trial import (  # noqa: E402
     fill_header,
     find_receipt_header_field_by_dynamic_path,
     find_receipt_header_field_by_live_semantic,
@@ -48,22 +48,22 @@ from tools.receipt_self_made_fill_trial import (  # noqa: E402
     describe_backend_field_state,
 )
 
-from tools.receipt_locator_cache import (  # noqa: E402
+from core.receipt_locator_cache import (  # noqa: E402
     build_header_scope_for_followup,
     cache_receipt_header_scope,
     resolve_body_table_by_dynamic_prefix,
 )
-from tools.receipt_counterparty import (  # noqa: E402
+from core.receipt_counterparty import (  # noqa: E402
     ensure_header_counterparty_customer,
 )
-from tools.receipt_save_cancel import (  # noqa: E402
+from core.receipt_save_cancel import (  # noqa: E402
     CIRCUIT_BREAKER_RETRY_STEPS,
     cancel_current_receipt_entry,
     save_receipt_by_ctrl_s,
     should_retry_row_by_cancel_reopen,
     summarize_retry_attempt,
 )
-from tools.receipt_report import (  # noqa: E402
+from core.receipt_report import (  # noqa: E402
     attach_slow_step_summary,
     build_batch_results,
     fail,
@@ -75,7 +75,7 @@ from tools.receipt_report import (  # noqa: E402
     user_excel_locked_message,
     write_last_report,
 )
-from tools.receipt_row_stages import resolve_entry_header_scope  # noqa: E402
+from core.receipt_row_stages import resolve_entry_header_scope  # noqa: E402
 
 
 def parse_args(argv=None):

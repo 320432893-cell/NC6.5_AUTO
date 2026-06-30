@@ -11,7 +11,7 @@ if str(ROOT) not in sys.path:
 from core.jab_operator import JABOperator  # noqa: E402
 from core.paths import logs_dir  # noqa: E402
 from core.utils import load_config  # noqa: E402
-from tools.receipt_self_made_fill_trial import (  # noqa: E402
+from core.receipt_self_made_fill_trial import (  # noqa: E402
     FINANCE_ORG_ACCEPTED_TEXT,
     find_finance_org_header_scope_by_paths,
     receipt_header_dynamic_prefix,

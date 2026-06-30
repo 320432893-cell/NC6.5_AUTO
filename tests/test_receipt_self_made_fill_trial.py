@@ -3,9 +3,9 @@ import subprocess
 import ctypes
 import pytest
 
-from tools import receipt_self_made_fill_trial as trial
-from tools import receipt_new_probe
-from tools.receipt_new_probe import (
+from core import receipt_self_made_fill_trial as trial
+from core import receipt_new_probe
+from core.receipt_new_probe import (
     detect_self_made_entry_state,
     is_current_visible_control,
 )

@@ -1,18 +1,18 @@
 # 职责：收款查询结果分页运行时动作，包括等待结果、设置页大小、读取页码和点击下一页。
 # 不做什么：不解析动态 path 树、不读取多页结果集合、不做 Excel 匹配、不生成报告。
-# 允许依赖层：tools.receipt_query_pagination_paths、tools.receipt_query_result_tables 和 JAB operator-like 对象。
+# 允许依赖层：core.receipt_query_pagination_paths、core.receipt_query_result_tables 和 JAB operator-like 对象。
 # 谁不应该 import：core 层模块不应 import；纯报表/匹配模块不应 import。
 
 import re
 import time
 
-from tools.receipt_keyboard_utils import send_virtual_key
-from tools.receipt_query_pagination_paths import (
+from core.receipt_keyboard_utils import send_virtual_key
+from core.receipt_query_pagination_paths import (
     resolve_receipt_pagination_paths,
     resolve_receipt_pagination_paths_dynamic,
     with_runtime_pagination_paths,
 )
-from tools.receipt_query_result_tables import summarize_receipt_tables
+from core.receipt_query_result_tables import summarize_receipt_tables
 
 
 def wait_after_query_confirm(jab, query_cfg):

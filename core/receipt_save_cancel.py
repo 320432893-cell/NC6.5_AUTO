@@ -11,17 +11,17 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from core.jab_operator import JABOperator  # noqa: E402
-from tools.receipt_keyboard_utils import (  # noqa: E402
+from core.receipt_keyboard_utils import (  # noqa: E402
     foreground_matches_window,
     send_hotkey_alt_y,
     send_hotkey_ctrl_q,
     send_hotkey_ctrl_s,
 )
-from tools.receipt_modal_guard import (  # noqa: E402
+from core.receipt_modal_guard import (  # noqa: E402
     collect_visible_java_dialogs,
     focus_window,
 )
-from tools.receipt_new_probe import (  # noqa: E402
+from core.receipt_new_probe import (  # noqa: E402
     annotate_foreground_root_for_targets,
     collect_receipt_new_windows,
     detect_self_made_entry_state,

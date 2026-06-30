@@ -1,11 +1,11 @@
 # 职责：打印收款单明细正式测试入口的人类可读报告
 # 不做什么：不执行 JAB/GUI 动作，不读取 Excel，不决定明细写入规则
-# 允许依赖层：tools.jab_health_check、tools.receipt_keyboard_utils、tools.receipt_detail_rows
+# 允许依赖层：core.jab_health_check、core.receipt_keyboard_utils、core.receipt_detail_rows
 # 谁不应该 import：底层 JAB operator、Sheet 写入、收款匹配模块不应 import
 
-from tools.jab_health_check import print_jab_health_failure
-from tools.receipt_detail_rows import ADD_FEE_ROW_HOTKEY
-from tools.receipt_keyboard_utils import STOP_HOTKEY
+from core.jab_health_check import print_jab_health_failure
+from core.receipt_detail_rows import ADD_FEE_ROW_HOTKEY
+from core.receipt_keyboard_utils import STOP_HOTKEY
 
 KEYBOARD_INPUT_COMMIT_KEY = "Right"
 

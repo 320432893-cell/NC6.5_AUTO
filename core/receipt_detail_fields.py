@@ -1,11 +1,11 @@
 # 职责：定义收款单明细行字段映射和读回校验口径
 # 不做什么：不执行 JAB/GUI 动作，不定位 NC 表格，不读取 Excel
-# 允许依赖层：标准库 decimal、tools.receipt_keyboard_utils 的金额比较函数
+# 允许依赖层：标准库 decimal、core.receipt_keyboard_utils 的金额比较函数
 # 谁不应该 import：底层 JAB operator 和 NC 窗口探测模块不应 import
 
 from decimal import Decimal, InvalidOperation
 
-from tools.receipt_keyboard_utils import amount_matches
+from core.receipt_keyboard_utils import amount_matches
 
 
 DETAIL_FIELDS = [

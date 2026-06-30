@@ -9,8 +9,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.receipt_body_table_locator import locate_receipt_body_table_cached  # noqa: E402
-from tools.receipt_self_made_fill_trial import (  # noqa: E402
+from core.receipt_body_table_locator import locate_receipt_body_table_cached  # noqa: E402
+from core.receipt_self_made_fill_trial import (  # noqa: E402
     receipt_header_dynamic_prefix,
 )
 
