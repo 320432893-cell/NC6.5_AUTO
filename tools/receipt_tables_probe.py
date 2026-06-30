@@ -1,3 +1,14 @@
+# lifecycle: tool（长寿诊断探针，非临时件；2026-06 由 tmp_ 前缀转正）
+# 作用：收款单明细表「定位诊断器」——只读探测 NC 收款单界面的 JAB 控件结构。
+#   当明细表定位（resolve_body_table_by_dynamic_prefix 一类）在现场失效、写入
+#   找不到表时，掏出本工具看 NC 实际给出的窗口/JAB 根节点/table 节点结构，
+#   人工比对哪条 path/特征变了。是排障入口，不是业务流程的一环。
+# 做什么：1) 打印前台与同进程 NC/Java 窗口 2) 列可连接的 JAB 根节点
+#   3) 列 table 或带 table interface 的节点 4) 只标注结构特征，不评分不自动判定。
+# 不做什么：写入、选单元格、点击、保存、暂存、关窗（纯只读，现场可安全跑）。
+# 运行：python tools/receipt_tables_probe.py   急停热键见 STOP_HOTKEY。
+# 依赖环境：Windows Python、NC 收款单自制录入界面、Java Access Bridge。
+
 import argparse
 import ctypes
 import json
