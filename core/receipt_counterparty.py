@@ -530,7 +530,8 @@ def read_detail_counterparty_value(
             }
             schema = detail_table_schema_snapshot(best)
             table["schema"] = schema
-            if table.get("col_count") is not None and table.get("col_count") < 12:
+            col_count = table.get("col_count")
+            if col_count is not None and col_count < 12:
                 return {
                     "ok": False,
                     "source": "detail-row0-col0",

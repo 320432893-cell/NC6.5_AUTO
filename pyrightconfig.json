@@ -1,6 +1,7 @@
 {
   "include": ["core", "tools", "tests"],
-  "exclude": ["**/__pycache__", ".venv", ".venv-local"],
+  "exclude": ["**/__pycache__", ".venv", ".venv-local", "tools/archive", ".vulture_whitelist.py"],
+  "reportMissingImports": "warning",
   "venvPath": ".",
   "venv": ".venv",
   "pythonVersion": "3.11",
