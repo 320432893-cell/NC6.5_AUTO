@@ -5,6 +5,8 @@
 
 import argparse
 from dataclasses import asdict
+from datetime import date, datetime
+import re
 import sys
 import threading
 import time
@@ -17,6 +19,7 @@ if str(ROOT) not in sys.path:
 from core.errors import ExcelLockedError  # noqa: E402
 from core.jab_operator import JABOperator  # noqa: E402
 from core.receipt_entry import ReceiptEntryWorkbook  # noqa: E402
+from core.receipt_matching import counterparty_similarity  # noqa: E402
 from core.run_state import RunStateRecorder  # noqa: E402
 from core.utils import load_config  # noqa: E402
 from core.receipt_detail_async_verifier import DetailPipelineVerifier  # noqa: E402
@@ -459,9 +462,10 @@ def filter_issues_for_rows(issues, selected_rows):
     ]
 
 
-def build_header_unified_targets(header_steps, extra_text_report):
+def build_header_unified_targets(header_steps, extra_text_report, expectations=None):
     targets = []
     seen = set()
+    expectations = expectations or {}
     for step in header_steps or []:
         label = str(step.get("label") or "").strip()
         path = str(step.get("path") or "").strip()
@@ -482,9 +486,177 @@ def build_header_unified_targets(header_steps, extra_text_report):
                 "path": path,
                 "accepted_text": step.get("accepted_text"),
                 "source": step.get("source") or step.get("method") or "header-fill",
+                "expectation": expectations.get(label, {}),
+            }
+        )
+    for field in (extra_text_report or {}).get("fields") or []:
+        label = str(field.get("label") or "").strip()
+        path = str(field.get("path") or "").strip()
+        value = str(field.get("value") or "").strip()
+        if not label or not path or not field.get("ok"):
+            continue
+        key = ("extra_text", label, path)
+        if key in seen:
+            continue
+        seen.add(key)
+        targets.append(
+            {
+                "kind": "extra_text",
+                "label": label,
+                "value": value,
+                "path": path,
+                "accepted_text": field.get("accepted_text"),
+                "source": field.get("source") or "extra-text-fields",
+                "expectation": expectations.get(label, {}),
             }
         )
     return targets
+
+
+def build_header_verify_expectations(row, business, extra_text_fields):
+    return {
+        "客户": {
+            "mode": "customer_name_similarity",
+            "expected": row.payer_name,
+            "threshold": 80,
+            "source": "excel.payer_name_column",
+        },
+        "单据日期": {
+            "mode": "date_exact",
+            "expected": business.get("document_date"),
+            "source": "excel.date_column",
+        },
+        "币种": {
+            "mode": "currency",
+            "expected": business.get("header_currency_code") or business.get("currency"),
+            "source": "excel.currency_column",
+        },
+        "结算方式": {
+            "mode": "text_exact",
+            "expected": business.get("settlement") or "网银",
+            "source": "config.receipt_entry.settlement",
+        },
+    } | {
+        str(label): {
+            "mode": "text_exact",
+            "expected": value,
+            "source": "excel_text_field_mappings",
+        }
+        for label, value in (extra_text_fields or {}).items()
+        if str(label or "").strip() and str(value or "").strip()
+    }
+
+
+def normalize_verify_text(value):
+    text = str(value or "").strip().casefold()
+    if not text:
+        return ""
+    text = re.sub(r"[\s\u3000]+", "", text)
+    return re.sub(r"[^\w\u4e00-\u9fff]+", "", text)
+
+
+def customer_name_similarity(expected, actual):
+    return counterparty_similarity(expected, actual)
+
+
+def normalize_header_date_value(value):
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    text = text.replace("/", "-").replace(".", "-")
+    match = re.search(r"(\d{4})-(\d{1,2})-(\d{1,2})", text)
+    if match:
+        year, month, day = match.groups()
+        return f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
+    return text
+
+
+def evaluate_header_target_read(target, actual_value, text="", name="", description=""):
+    expectation = (target or {}).get("expectation") or {}
+    mode = expectation.get("mode")
+    expected = expectation.get("expected")
+    label = str((target or {}).get("label") or "").strip()
+    if not mode:
+        kind = (target or {}).get("kind")
+        snapshot = (target or {}).get("snapshot") or {}
+        if kind == "customer":
+            ok = bool(actual_value)
+        elif kind == "extra_text":
+            ok = bool(snapshot.get("written"))
+        elif label == "币种":
+            ok = header_currency_matches(
+                (target or {}).get("value"),
+                (target or {}).get("accepted_text"),
+                actual_value,
+                text,
+                name,
+                description,
+            )
+        else:
+            ok = bool(snapshot.get("accepted") or snapshot.get("written"))
+        return {
+            "ok": ok,
+            "mode": "legacy",
+            "expected": (target or {}).get("value"),
+            "actual": actual_value,
+            "reason": None if ok else f"{label} 未读回目标值",
+        }
+    if mode == "customer_name_similarity":
+        score = customer_name_similarity(expected, actual_value)
+        threshold = int(expectation.get("threshold") or 80)
+        ok = score >= threshold
+        return {
+            "ok": ok,
+            "mode": mode,
+            "expected": expected,
+            "actual": actual_value,
+            "score": score,
+            "threshold": threshold,
+            "reason": None
+            if ok
+            else (
+                f"客户名称核验失败：Excel银行来款名={expected!r}，"
+                f"NC读回={actual_value!r}，相似度={score}<阈值{threshold}"
+            ),
+        }
+    if mode == "date_exact":
+        expected_key = normalize_header_date_value(expected)
+        actual_key = normalize_header_date_value(actual_value or text or name or description)
+        ok = bool(expected_key and actual_key and expected_key == actual_key)
+        return {
+            "ok": ok,
+            "mode": mode,
+            "expected": expected_key,
+            "actual": actual_key,
+            "reason": None
+            if ok
+            else f"{label}核验失败：expected={expected_key!r} actual={actual_key!r}",
+        }
+    if mode == "currency":
+        ok = header_currency_matches(expected, (target or {}).get("accepted_text"), actual_value, text, name, description)
+        return {
+            "ok": ok,
+            "mode": mode,
+            "expected": normalize_header_currency_value(expected),
+            "actual": normalize_header_currency_value(actual_value, text, name, description),
+            "reason": None if ok else f"{label}核验失败：币种不一致",
+        }
+    expected_key = normalize_verify_text(expected)
+    actual_key = normalize_verify_text(actual_value or text or name or description)
+    ok = bool(expected_key and actual_key and expected_key == actual_key)
+    return {
+        "ok": ok,
+        "mode": mode or "text_exact",
+        "expected": expected,
+        "actual": actual_value,
+        "reason": None
+        if ok
+        else f"{label}核验失败：expected={expected!r} actual={actual_value!r}",
+    }
 
 
 def read_header_target_by_exact_path(jab, target, scope_hwnd):
@@ -528,23 +700,20 @@ def read_header_target_by_exact_path(jab, target, scope_hwnd):
         )
         if kind == "customer":
             actual_value = first_valid_text(description, text, name)
-            ok = bool(actual_value)
         elif kind == "extra_text":
             actual_value = description or str(text or "").strip() or name
-            ok = bool(snapshot.get("written"))
         elif label == "币种":
             actual_value = description or str(text or "").strip() or name
-            ok = header_currency_matches(
-                (target or {}).get("value"),
-                (target or {}).get("accepted_text"),
-                actual_value,
-                text,
-                name,
-                description,
-            )
         else:
             actual_value = description or str(text or "").strip() or name
-            ok = bool(snapshot.get("accepted") or snapshot.get("written"))
+        verification = evaluate_header_target_read(
+            {**(target or {}), "snapshot": snapshot},
+            actual_value,
+            text=text,
+            name=name,
+            description=description,
+        )
+        ok = bool(verification.get("ok"))
         return {
             "ok": ok,
             "label": label,
@@ -557,7 +726,8 @@ def read_header_target_by_exact_path(jab, target, scope_hwnd):
             "name": name,
             "window": window_info,
             "snapshot": snapshot,
-            "reason": None if ok else f"{label} 未读回目标值",
+            "verification": verification,
+            "reason": None if ok else verification.get("reason") or f"{label} 未读回目标值",
         }
     finally:
         jab.release_contexts(vm_id, owned_contexts)
@@ -658,16 +828,56 @@ def rewrite_header_target_by_exact_path(
         jab.release_contexts(vm_id, owned_contexts)
 
 
+def summarize_header_verify_round(reads):
+    items = []
+    for item in reads or []:
+        verification = item.get("verification") or {}
+        items.append(
+            {
+                "label": item.get("label"),
+                "ok": bool(item.get("ok")),
+                "expected": verification.get("expected"),
+                "actual": verification.get("actual") or item.get("actual_value"),
+                "mode": verification.get("mode"),
+                "score": verification.get("score"),
+                "threshold": verification.get("threshold"),
+                "reason": item.get("reason") or verification.get("reason") or "",
+            }
+        )
+    return items
+
+
+def format_header_verify_reason(failed):
+    if not failed:
+        return ""
+    parts = []
+    for item in failed:
+        verification = item.get("verification") or {}
+        expected = verification.get("expected")
+        actual = verification.get("actual") or item.get("actual_value")
+        score = verification.get("score")
+        score_text = f" score={score}" if score is not None else ""
+        parts.append(
+            f"{item.get('label')}: expected={expected!r} actual={actual!r}{score_text}"
+        )
+    return "表头字段核验失败：" + "；".join(parts)
+
+
 def verify_and_repair_header_targets(
     jab,
     header_steps,
     extra_text_report,
     dynamic_index,
     scope_hwnd,
+    expectations=None,
     recover_after_failure=None,
 ):
     started_at = time.perf_counter()
-    targets = build_header_unified_targets(header_steps, extra_text_report)
+    targets = build_header_unified_targets(
+        header_steps,
+        extra_text_report,
+        expectations=expectations,
+    )
     if not targets:
         return {
             "ok": True,
@@ -682,12 +892,16 @@ def verify_and_repair_header_targets(
             "rereads": [],
             "seconds": round(time.perf_counter() - started_at, 3),
         }
+    targets_by_path = {target.get("path"): target for target in targets}
     reads = [read_header_target_by_exact_path(jab, target, scope_hwnd) for target in targets]
     missing = [item for item in reads if not item.get("ok")]
     repairs = []
     rereads = []
-    if missing:
-        targets_by_path = {target.get("path"): target for target in targets}
+    rounds = [{"round": 0, "reads": summarize_header_verify_round(reads)}]
+    for attempt_no in range(1, 3):
+        if not missing:
+            break
+        attempt_repairs = []
         for item in missing:
             target = targets_by_path.get(item.get("path"))
             if not target:
@@ -698,19 +912,27 @@ def verify_and_repair_header_targets(
                 scope_hwnd,
                 recover_after_failure=recover_after_failure,
             )
+            repair["attempt"] = attempt_no
             repairs.append(repair)
+            attempt_repairs.append(repair)
         rereads = [
             read_header_target_by_exact_path(jab, targets_by_path[item.get("path")], scope_hwnd)
             for item in missing
             if item.get("path") in targets_by_path
         ]
-    failed_after_repair = [item for item in rereads if not item.get("ok")]
-    ok = not missing or (bool(repairs) and not failed_after_repair)
+        rounds.append(
+            {
+                "round": attempt_no,
+                "repairs": attempt_repairs,
+                "reads": summarize_header_verify_round(rereads),
+            }
+        )
+        missing = [item for item in rereads if not item.get("ok")]
+    failed_after_repair = missing
+    ok = not failed_after_repair
     reason = ""
     if failed_after_repair:
-        reason = "表头统一校验补写后仍有缺失：" + "；".join(
-            f"{item.get('label')}: {item.get('reason')}" for item in failed_after_repair
-        )
+        reason = format_header_verify_reason(failed_after_repair)
     elif missing and not repairs:
         reason = "表头统一校验发现缺失，但没有可补写字段"
     return {
@@ -722,6 +944,13 @@ def verify_and_repair_header_targets(
         "missing": missing,
         "repairs": repairs,
         "rereads": rereads,
+        "rounds": rounds,
+        "summary": {
+            "ok": bool(ok),
+            "checked": len(targets),
+            "repair_attempts": len(repairs),
+            "failed": summarize_header_verify_round(failed_after_repair),
+        },
         "reason": reason,
         "seconds": round(time.perf_counter() - started_at, 3),
     }
@@ -1026,6 +1255,11 @@ class RowRun:
                 "header-extra-text-fields",
                 extra_text_report.get("reason") or "扩展文本字段写入失败",
             )
+        header_verify_expectations = build_header_verify_expectations(
+            self.row,
+            self.business,
+            self.row.extra_text_fields,
+        )
         header_unified_check = self.timings.measure(
             "header.unified-check",
             run_with_jab_lock,
@@ -1036,9 +1270,21 @@ class RowRun:
             extra_text_report,
             self.entry_dynamic_index,
             self.entry_scope_hwnd,
+            expectations=header_verify_expectations,
             recover_after_failure=self.recover_modal,
         )
         self.row_report["header_unified_check"] = header_unified_check
+        self.row_report["header_verify_summary"] = header_unified_check.get("summary")
+        self.event(
+            "header-verify-summary",
+            excel_row=self.row.row,
+            ok=bool(header_unified_check.get("ok")),
+            checked=(header_unified_check.get("summary") or {}).get("checked", 0),
+            repair_attempts=(header_unified_check.get("summary") or {}).get(
+                "repair_attempts", 0
+            ),
+            failed=(header_unified_check.get("summary") or {}).get("failed", []),
+        )
         if not header_unified_check.get("ok"):
             reason = header_unified_check.get("reason") or "表头统一校验失败"
             self.event(
