@@ -5,44 +5,24 @@ import sys
 from pathlib import Path
 
 
-BASE_CHECKS = (
+# 三档按「速度 × 改起来影响半径」分:fast 每次写完、stage 阶段闭包、cleanup 大扫除。
+FAST_CHECKS = (  # 秒级·每次写完都跑
     ("json", [sys.executable, "-m", "json.tool", "config.json"]),
     ("config", [sys.executable, "tools/validate_config.py", "config.json"]),
     ("ruff", [".venv/bin/ruff", "check", "."]),
     ("format", [".venv/bin/ruff", "format", "--check", "."]),
     ("compile", [sys.executable, "-m", "compileall", "-q", "core", "tools"]),
-    ("basedpyright", [".venv/bin/basedpyright", "."]),
+)
+
+STAGE_CHECKS = (  # 地基/高影响·快·阶段闭包跑(改了后续影响大,早逮)
+    ("import-linter", [".venv/bin/lint-imports", "--config", ".importlinter"]),
+    ("import-cycles", [sys.executable, "tools/import_cycles.py"]),
     ("architecture", [sys.executable, "tools/check_architecture.py"]),
     ("naming", [sys.executable, "tools/check_naming.py"]),
-    ("pytest", [sys.executable, "-m", "pytest", "-q"]),
-)
-
-AUDIT_CHECKS = (
-    (
-        "semgrep",
-        [
-            ".venv/bin/semgrep",
-            "scan",
-            "--config",
-            ".semgrep.yml",
-            "--error",
-            "--severity",
-            "ERROR",
-            "core",
-            "tools",
-            "tests",
-        ],
-    ),
-    ("import-linter", [".venv/bin/lint-imports", "--config", ".importlinter"]),
     ("detect-secrets", [sys.executable, "tools/check_detect_secrets.py"]),
-    (
-        "pip-audit",
-        [".venv/bin/pip-audit", "--local", "--progress-spinner", "off"],
-    ),
 )
 
-DEEP_CHECKS = (
-    ("radon", [sys.executable, "-m", "radon", "cc", "core", "tools", "-s", "-a"]),
+CLEANUP_CHECKS = (  # 全量/慢/涌现·大扫除才跑(攒一批才显形)
     (
         "vulture",
         [
@@ -52,6 +32,20 @@ DEEP_CHECKS = (
             "--min-confidence", "60",
         ],
     ),
+    ("reachability", [sys.executable, "tools/reachability_probe.py"]),
+    ("name-health", [sys.executable, "tools/name_health.py"]),
+    ("layer-drift", [sys.executable, "tools/layer_drift.py"]),
+    ("radon", [sys.executable, "-m", "radon", "cc", "core", "tools", "-s", "-a"]),
+    ("basedpyright", [".venv/bin/basedpyright", "."]),
+    (
+        "semgrep",
+        [
+            ".venv/bin/semgrep", "scan", "--config", ".semgrep.yml",
+            "--error", "--severity", "ERROR", "core", "tools", "tests",
+        ],
+    ),
+    ("pip-audit", [".venv/bin/pip-audit", "--local", "--progress-spinner", "off"]),
+    ("pytest", [sys.executable, "-m", "pytest", "-q"]),
 )
 
 RULE_TOOL_CONTRACT_CHECKS = (
@@ -75,7 +69,7 @@ def doctor():
     """闸健康:遍历所有闸,配了却没装的=假闸(摆设),红。"""
     dead = []
     print("[doctor] 闸健康(能不能跑,不判绿)")
-    for name, command in BASE_CHECKS + AUDIT_CHECKS + DEEP_CHECKS:
+    for name, command in FAST_CHECKS + STAGE_CHECKS + CLEANUP_CHECKS:
         ok, detail = gate_runnable(command)
         print(f"  {'OK' if ok else '假闸·DEAD':<11} {name}  [{detail}]")
         if not ok:
@@ -87,6 +81,10 @@ def doctor():
 
 
 def run_check(name, command):
+    ok, _ = gate_runnable(command)
+    if not ok:
+        print(f"[skip] {name} 假闸·没装,跳过(跑 check.py --doctor 看全部)")
+        return
     print(f"[check] {name}")
     result = subprocess.run(command, check=False, capture_output=True, text=True)
     if result.returncode != 0:
@@ -103,8 +101,11 @@ def main():
         "profile",
         nargs="?",
         default="all",
-        choices=("all", "changed", "audit", "deep", "rule-tool-contracts"),
-        help="Check profile. 'changed' is the slice-closure alias for all local gates.",
+        choices=(
+            "fast", "stage", "cleanup",
+            "all", "changed", "deep", "rule-tool-contracts",
+        ),
+        help="fast 每次写完 / stage 阶段闭包 / cleanup 大扫除(全量)。",
     )
     parser.add_argument("--list", action="store_true", help="Print configured checks.")
     parser.add_argument(
@@ -116,11 +117,15 @@ def main():
         doctor()
         return
 
+    stage = FAST_CHECKS + STAGE_CHECKS
+    cleanup = stage + CLEANUP_CHECKS
     profiles = {
-        "all": BASE_CHECKS + AUDIT_CHECKS,
-        "changed": BASE_CHECKS + AUDIT_CHECKS,
-        "audit": AUDIT_CHECKS,
-        "deep": DEEP_CHECKS,
+        "fast": FAST_CHECKS,
+        "stage": stage,
+        "cleanup": cleanup,
+        "changed": stage,  # 切片/阶段闭包别名
+        "deep": cleanup,  # 大扫除别名
+        "all": cleanup,
         "rule-tool-contracts": RULE_TOOL_CONTRACT_CHECKS,
     }
     checks = profiles[args.profile]
