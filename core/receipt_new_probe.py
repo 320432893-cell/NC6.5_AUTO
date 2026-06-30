@@ -358,43 +358,10 @@ def open_new_menu_with_known_buttons(
     return open_new_menu(jab, args)
 
 
-def foreground_nc_guard(foreground):
-    if os.name != "nt":
-        return {"ok": False, "reason": "Windows only", "foreground": foreground}
-    if not foreground:
-        return {
-            "ok": False,
-            "reason": "missing foreground window",
-            "foreground": foreground,
-        }
-    ok = bool(
-        foreground.get("class_name") == "YonyouUWnd"
-        or foreground.get("root_class_name") == "YonyouUWnd"
-    )
-    return {
-        "ok": ok,
-        "reason": None if ok else "foreground root is not YonyouUWnd",
-        "foreground": foreground,
-    }
-
 
 def open_new_menu(jab, args):
     if args.method == "probe-button":
         return {"ok": True, "method": "probe-button"}
-    if args.method == "button":
-        foreground = foreground_info()
-        buttons = find_new_buttons(jab, args.name, args.role, args.class_name)
-        if not buttons:
-            return {
-                "ok": False,
-                "method": "button",
-                "reason": "未找到新增按钮；正式收款流程不回退 Ctrl+N",
-                "button_reason": "new button not found",
-                "foreground_guard": foreground_nc_guard(foreground),
-            }
-        return open_new_menu_with_known_buttons(
-            jab, args, buttons, all_buttons=buttons, foreground=foreground
-        )
     return {
         "ok": False,
         "method": args.method,
@@ -910,20 +877,6 @@ def collect_window_controls_limited(jab, window, max_depth=8, max_children=120):
     return window
 
 
-def find_new_buttons(jab, name_query="新增", role=None, class_name=None):
-    buttons = find_named_controls(
-        jab,
-        name_query=name_query,
-        role=role,
-        class_name=class_name,
-        require_action=True,
-    )
-    foreground = foreground_info()
-    annotate_foreground_root_for_targets(buttons, foreground)
-    buttons = filter_usable_new_buttons(buttons, foreground)
-    buttons.sort(key=new_button_priority)
-    return buttons
-
 
 def find_named_controls_in_windows(
     windows,
@@ -1061,51 +1014,6 @@ def window_class_name(hwnd):
     ctypes.windll.user32.GetClassNameW(wintypes.HWND(int(hwnd)), buffer, 256)
     return buffer.value
 
-
-def find_named_controls(
-    jab,
-    name_query="新增",
-    role=None,
-    class_name=None,
-    require_action=True,
-    max_depth=25,
-    max_children=1000,
-    foreground_only=False,
-    foreground=None,
-):
-    results = []
-    name_query = str(name_query or "").lower()
-    role = role.lower() if role else None
-    foreground = foreground if foreground is not None else foreground_info()
-    for window in collect_receipt_new_windows(
-        jab, max_depth=max_depth, max_children=max_children
-    ):
-        if class_name and window.get("class_name") != class_name:
-            continue
-        if foreground_only and foreground and foreground.get("root"):
-            if root_hwnd(window.get("hwnd")) != foreground.get("root"):
-                continue
-        if not window.get("is_java"):
-            continue
-        for control in window.get("all_controls", []):
-            control_role = control.get("role", "").lower()
-            if role and control_role != role:
-                continue
-            text = f"{control.get('name', '')} {control.get('description', '')}".lower()
-            if name_query and name_query not in text:
-                continue
-            if require_action and not control.get("accessibleAction"):
-                continue
-            results.append(
-                {
-                    "window": {
-                        key: window.get(key)
-                        for key in ("hwnd", "title", "class_name", "visible")
-                    },
-                    "control": control,
-                }
-            )
-    return results
 
 
 def trigger_button_async(
