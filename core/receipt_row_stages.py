@@ -80,8 +80,6 @@ def resolve_entry_header_scope(
                 jab,
                 entry_scope_hwnd,
                 preferred_dynamic_index=preferred_cached_dynamic_index,
-                min_index=1,
-                max_index=10,
             )
             row_report["entry_finance_org_fast_scope"] = {
                 **finance_scope,

@@ -341,8 +341,6 @@ def resolve_receipt_header_scope(
             jab,
             scope_hwnd,
             preferred_dynamic_index=dynamic_index,
-            min_index=dynamic_index,
-            max_index=dynamic_index,
         )
         if not scoped.get("ok"):
             scoped = validate_receipt_header_scope_anchor(
@@ -363,8 +361,6 @@ def resolve_receipt_header_scope(
             jab,
             scope_hwnd,
             preferred_dynamic_index=dynamic_index,
-            min_index=1,
-            max_index=10,
         )
         if scoped.get("ok"):
             try:
@@ -451,8 +447,6 @@ def find_finance_org_header_scope_by_paths(
     jab,
     scope_hwnd,
     preferred_dynamic_index=None,
-    min_index=1,
-    max_index=10,
 ):
     started_at = time.perf_counter()
     shallow = _find_finance_org_header_scope_by_shallow_semantic(

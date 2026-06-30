@@ -2398,7 +2398,7 @@ def test_run_one_row_resolves_header_scope_by_finance_org_fast_path(monkeypatch)
     assert calls["finance_scope"] == [
         (
             919586,
-            {"preferred_dynamic_index": None, "min_index": 1, "max_index": 10},
+            {"preferred_dynamic_index": None},
         )
     ]
     assert report["entry_dynamic_index"] == 5

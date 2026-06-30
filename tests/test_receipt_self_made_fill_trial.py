@@ -540,7 +540,7 @@ def test_header_scope_uses_provided_canvas_anchor_before_semantic(monkeypatch):
         (
             "finance-path",
             123,
-            {"preferred_dynamic_index": 2, "min_index": 2, "max_index": 2},
+            {"preferred_dynamic_index": 2},
         )
     ]
 
