@@ -1,6 +1,6 @@
 # 职责：收款单往来对象(客户)字段的定位/读取/写入/校验全部 JAB 逻辑
 # 不做什么：不做整单编排、不保存、不读 Excel
-# 允许依赖层：core JAB、tools 收款表头/定位缓存;谁不应 import：core 层
+# 允许依赖层：core JAB(jab_probe)、core 收款表头/定位缓存(receipt_self_made_fill_trial/receipt_locator_cache);谁不应 import：tools 入口层(不反依赖 receipt_full_flow_entry)
 
 import ctypes
 import sys

@@ -1569,7 +1569,6 @@ def repair_detail_pipeline_failures(
     results = (pipeline_report or {}).get("results") or {}
     best = (located or {}).get("best") or {}
     table_window = best.get("window") or {}
-    row_count = int(best.get("row_count") or 0)
     repair = {
         "ok": False,
         "policy": (
@@ -1599,9 +1598,7 @@ def repair_detail_pipeline_failures(
                 located,
                 table_window,
                 int(task["row_index"]),
-                row_count,
                 field,
-                field["col"],
                 task["business"],
                 2,
                 current_col=None,

@@ -1,6 +1,6 @@
 # 职责：收款单保存(Ctrl+S)、取消重开熔断、确认弹窗判定、父页恢复就绪等待
 # 不做什么：不做整单编排、不写明细字段
-# 允许依赖层：core JAB、tools 收款定位缓存/模态守卫;谁不应 import：core 层
+# 允许依赖层：core JAB(jab_operator)、core 键盘/模态守卫/探新增(receipt_keyboard_utils/receipt_modal_guard/receipt_new_probe);谁不应 import：tools 入口层(不反依赖 receipt_full_flow_entry)
 
 import sys
 import time

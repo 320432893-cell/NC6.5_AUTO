@@ -1,7 +1,7 @@
 # 职责：对本次已保存的收款单批次做后验查询、匹配 NC 单据号并生成 Sheet2 结果
 # 不做什么：不录入收款单、不写 Sheet1 状态列、不解析 CLI、不保存 NC 单据
-# 允许依赖层：core 收款模型/匹配纯函数、tools 查询填充和分页读表组件
-# 谁不应该 import：core 层模块不应 import；查询历史写回入口不应反向 import
+# 允许依赖层：core 收款模型/匹配纯函数、core 查询填充/分页/读表组件(receipt_query_*)
+# 谁不应该 import：tools 入口层(不反依赖 receipt_full_flow_entry)
 
 from collections import defaultdict
 from dataclasses import dataclass

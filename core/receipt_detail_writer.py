@@ -29,9 +29,7 @@ def write_field_once(
     located,
     table_window,
     row_index,
-    row_count,
     field,
-    next_col,
     business,
     attempt_no,
     current_col=None,
@@ -847,16 +845,13 @@ def write_detail_line_by_screen(
             stage_started = time.perf_counter()
             step = make_detail_step(field, business, row_index, row_count, col_count)
             make_step_seconds = round(time.perf_counter() - stage_started, 4)
-            next_field = fields[index + 1] if index + 1 < len(fields) else fields[0]
             stage_started = time.perf_counter()
             attempt = write_field_once(
                 jab,
                 located,
                 table_window,
                 row_index,
-                row_count,
                 field,
-                next_field["col"],
                 business,
                 attempt_no=1,
                 current_col=current_col,

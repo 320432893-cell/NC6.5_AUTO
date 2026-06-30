@@ -1,7 +1,7 @@
 # 职责：收款单单行流程里可独立切出的阶段步骤(表头 scope 解析、保存),供 run_one_row 编排调用
 # 不做什么：不自建 JABOperator、不做整批编排、不读 Excel
-# 允许依赖层：tools 收款定位缓存/表头组件;锁与模态恢复闭包由调用方传入
-# 谁不应该 import：core 层模块不应 import
+# 允许依赖层：core 收款定位缓存/表头组件(receipt_locator_cache/receipt_self_made_fill_trial);锁与模态恢复闭包由调用方传入
+# 谁不应该 import：tools 入口层(不反依赖 receipt_full_flow_entry)
 
 from pathlib import Path
 import sys
