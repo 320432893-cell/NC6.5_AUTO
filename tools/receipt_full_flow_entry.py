@@ -1140,6 +1140,11 @@ class RowRun:
             raise StageAbort("detail-main-line", "明细主行写入失败")
 
     def fee_and_verify(self):
+        self._write_fee_or_delete_extra()
+        self._verify_detail_pipeline()
+        self._pre_save_guards()
+
+    def _write_fee_or_delete_extra(self):
         located = self.located
         if self.row.fee > 0:
             self.stage("手续费", excel_row=self.row.row)
@@ -1209,6 +1214,9 @@ class RowRun:
                 "reason": "手续费为 0，跳过手续费行",
             }
             self.pipeline_row_count_task_id = self.pipeline_verifier.submit_row_count(1)
+
+    def _verify_detail_pipeline(self):
+        located = self.located
         expected_detail_rows = 2 if self.row.fee > 0 else 1
         pipeline_wait_ids = []
         if self.pipeline_field_task_ids:
@@ -1325,6 +1333,8 @@ class RowRun:
             "skipped": True,
             "reason": "后台 pipeline verifier 已覆盖最后字段与最终行数，跳过同步整表读",
         }
+
+    def _pre_save_guards(self):
         guard_source = self.row_report.get(
             "detail_pipeline_verify_after_repair"
         ) or self.row_report.get("detail_pipeline_verify")
