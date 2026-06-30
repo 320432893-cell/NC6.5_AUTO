@@ -1,0 +1,3 @@
+# 排除 tools/archive:冻结的死岛(README 禁正式 import),不维护、不 lint。
+# 让 `ruff check .`(check.py)与 sweep 的 `ruff check core tools` 对齐,不被 archive 旧错堵住。
+extend-exclude = ["tools/archive", ".vulture_whitelist.py"]
