@@ -3,7 +3,7 @@
 # 依赖的服务/环境：本地 Python，不依赖 NC/GUI/JAB
 # 运行方式：.venv/bin/python -m pytest -q tests/test_receipt_detail_row_cleanup.py
 
-from tools import receipt_detail_row_cleanup as cleanup
+from core import receipt_detail_row_cleanup as cleanup
 
 
 def test_clear_fee_account_reads_row_when_known_cells_miss_account(monkeypatch):

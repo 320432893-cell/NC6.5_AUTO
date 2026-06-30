@@ -2,7 +2,7 @@
 # 覆盖的业务场景：收款单明细/保存受保护快捷键不引入固定空等
 # 运行方式：.venv/bin/python -m pytest -q tests/test_receipt_keyboard_utils.py
 
-from tools import receipt_keyboard_utils as keyboard
+from core import receipt_keyboard_utils as keyboard
 
 
 def test_receipt_ctrl_i_ctrl_d_do_not_use_fixed_settle(monkeypatch):

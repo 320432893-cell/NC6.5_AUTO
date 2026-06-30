@@ -1,11 +1,11 @@
 # 职责: 解析收款单查询条件窗口的动态前缀，并用稳定后缀定位条件输入框
 # 不做什么: 不打开查询窗口，不点击确定，不读取查询结果，不使用旧 near-label 写入兜底
-# 允许依赖层: JAB operator-like 对象、tools.receipt_query_pagination_paths 路径工具
+# 允许依赖层: JAB operator-like 对象、core.receipt_query_pagination_paths 路径工具
 # 谁不应该 import: core、Excel/Sheet 写入、收款单录入明细模块不应 import
 
 import time
 
-from tools.receipt_query_pagination_paths import join_context_path, split_context_path
+from core.receipt_query_pagination_paths import join_context_path, split_context_path
 
 
 QUERY_CONDITION_PREFIX_BASE = "0.0.1.0.1.0.0.1.0.0.0.0.0.1.0"

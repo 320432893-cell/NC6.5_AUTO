@@ -7,7 +7,7 @@ from datetime import date
 from decimal import Decimal
 
 from core.receipt_models import ReceiptMatchIssue, ReceiptNCIndexedRow, ReceiptPlanRow
-from tools.receipt_post_save_query import (
+from core.receipt_post_save_query import (
     BatchQueryTarget,
     document_no_sort_number,
     group_targets_by_org,

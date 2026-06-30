@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.receipt_keyboard_utils import (  # noqa: E402
+from core.receipt_keyboard_utils import (  # noqa: E402
     foreground_matches_window,
     get_clipboard_text,
     restore_clipboard_text,
@@ -20,19 +20,14 @@ from tools.receipt_keyboard_utils import (  # noqa: E402
     send_hotkey_ctrl_v,
     set_clipboard_text,
 )
-from tools.receipt_body_table_locator import locate_receipt_body_table  # noqa: E402
+from core.receipt_body_table_locator import locate_receipt_body_table  # noqa: E402
 
 
 CURRENCY_NAMES = {"USD": "美元", "CNY": "人民币"}
 HEADER_DYNAMIC_PREFIX_BASE = "0.0.1.0.0.0.0"
 HEADER_COMMON_SUFFIX_TEMPLATE = "0.0.0.1.1.0.0.0.0.1.0.2.0.0.0.0.0.0.0.{index}.0"
 HEADER_COMMON_LABEL_SUFFIX_TEMPLATE = "0.0.0.1.1.0.0.0.0.1.0.2.0.0.0.0.0.0.0.{index}"
-FINANCE_ORG_LABEL_SUFFIX = "0.0.0.1.1.0.0.0.1.1.1.0"
 FINANCE_ORG_COMPACT_LABEL_SUFFIX = "0.0.0.1.1.0.0.0.0.1.1.0"
-FINANCE_ORG_LABEL_SUFFIX_VARIANTS = (
-    ("observed-compact", FINANCE_ORG_COMPACT_LABEL_SUFFIX),
-    ("configured-builder", FINANCE_ORG_LABEL_SUFFIX),
-)
 HEADER_LIVE_SEMANTIC_FALLBACK_TIMEOUT = 0.35
 HEADER_FORM_TEXT_INDEXES = {
     "单据日期": 5,
@@ -63,7 +58,7 @@ def run_receipt_new_probe():
 def run_receipt_new_probe_with_jab(jab=None):
     if jab is not None:
         from argparse import Namespace
-        from tools import receipt_new_probe
+        from core import receipt_new_probe
 
         args = Namespace(
             config="config.json",
@@ -142,35 +137,6 @@ def run_receipt_new_probe_with_jab(jab=None):
         "stdout": proc.stdout,
         "stderr": proc.stderr,
     }
-
-
-def find_context_by_path_readonly(jab, path, scope_hwnd=None, role=None):
-    context, vm_id, owned, window_info = jab.find_context_by_path_once(
-        path,
-        class_name="SunAwtCanvas",
-        scope_hwnd=scope_hwnd,
-        role=role,
-        require_showing=False,
-        require_valid_bounds=False,
-    )
-    if not context:
-        return {"ok": False, "reason": "path not found"}
-    try:
-        info = jab.get_context_info(vm_id, context)
-        text = jab.get_text_context_value(vm_id, context)
-        return {
-            "ok": True,
-            "window": window_info,
-            "name": info.name.strip() if info else "",
-            "description": info.description.strip() if info else "",
-            "role": (info.role_en_US.strip() or info.role.strip()) if info else "",
-            "states": (
-                (info.states_en_US.strip() or info.states.strip()) if info else ""
-            ),
-            "text": text,
-        }
-    finally:
-        jab.release_contexts(vm_id, owned)
 
 
 def is_valid_customer_name_candidate(value):
@@ -375,8 +341,6 @@ def resolve_receipt_header_scope(
             jab,
             scope_hwnd,
             preferred_dynamic_index=dynamic_index,
-            min_index=dynamic_index,
-            max_index=dynamic_index,
         )
         if not scoped.get("ok"):
             scoped = validate_receipt_header_scope_anchor(
@@ -397,8 +361,6 @@ def resolve_receipt_header_scope(
             jab,
             scope_hwnd,
             preferred_dynamic_index=dynamic_index,
-            min_index=1,
-            max_index=10,
         )
         if scoped.get("ok"):
             try:
@@ -481,24 +443,10 @@ def validate_receipt_header_scope_anchor(
     }
 
 
-def finance_org_label_info_matches(info):
-    if not info:
-        return False
-    for text in (
-        str(getattr(info, "name", "") or "").strip(),
-        str(getattr(info, "description", "") or "").strip(),
-    ):
-        if text == HEADER_SCOPE_ANCHOR_TEXT:
-            return True
-    return False
-
-
 def find_finance_org_header_scope_by_paths(
     jab,
     scope_hwnd,
     preferred_dynamic_index=None,
-    min_index=1,
-    max_index=10,
 ):
     started_at = time.perf_counter()
     shallow = _find_finance_org_header_scope_by_shallow_semantic(

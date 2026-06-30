@@ -1,10 +1,10 @@
 # 职责：收款查询分页区和结果表的 JAB path 解析、验证、动态枚举；不点击翻页、不改分页大小、不做匹配。
-# 允许依赖层：core.jab_probe、tools.receipt_query_result_tables 和 JAB operator-like 对象；core/报表/Excel 模块不应 import。
+# 允许依赖层：core.jab_probe、core.receipt_query_result_tables 和 JAB operator-like 对象；core/报表/Excel 模块不应 import。
 
 from copy import deepcopy
 from typing import Any
 
-from tools.receipt_query_result_tables import enumerate_visible_table_paths
+from core.receipt_query_result_tables import enumerate_visible_table_paths
 
 
 RECEIPT_RESULT_TABLE_PATH_SUFFIX = "0.0.0"

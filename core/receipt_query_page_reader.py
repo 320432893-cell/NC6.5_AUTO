@@ -6,15 +6,15 @@
 import time
 from typing import Any
 
-from tools.receipt_query_pagination import (
+from core.receipt_query_pagination import (
     click_next_page,
     parse_page_label,
     read_page_label,
     set_receipt_page_size,
     wait_receipt_result_stable,
 )
-from tools.receipt_query_pagination_paths import with_runtime_pagination_paths
-from tools.receipt_query_result_tables import (
+from core.receipt_query_pagination_paths import with_runtime_pagination_paths
+from core.receipt_query_result_tables import (
     first_non_empty_cell,
     read_receipt_result_tables_runtime,
     read_receipt_tables,

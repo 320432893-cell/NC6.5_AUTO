@@ -1,15 +1,15 @@
 # 职责：读取收款单明细表缓存 path、指定行单元格和行数
 # 不做什么：不写入 NC，不发送键盘输入，不决定业务字段顺序
-# 允许依赖层：tools.receipt_body_table_locator、tools.receipt_self_made_fill_trial
+# 允许依赖层：core.receipt_body_table_locator、core.receipt_self_made_fill_trial
 # 谁不应该 import：配置校验、Excel/Sheet 写入模块不应 import
 
 import time
 
-from tools.receipt_body_table_locator import (
+from core.receipt_body_table_locator import (
     locate_receipt_body_table_cached,
     read_receipt_body_table_by_cached_path,
 )
-from tools.receipt_self_made_fill_trial import read_body_table
+from core.receipt_self_made_fill_trial import read_body_table
 
 
 def read_body_table_by_path(jab, located, step, max_rows=5, semantic_fallback=False):

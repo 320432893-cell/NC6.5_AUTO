@@ -1,19 +1,19 @@
 # 职责：提供收款单查询读取相关旧导入路径的兼容门面。
 # 不做什么：不承载具体读取/分页/匹配实现，不解析 CLI 参数，不写 Excel。
-# 允许依赖层：tools.receipt_query_page_reader、tools.receipt_query_match_reader、tools.receipt_query_pagination、tools.receipt_query_pagination_paths、tools.receipt_query_result_tables。
+# 允许依赖层：core.receipt_query_page_reader、core.receipt_query_match_reader、core.receipt_query_pagination、core.receipt_query_pagination_paths、core.receipt_query_result_tables。
 # 谁不应该 import：新代码不应继续新增对本兼容门面的依赖；应直接 import 具体职责模块。
 
-from tools.receipt_query_match_reader import (
+from core.receipt_query_match_reader import (
     dedupe_page_tables as dedupe_page_tables,
     evaluate_paging_match_stop as evaluate_paging_match_stop,
     read_receipt_result_pages_incremental as read_receipt_result_pages_incremental,
     read_receipt_result_pages_until_match as read_receipt_result_pages_until_match,
     unresolved_excel_rows as unresolved_excel_rows,
 )
-from tools.receipt_query_page_reader import (
+from core.receipt_query_page_reader import (
     read_receipt_result_pages as read_receipt_result_pages,
 )
-from tools.receipt_query_pagination import (
+from core.receipt_query_pagination import (
     click_next_page as click_next_page,
     parse_int_text as parse_int_text,
     parse_page_label as parse_page_label,
@@ -24,7 +24,7 @@ from tools.receipt_query_pagination import (
     wait_receipt_result_ready as wait_receipt_result_ready,
     wait_receipt_result_stable as wait_receipt_result_stable,
 )
-from tools.receipt_query_pagination_paths import (
+from core.receipt_query_pagination_paths import (
     infer_result_area_prefix_from_page_path as infer_result_area_prefix_from_page_path,
     infer_result_area_prefix_from_table_path as infer_result_area_prefix_from_table_path,
     join_context_path as join_context_path,
@@ -36,7 +36,7 @@ from tools.receipt_query_pagination_paths import (
     validate_receipt_pagination_path_report as validate_receipt_pagination_path_report,
     with_runtime_pagination_paths as with_runtime_pagination_paths,
 )
-from tools.receipt_query_result_tables import (
+from core.receipt_query_result_tables import (
     enumerate_receipt_result_table_paths as enumerate_receipt_result_table_paths,
     find_table_paths_in_context as find_table_paths_in_context,
     first_non_empty_cell as first_non_empty_cell,

@@ -15,7 +15,7 @@ if str(ROOT) not in sys.path:
 from core.jab_operator import JABOperator  # noqa: E402
 from core.utils import load_config  # noqa: E402
 from core.jab_probe import AccessibleActions, JOBJECT, enum_windows  # noqa: E402
-from tools.receipt_query_guard import (  # noqa: E402
+from core.receipt_query_guard import (  # noqa: E402
     ReceiptPageGuardError,
     guard_receipt_parent_page,
 )

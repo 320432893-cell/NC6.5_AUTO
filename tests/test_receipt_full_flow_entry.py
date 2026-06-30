@@ -10,18 +10,18 @@ import pytest
 
 from core.receipt_models import ReceiptPlanIssue, ReceiptPlanRow
 from tools import receipt_full_flow_entry as full_flow
-from tools import receipt_counterparty as cp
-from tools import receipt_locator_cache as _locator
-from tools import receipt_save_cancel as _save_cancel
-from tools import receipt_report as _report
-from tools import receipt_row_stages as _row_stages
-from tools.receipt_locator_cache import (
+from core import receipt_counterparty as cp
+from core import receipt_locator_cache as _locator
+from core import receipt_save_cancel as _save_cancel
+from core import receipt_report as _report
+from core import receipt_row_stages as _row_stages
+from core.receipt_locator_cache import (
     extract_entry_anchor_path,
     extract_entry_dynamic_index,
     extract_entry_scope_hwnd,
 )
 
-from tools.receipt_report import build_console_report_lines
+from core.receipt_report import build_console_report_lines
 from tools.receipt_full_flow_entry import (
     business_from_plan_row,
     cache_receipt_header_scope,
@@ -39,9 +39,9 @@ from tools.receipt_full_flow_entry import (
     write_extra_text_field_by_dynamic_path,
     verify_and_repair_header_targets,
 )
-from tools.receipt_post_save_query import target_to_match_row
-from tools.receipt_post_save_query import format_query_exception
-from tools.receipt_save_cancel import should_retry_row_by_cancel_reopen
+from core.receipt_post_save_query import target_to_match_row
+from core.receipt_post_save_query import format_query_exception
+from core.receipt_save_cancel import should_retry_row_by_cancel_reopen
 
 _PATCH_TARGET_MODULES = [full_flow, cp, _locator, _save_cancel, _report, _row_stages]
 
@@ -680,7 +680,7 @@ def test_save_receipt_uses_sendinput_ctrl_s_not_jab_button(monkeypatch):
         lambda _jab: [{"hwnd": 12345}],
     )
     monkeypatch.setattr(
-        "tools.receipt_save_cancel.detect_receipt_parent_new_ready",
+        "core.receipt_save_cancel.detect_receipt_parent_new_ready",
         lambda _windows: {
             "ok": True,
             "usable_new_button_count": 1,
@@ -770,7 +770,7 @@ def test_save_receipt_promotes_scope_hwnd_to_root_before_hotkey(monkeypatch):
         lambda _windows: {"ok": False, "reason": "已回到新增态"},
     )
     monkeypatch.setattr(
-        "tools.receipt_save_cancel.detect_receipt_parent_new_ready",
+        "core.receipt_save_cancel.detect_receipt_parent_new_ready",
         lambda _windows: {"ok": True, "usable_new_button_count": 1},
     )
 
@@ -804,7 +804,7 @@ def test_save_receipt_does_not_treat_missing_entry_buttons_as_success_without_ne
         lambda _windows: {"ok": False, "reason": "三按钮读不到"},
     )
     monkeypatch.setattr(
-        "tools.receipt_save_cancel.detect_receipt_parent_new_ready",
+        "core.receipt_save_cancel.detect_receipt_parent_new_ready",
         lambda _windows: {"ok": False, "usable_new_button_count": 0},
     )
     patch_all(monkeypatch, "root_hwnd",
@@ -2398,7 +2398,7 @@ def test_run_one_row_resolves_header_scope_by_finance_org_fast_path(monkeypatch)
     assert calls["finance_scope"] == [
         (
             919586,
-            {"preferred_dynamic_index": None, "min_index": 1, "max_index": 10},
+            {"preferred_dynamic_index": None},
         )
     ]
     assert report["entry_dynamic_index"] == 5

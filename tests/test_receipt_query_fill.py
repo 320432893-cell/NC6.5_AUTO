@@ -13,24 +13,24 @@ from core.receipt_models import (
     ReceiptNCIndexedRow,
 )
 from core.receipt_nc_extract import ReceiptNCResultExtractor
-from tools.receipt_query_report import (
+from core.receipt_query_report import (
     build_dry_run_match_report,
     build_dry_run_match_report_from_preview,
 )
-from tools.receipt_query_pagination import (
+from core.receipt_query_pagination import (
     parse_page_label,
     set_receipt_page_size,
     wait_receipt_result_stable,
 )
-from tools.receipt_query_pagination_paths import (
+from core.receipt_query_pagination_paths import (
     resolve_receipt_pagination_paths_by_module_index,
     resolve_receipt_pagination_paths_dynamic,
     infer_result_area_prefix_from_table_path,
 )
-from tools.receipt_query_page_reader import read_receipt_result_pages
-from tools.receipt_query_match_reader import read_receipt_result_pages_incremental
-from tools.receipt_query_result_tables import read_receipt_tables
-from tools.receipt_query_fill import (
+from core.receipt_query_page_reader import read_receipt_result_pages
+from core.receipt_query_match_reader import read_receipt_result_pages_incremental
+from core.receipt_query_result_tables import read_receipt_tables
+from core.receipt_query_fill import (
     ReceiptPageGuardError,
     ensure_query_window,
     fill_receipt_query,
@@ -575,7 +575,7 @@ def test_fill_receipt_query_sets_finance_org_by_path(monkeypatch):
         instances.append(instance)
         return instance
 
-    monkeypatch.setattr("tools.receipt_query_fill.JABOperator", make_jab)
+    monkeypatch.setattr("core.receipt_query_fill.JABOperator", make_jab)
 
     result = fill_receipt_query(
         receipt_config("unused.xlsx"),
@@ -615,7 +615,7 @@ def test_fill_receipt_query_confirms_without_fixed_wait(monkeypatch):
         instances.append(instance)
         return instance
 
-    monkeypatch.setattr("tools.receipt_query_fill.JABOperator", make_jab)
+    monkeypatch.setattr("core.receipt_query_fill.JABOperator", make_jab)
 
     result = fill_receipt_query(
         receipt_config("unused.xlsx"),
@@ -641,7 +641,7 @@ def test_fill_receipt_query_confirms_without_fixed_wait(monkeypatch):
 
 def test_wait_after_query_confirm_returns_when_result_table_path_is_ready(monkeypatch):
     waits = []
-    monkeypatch.setattr("tools.receipt_query_fill.time.sleep", waits.append)
+    monkeypatch.setattr("core.receipt_query_fill.time.sleep", waits.append)
     jab = FakePagedJAB()
 
     report = wait_after_query_confirm(
@@ -673,7 +673,7 @@ def test_fill_receipt_query_fails_without_dynamic_or_semantic_path(monkeypatch):
         instances.append(instance)
         return instance
 
-    monkeypatch.setattr("tools.receipt_query_fill.JABOperator", make_jab)
+    monkeypatch.setattr("core.receipt_query_fill.JABOperator", make_jab)
 
     with pytest.raises(RuntimeError, match="查询条件动态 path 定位失败"):
         fill_receipt_query(
@@ -826,7 +826,7 @@ def test_read_receipt_result_pages_skips_page_size_change_when_already_target():
 
 def test_incremental_post_save_query_refreshes_after_page_size(monkeypatch):
     waits = []
-    monkeypatch.setattr("tools.receipt_query_pagination.time.sleep", waits.append)
+    monkeypatch.setattr("core.receipt_query_pagination.time.sleep", waits.append)
     jab = FakePagedJAB()
     jab.texts["label"] = "第1页 共1页 16条记录 每页显示"
 
@@ -883,7 +883,7 @@ def test_read_receipt_result_pages_uses_dynamic_pagination_paths(monkeypatch):
         }
 
     monkeypatch.setattr(
-        "tools.receipt_query_pagination_paths.resolve_receipt_pagination_paths_dynamic",
+        "core.receipt_query_pagination_paths.resolve_receipt_pagination_paths_dynamic",
         fake_dynamic,
     )
     jab.texts["dynamic_label"] = "第1页 共2页 501条记录 每页显示"
@@ -944,7 +944,7 @@ def test_resolve_receipt_pagination_paths_dynamic_uses_path_not_fixed_column_cou
             return None
 
     monkeypatch.setattr(
-        "tools.receipt_query_pagination_paths.enumerate_visible_table_paths",
+        "core.receipt_query_pagination_paths.enumerate_visible_table_paths",
         lambda _jab, _window_class: [
             {
                 "table_index": 2,
@@ -1093,7 +1093,7 @@ def test_read_receipt_result_pages_blocks_next_page_without_pager_scope():
 
 def test_read_receipt_result_pages_applies_stability_waits(monkeypatch):
     waits = []
-    monkeypatch.setattr("tools.receipt_query_pagination.time.sleep", waits.append)
+    monkeypatch.setattr("core.receipt_query_pagination.time.sleep", waits.append)
     jab = FakePagedJAB()
     jab.texts["label"] = "第1页 共2页 501条记录 每页显示"
 
@@ -1117,7 +1117,7 @@ def test_read_receipt_result_pages_applies_stability_waits(monkeypatch):
 
 def test_wait_receipt_result_stable_requires_repeated_label_and_tables(monkeypatch):
     waits = []
-    monkeypatch.setattr("tools.receipt_query_pagination.time.sleep", waits.append)
+    monkeypatch.setattr("core.receipt_query_pagination.time.sleep", waits.append)
 
     report = wait_receipt_result_stable(
         FakePagedJAB(),
@@ -1136,7 +1136,7 @@ def test_wait_receipt_result_stable_requires_repeated_label_and_tables(monkeypat
 
 def test_set_receipt_page_size_can_skip_pre_stability(monkeypatch):
     waits = []
-    monkeypatch.setattr("tools.receipt_query_pagination.time.sleep", waits.append)
+    monkeypatch.setattr("core.receipt_query_pagination.time.sleep", waits.append)
 
     report = set_receipt_page_size(
         FakePagedJAB(),
@@ -1170,7 +1170,7 @@ def test_resolve_receipt_pagination_paths_uses_cached_report(monkeypatch):
         return {"ok": False}
 
     monkeypatch.setattr(
-        "tools.receipt_query_pagination_paths.resolve_receipt_pagination_paths_dynamic",
+        "core.receipt_query_pagination_paths.resolve_receipt_pagination_paths_dynamic",
         fail_dynamic,
     )
     jab = FakePagedJAB()

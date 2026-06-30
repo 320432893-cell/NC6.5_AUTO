@@ -10,13 +10,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from tools.receipt_locator_cache import (  # noqa: E402
+from core.receipt_locator_cache import (  # noqa: E402
     cache_receipt_header_scope,
     extract_entry_anchor_path,
     extract_entry_dynamic_index,
     extract_entry_scope_hwnd,
 )
-from tools.receipt_self_made_fill_trial import (  # noqa: E402
+from core.receipt_self_made_fill_trial import (  # noqa: E402
     HEADER_SCOPE_ANCHOR_LABEL,
     find_finance_org_header_scope_by_paths,
 )
@@ -80,8 +80,6 @@ def resolve_entry_header_scope(
                 jab,
                 entry_scope_hwnd,
                 preferred_dynamic_index=preferred_cached_dynamic_index,
-                min_index=1,
-                max_index=10,
             )
             row_report["entry_finance_org_fast_scope"] = {
                 **finance_scope,

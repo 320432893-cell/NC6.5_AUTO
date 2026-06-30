@@ -1,31 +1,31 @@
 # 职责：执行收款单明细多余行删除和手续费账户清空规则
 # 不做什么：不新增手续费行，不定义字段映射，不负责 CLI/打印
-# 允许依赖层：tools.receipt_detail_fields/reader/screen_writer、tools.receipt_body_table_locator
+# 允许依赖层：core.receipt_detail_fields/reader/screen_writer、core.receipt_body_table_locator
 # 谁不应该 import：配置校验、Sheet 写入、收款匹配模块不应 import
 
 import os
 import time
 
-from tools.receipt_body_table_locator import locate_receipt_body_table_cached
-from tools.receipt_detail_fields import (
+from core.receipt_body_table_locator import locate_receipt_body_table_cached
+from core.receipt_detail_fields import (
     ACCOUNT_COL,
     AMOUNT_COL,
     SUBJECT_COL,
     normalize_amount_text,
     normalize_text,
 )
-from tools.receipt_detail_reader import (
+from core.receipt_detail_reader import (
     read_located_body_table,
     read_row_cells,
     read_table_row_count_by_path,
     wait_body_row_count,
     wait_table_row_count_by_path,
 )
-from tools.receipt_detail_screen_writer import (
+from core.receipt_detail_screen_writer import (
     focus_detail_cell,
     keyboard_write_selected_cell,
 )
-from tools.receipt_keyboard_utils import guarded_send_ctrl_d
+from core.receipt_keyboard_utils import guarded_send_ctrl_d
 
 
 def skip_fee_extra_row_delete_enabled():

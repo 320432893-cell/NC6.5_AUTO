@@ -3,9 +3,9 @@ import subprocess
 import ctypes
 import pytest
 
-from tools import receipt_self_made_fill_trial as trial
-from tools import receipt_new_probe
-from tools.receipt_new_probe import (
+from core import receipt_self_made_fill_trial as trial
+from core import receipt_new_probe
+from core.receipt_new_probe import (
     detect_self_made_entry_state,
     is_current_visible_control,
 )
@@ -540,7 +540,7 @@ def test_header_scope_uses_provided_canvas_anchor_before_semantic(monkeypatch):
         (
             "finance-path",
             123,
-            {"preferred_dynamic_index": 2, "min_index": 2, "max_index": 2},
+            {"preferred_dynamic_index": 2},
         )
     ]
 
