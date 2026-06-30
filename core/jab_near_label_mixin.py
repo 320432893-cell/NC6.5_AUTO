@@ -35,23 +35,6 @@ class JABNearLabelMixin:
             require_showing=require_showing,
         )
 
-    def find_text_context_near_label_once(
-        self,
-        label,
-        title=None,
-        class_name=None,
-        hwnd=None,
-        require_showing=True,
-    ):
-        return jab_near_label.find_text_context_near_label_once(
-            self,
-            label,
-            title=title,
-            class_name=class_name,
-            hwnd=hwnd,
-            require_showing=require_showing,
-        )
-
     def describe_controls_near_label(
         self,
         label,
@@ -69,23 +52,6 @@ class JABNearLabelMixin:
             class_name=class_name,
             hwnd=hwnd,
             require_showing=require_showing,
-            max_vertical_distance=max_vertical_distance,
-            max_right_distance=max_right_distance,
-        )
-
-    def controls_near_label_info(
-        self,
-        vm_id,
-        controls,
-        label_info,
-        max_vertical_distance=28,
-        max_right_distance=420,
-    ):
-        return jab_near_label.controls_near_label_info(
-            self,
-            vm_id,
-            controls,
-            label_info,
             max_vertical_distance=max_vertical_distance,
             max_right_distance=max_right_distance,
         )
@@ -132,63 +98,6 @@ class JABNearLabelMixin:
             require_showing=require_showing,
         )
 
-    def collect_controls_for_bounds_scan(
-        self,
-        vm_id,
-        context,
-        controls,
-        owned,
-        require_showing=True,
-        depth=0,
-    ):
-        return jab_near_label.collect_controls_for_bounds_scan(
-            self,
-            vm_id,
-            context,
-            controls,
-            owned,
-            require_showing=require_showing,
-            depth=depth,
-        )
-
     @staticmethod
     def info_to_dict(info):
         return jab_near_label.info_to_dict(info)
-
-    def find_text_near_label_by_bounds(
-        self,
-        vm_id,
-        root_context,
-        label,
-        require_showing=True,
-    ):
-        return jab_near_label.find_text_near_label_by_bounds(
-            self,
-            vm_id,
-            root_context,
-            label,
-            require_showing=require_showing,
-        )
-
-    def collect_labels_and_texts(
-        self,
-        vm_id,
-        context,
-        target_label,
-        labels,
-        texts,
-        owned,
-        require_showing=True,
-        depth=0,
-    ):
-        return jab_near_label.collect_labels_and_texts(
-            self,
-            vm_id,
-            context,
-            target_label,
-            labels,
-            texts,
-            owned,
-            require_showing=require_showing,
-            depth=depth,
-        )

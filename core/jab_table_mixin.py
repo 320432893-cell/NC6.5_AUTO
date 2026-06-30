@@ -143,9 +143,6 @@ class JABTableMixin:
             max_cols=max_cols,
         )
 
-    def get_window_table_cache(self, window_title):
-        return jab_table_ops.get_window_table_cache(self, window_title)
-
     def clear_table_cache(self, window_title=None):
         return jab_table_ops.clear_table_cache(self, window_title=window_title)
 
@@ -166,66 +163,8 @@ class JABTableMixin:
             timeout=timeout,
         )
 
-    def select_visible_table_rows_once(
-        self,
-        table_index,
-        rows,
-        window_title=None,
-        selection_col=0,
-    ):
-        return jab_table_ops.select_visible_table_rows_once(
-            self,
-            table_index,
-            rows,
-            window_title=window_title,
-            selection_col=selection_col,
-        )
-
-    def select_table_rows_from_context(
-        self,
-        table_index,
-        rows,
-        table_context,
-        vm_id,
-        table_info,
-        window_title=None,
-        selection_col=0,
-    ):
-        return jab_table_ops.select_table_rows_from_context(
-            self,
-            table_index,
-            rows,
-            table_context,
-            vm_id,
-            table_info,
-            window_title=window_title,
-            selection_col=selection_col,
-        )
-
-    def resolve_amount_col(self, amount_col):
-        return jab_table_ops.resolve_amount_col(self, amount_col)
-
-    def resolve_partner_col(self, partner_col):
-        return jab_table_ops.resolve_partner_col(self, partner_col)
-
-    def find_main_table(self, timeout=None):
-        return jab_table_ops.find_main_table(self, timeout=timeout)
-
     def find_tables_once(self, scope_hwnd=None):
         return jab_table_ops.find_tables_once(self, scope_hwnd=scope_hwnd)
-
-    def window_descendant_hwnds(self, scope_hwnd):
-        return jab_table_ops.window_descendant_hwnds(scope_hwnd)
-
-    def find_tables_in_tree(self, vm_id, context, depth, owned_path, window_info=None):
-        return jab_table_ops.find_tables_in_tree(
-            self,
-            vm_id,
-            context,
-            depth,
-            owned_path,
-            window_info=window_info,
-        )
 
     def get_table_info(self, vm_id, context):
         return jab_table_reader.get_table_info(self, vm_id, context)
