@@ -430,26 +430,6 @@ class JABControlMixin:
     def get_context_info(self, vm_id, context):
         return jab_context_tree.get_context_info(self, vm_id, context)
 
-    def matches_control(
-        self,
-        control_name,
-        desc,
-        role,
-        states,
-        expected_name,
-        normalized_roles,
-        require_showing,
-    ):
-        return jab_context_tree.matches_control(
-            control_name,
-            desc,
-            role,
-            states,
-            expected_name,
-            normalized_roles,
-            require_showing,
-        )
-
     @staticmethod
     def context_info_is_showing(info):
         return context_info_is_showing(info)

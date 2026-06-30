@@ -8,6 +8,7 @@ from core.receipt_entry import ReceiptEntryWorkbook
 from core.receipt_matching import (
     ReceiptEntryDryRunMatcher,
     ReceiptEntryMatcher,
+    counterparty_similarity,
     format_receipt_amount_name_mismatch_reason,
     format_receipt_duplicate_reason,
     format_receipt_name_amount_mismatch_reason,
@@ -551,14 +552,22 @@ def test_counterparty_normalization_ignores_prefix_and_punctuation():
     assert normalize_counterparty("1/AZUGA INC. AZUGA INC - OPERATING") == (
         "AZUGAINCAZUGAINCOPERATING"
     )
-    assert names_match("1/AZUGA INC. AZUGA INC - OPERATING", "AZUGA INC")
+    assert counterparty_similarity(
+        "TECNOMOTUM SOCIEDAD ANONIMA PROMOT+",
+        "TECNOMOTUM SOCIEDAD ANONIMA PROMOTO",
+    ) == 98
+    assert names_match(
+        "TECNOMOTUM SOCIEDAD ANONIMA PROMOT+",
+        "TECNOMOTUM SOCIEDAD ANONIMA PROMOTO",
+    )
+    assert not names_match("1/AZUGA INC. AZUGA INC - OPERATING", "AZUGA INC")
 
 
 def test_receipt_matcher_matches_amount_and_name_even_when_dates_differ():
     excel_row = ReceiptExcelRow(
         row=10,
         receipt_date=date(2026, 1, 16),
-        payer_name="1/AZUGA INC. AZUGA INC - OPERATING",
+        payer_name="TECNOMOTUM SOCIEDAD ANONIMA PROMOT+",
         raw_amount=Decimal("68700.00"),
         bank="大陆花旗",
         organization_code="A001",
@@ -569,7 +578,7 @@ def test_receipt_matcher_matches_amount_and_name_even_when_dates_differ():
     nc_row = ReceiptNCRow(
         row_index=3,
         document_date=date(2026, 1, 17),
-        customer="AZUGA INC",
+        customer="TECNOMOTUM SOCIEDAD ANONIMA PROMOTO",
         original_amount=Decimal("68700.00"),
     )
 

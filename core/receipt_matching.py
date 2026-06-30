@@ -4,6 +4,7 @@
 # 谁不应该 import：底层 JAB 操作模块不应 import
 
 import re
+from difflib import SequenceMatcher
 import unicodedata
 
 from core.receipt_models import ReceiptMatchIssue
@@ -11,6 +12,7 @@ from core.receipt_parsing import format_receipt_value, format_receipt_values
 
 
 PUNCTUATION_RE = re.compile(r"[^0-9A-Z\u4e00-\u9fff]+")
+DEFAULT_NAME_MATCH_THRESHOLD = 80
 
 
 class ReceiptEntryMatcher:
@@ -117,9 +119,17 @@ def normalize_counterparty(value):
     return PUNCTUATION_RE.sub("", text)
 
 
-def names_match(left, right):
+def counterparty_similarity(left, right):
     left_key = normalize_counterparty(left)
     right_key = normalize_counterparty(right)
     if not left_key or not right_key:
+        return 0
+    if left_key == right_key:
+        return 100
+    return round(SequenceMatcher(None, left_key, right_key).ratio() * 100)
+
+
+def names_match(left, right, threshold=DEFAULT_NAME_MATCH_THRESHOLD):
+    if not left or not right:
         return False
-    return left_key in right_key or right_key in left_key
+    return counterparty_similarity(left, right) >= int(threshold)

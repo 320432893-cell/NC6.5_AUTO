@@ -163,7 +163,6 @@ def test_self_made_choose_cleans_popup_before_entry_wait(monkeypatch):
     monkeypatch.setattr(
         receipt_new_probe, "collect_receipt_new_windows", lambda jab: next(sequence)
     )
-    monkeypatch.setattr(receipt_new_probe, "find_named_controls", lambda *a, **k: [])
     monkeypatch.setattr(
         receipt_new_probe,
         "open_new_menu_with_known_buttons",

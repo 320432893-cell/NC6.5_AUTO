@@ -24,7 +24,9 @@ from core.receipt_locator_cache import (
 from core.receipt_report import build_console_report_lines
 from tools.receipt_full_flow_entry import (
     business_from_plan_row,
+    build_header_verify_expectations,
     cache_receipt_header_scope,
+    customer_name_similarity,
     confirm_save,
     ensure_header_counterparty_customer,
     extract_header_accepted_text,
@@ -1291,8 +1293,8 @@ def test_write_extra_text_field_fails_when_rewrite_still_does_not_land(monkeypat
     assert result["reason"] == "写入后未读回目标文本字段值：商务领款备忘='PI-001'"
 
 
-def test_header_unified_check_ignores_extra_text_fields(monkeypatch):
-    states = {"customer.path": "ACME LTD"}
+def test_header_unified_check_verifies_extra_text_fields(monkeypatch):
+    states = {"customer.path": "ACME LTD", "memo.path": "PI-001"}
     paths = []
 
     class FakeJAB:
@@ -1333,14 +1335,23 @@ def test_header_unified_check_ignores_extra_text_fields(monkeypatch):
         },
         5,
         2002,
+        expectations={
+            "客户": {
+                "mode": "customer_name_similarity",
+                "expected": "ACME LTD",
+                "threshold": 80,
+            },
+            "商务领款备忘": {"mode": "text_exact", "expected": "PI-001"},
+        },
     )
 
     assert result["ok"] is True
     assert [(item["label"], item["ok"]) for item in result["reads"]] == [
-        ("客户", True)
+        ("客户", True),
+        ("商务领款备忘", True),
     ]
-    assert paths == ["customer.path"]
-    assert all(target["kind"] != "extra_text" for target in result["targets"])
+    assert paths == ["customer.path", "memo.path"]
+    assert any(target["kind"] == "extra_text" for target in result["targets"])
 
 
 def test_header_unified_check_fails_when_header_repair_still_missing(monkeypatch):
@@ -1377,10 +1388,11 @@ def test_header_unified_check_fails_when_header_repair_still_missing(monkeypatch
         },
         5,
         2002,
+        expectations={"结算方式": {"mode": "text_exact", "expected": "网银"}},
     )
 
     assert result["ok"] is False
-    assert "补写后仍有缺失" in result["reason"]
+    assert "表头字段核验失败" in result["reason"]
 
 
 def test_header_unified_check_skips_finance_org_path_read(monkeypatch):
@@ -1402,6 +1414,7 @@ def test_header_unified_check_skips_finance_org_path_read(monkeypatch):
         {"ok": True, "fields": []},
         5,
         2002,
+        expectations={"币种": {"mode": "currency", "expected": "USD"}},
     )
 
     assert result["ok"] is True
@@ -1445,11 +1458,75 @@ def test_header_unified_check_accepts_currency_chinese_readback(monkeypatch):
         {"ok": True, "fields": []},
         5,
         2002,
+        expectations={"币种": {"mode": "currency", "expected": "USD"}},
     )
 
     assert result["ok"] is True
     assert result["reads"][0]["ok"] is True
     assert result["reads"][0]["actual_value"] == "美元"
+
+
+def test_header_unified_check_rejects_wrong_date_after_two_repairs(monkeypatch):
+    class FakeJAB:
+        def find_context_by_path_once(self, path, **_kwargs):
+            return path, 1, [], {"hwnd": 2002}
+
+        def get_context_info(self, _vm_id, _context):
+            return FakeInfo(description="2026-06-30")
+
+        def get_text_context_value(self, _vm_id, _context):
+            return ""
+
+        def release_contexts(self, _vm_id, _contexts):
+            pass
+
+    patch_all(monkeypatch, "guarded_paste_header_value",
+        lambda *_args: {"ok": True, "enter_ok": True},
+    )
+
+    result = verify_and_repair_header_targets(
+        FakeJAB(),
+        [
+            {
+                "ok": True,
+                "label": "单据日期",
+                "value": "2026-06-15",
+                "path": "date.path",
+            }
+        ],
+        {"ok": True, "fields": []},
+        5,
+        2002,
+        expectations={"单据日期": {"mode": "date_exact", "expected": "2026-06-15"}},
+    )
+
+    assert result["ok"] is False
+    assert len(result["repairs"]) == 2
+    assert result["summary"]["failed"][0]["actual"] == "2026-06-30"
+
+
+def test_customer_verify_uses_payer_name_similarity_threshold():
+    assert (
+        customer_name_similarity(
+            "TECNOMOTUM SOCIEDAD ANONIMA PROMOT+",
+            "TECNOMOTUM SOCIEDAD ANONIMA PROMOTO",
+        )
+        == 98
+    )
+    assert customer_name_similarity("ACME LTD", "移为") < 80
+
+
+def test_build_header_verify_expectations_uses_payer_name_for_customer():
+    row = plan_row(10, extra_text_fields={"商务领款备忘": "PI-001"})
+    result = build_header_verify_expectations(
+        row,
+        business_from_plan_row(row),
+        row.extra_text_fields,
+    )
+
+    assert result["客户"]["expected"] == "ACME LTD"
+    assert result["客户"]["threshold"] == 80
+    assert result["商务领款备忘"]["expected"] == "PI-001"
 
 
 def test_ensure_header_counterparty_customer_skips_when_already_customer(monkeypatch):
