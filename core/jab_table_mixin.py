@@ -7,62 +7,6 @@ from core import jab_table_ops, jab_table_reader
 
 
 class JABTableMixin:
-    def find_amount_rows(self, amount, amount_col=None, timeout=None):
-        return jab_table_ops.find_amount_rows(
-            self, amount, amount_col=amount_col, timeout=timeout
-        )
-
-    def select_amount_row(
-        self, amount, amount_col=None, selection_col=None, timeout=None
-    ):
-        return jab_table_ops.select_amount_row(
-            self,
-            amount,
-            amount_col=amount_col,
-            selection_col=selection_col,
-            timeout=timeout,
-        )
-
-    def find_amount_partner_rows(
-        self,
-        amount,
-        partner_name,
-        amount_col=None,
-        partner_col=None,
-        timeout=None,
-        match_mode="exact",
-    ):
-        return jab_table_ops.find_amount_partner_rows(
-            self,
-            amount,
-            partner_name,
-            amount_col=amount_col,
-            partner_col=partner_col,
-            timeout=timeout,
-            match_mode=match_mode,
-        )
-
-    def select_amount_partner_row(
-        self,
-        amount,
-        partner_name,
-        amount_col=None,
-        partner_col=None,
-        selection_col=None,
-        timeout=None,
-        match_mode="exact",
-    ):
-        return jab_table_ops.select_amount_partner_row(
-            self,
-            amount,
-            partner_name,
-            amount_col=amount_col,
-            partner_col=partner_col,
-            selection_col=selection_col,
-            timeout=timeout,
-            match_mode=match_mode,
-        )
-
     def select_table_rows(self, rows, selection_col=None, clear=True, timeout=None):
         return jab_table_ops.select_table_rows(
             self,
@@ -71,9 +15,6 @@ class JABTableMixin:
             clear=clear,
             timeout=timeout,
         )
-
-    def clear_table_selection(self, timeout=None):
-        return jab_table_ops.clear_table_selection(self, timeout=timeout)
 
     def resolve_selection_col(self, selection_col):
         return jab_table_ops.resolve_selection_col(self, selection_col)
@@ -84,11 +25,6 @@ class JABTableMixin:
     def get_selected_child_indexes(self, vm_id, context, child_count):
         return jab_table_ops.get_selected_child_indexes(
             self, vm_id, context, child_count
-        )
-
-    def read_amount_column(self, amount_col=None, limit=None, timeout=None):
-        return jab_table_ops.read_amount_column(
-            self, amount_col=amount_col, limit=limit, timeout=timeout
         )
 
     def read_table_snapshot(
@@ -264,86 +200,6 @@ class JABTableMixin:
             table_info,
             window_title=window_title,
             selection_col=selection_col,
-        )
-
-    def wait_for_record_visible(
-        self,
-        amount,
-        partner_name,
-        timeout=None,
-        selected_first=True,
-        max_rows=200,
-        max_cols=50,
-        window_title=None,
-    ):
-        return jab_table_ops.wait_for_record_visible(
-            self,
-            amount,
-            partner_name,
-            timeout=timeout,
-            selected_first=selected_first,
-            max_rows=max_rows,
-            max_cols=max_cols,
-            window_title=window_title,
-        )
-
-    def find_record_in_visible_tables(
-        self,
-        amount,
-        partner_name,
-        selected_first=True,
-        max_rows=200,
-        max_cols=50,
-        window_title=None,
-    ):
-        return jab_table_ops.find_record_in_visible_tables(
-            self,
-            amount,
-            partner_name,
-            selected_first=selected_first,
-            max_rows=max_rows,
-            max_cols=max_cols,
-            window_title=window_title,
-        )
-
-    def select_record_in_visible_tables(
-        self,
-        amount,
-        partner_name,
-        window_title=None,
-        selection_col=0,
-        timeout=None,
-        max_rows=200,
-        max_cols=50,
-    ):
-        return jab_table_ops.select_record_in_visible_tables(
-            self,
-            amount,
-            partner_name,
-            window_title=window_title,
-            selection_col=selection_col,
-            timeout=timeout,
-            max_rows=max_rows,
-            max_cols=max_cols,
-        )
-
-    def select_record_in_visible_tables_once(
-        self,
-        amount,
-        partner_name,
-        window_title=None,
-        selection_col=0,
-        max_rows=200,
-        max_cols=50,
-    ):
-        return jab_table_ops.select_record_in_visible_tables_once(
-            self,
-            amount,
-            partner_name,
-            window_title=window_title,
-            selection_col=selection_col,
-            max_rows=max_rows,
-            max_cols=max_cols,
         )
 
     def resolve_amount_col(self, amount_col):
