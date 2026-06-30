@@ -18,12 +18,6 @@ from core.jab_probe import (
 )
 
 
-def take_desktop_screenshot():
-    import pyautogui
-
-    return pyautogui.screenshot()
-
-
 class JABOperator(JABControlMixin, JABNearLabelMixin, JABPathMixin, JABTableMixin):
     """Small Java Access Bridge wrapper for stable NC button/menu actions."""
 
@@ -130,9 +124,6 @@ class JABOperator(JABControlMixin, JABNearLabelMixin, JABPathMixin, JABTableMixi
     def get_foreground_window_info(self):
         return jab_window.get_foreground_window_info()
 
-    def foreground_window_matches(self, title, class_name=None):
-        return jab_window.foreground_window_matches(title, class_name=class_name)
-
     def wait_window_by_title(
         self,
         title,
@@ -195,9 +186,6 @@ class JABOperator(JABControlMixin, JABNearLabelMixin, JABPathMixin, JABTableMixi
 
     def clipboard_read(self):
         return get_clipboard_text()
-
-    def take_screenshot(self):
-        return take_desktop_screenshot()
 
     def do_generate_front(self):
         self.ensure_started()
