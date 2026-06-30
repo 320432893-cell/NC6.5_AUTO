@@ -289,13 +289,3 @@ def fill_receipt_query(
         return result
     finally:
         jab.close()
-
-
-def main():
-    from tools.receipt_query_cli import main as cli_main
-
-    return cli_main()
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
