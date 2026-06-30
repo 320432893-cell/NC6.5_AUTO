@@ -1,6 +1,8 @@
 import argparse
+import importlib.util
 import subprocess
 import sys
+from pathlib import Path
 
 
 BASE_CHECKS = (
@@ -57,6 +59,33 @@ RULE_TOOL_CONTRACT_CHECKS = (
 )
 
 
+def gate_runnable(command):
+    """这闸的二进制装了没(能不能跑)——只判可运行,不判绿不绿。返回 (ok, 说明)。"""
+    head = command[0]
+    if head == sys.executable:
+        if len(command) >= 3 and command[1] == "-m":
+            return importlib.util.find_spec(command[2]) is not None, f"-m {command[2]}"
+        if len(command) >= 2 and command[1].endswith(".py"):
+            return Path(command[1]).exists(), command[1]
+        return True, "python"
+    return Path(head).exists(), head
+
+
+def doctor():
+    """闸健康:遍历所有闸,配了却没装的=假闸(摆设),红。"""
+    dead = []
+    print("[doctor] 闸健康(能不能跑,不判绿)")
+    for name, command in BASE_CHECKS + AUDIT_CHECKS + DEEP_CHECKS:
+        ok, detail = gate_runnable(command)
+        print(f"  {'OK' if ok else '假闸·DEAD':<11} {name}  [{detail}]")
+        if not ok:
+            dead.append(name)
+    if dead:
+        print(f"\n假闸 {len(dead)}(配在 check.py 却没装,等于摆设):{', '.join(dead)}")
+        raise SystemExit(1)
+    print("\n全部闸可运行")
+
+
 def run_check(name, command):
     print(f"[check] {name}")
     result = subprocess.run(command, check=False, capture_output=True, text=True)
@@ -78,7 +107,14 @@ def main():
         help="Check profile. 'changed' is the slice-closure alias for all local gates.",
     )
     parser.add_argument("--list", action="store_true", help="Print configured checks.")
+    parser.add_argument(
+        "--doctor", action="store_true", help="闸健康:验每个闸的二进制装没装(假闸=红)。"
+    )
     args = parser.parse_args()
+
+    if args.doctor:
+        doctor()
+        return
 
     profiles = {
         "all": BASE_CHECKS + AUDIT_CHECKS,
