@@ -69,28 +69,6 @@ def probe(jab, args):
     }
 
 
-def is_finance_org_label(result):
-    if not result.get("ok"):
-        return False
-    values = {
-        str(result.get("name") or "").strip(),
-        str(result.get("description") or "").strip(),
-        str(result.get("text") or "").strip(),
-    }
-    return "财务组织(O)" in values
-
-
-def is_finance_org_accepted(result):
-    if not result.get("ok"):
-        return False
-    values = {
-        str(result.get("name") or "").strip(),
-        str(result.get("description") or "").strip(),
-        str(result.get("text") or "").strip(),
-    }
-    return FINANCE_ORG_ACCEPTED_TEXT in values
-
-
 def redact_scope(scope):
     if not isinstance(scope, dict):
         return scope

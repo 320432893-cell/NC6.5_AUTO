@@ -27,12 +27,7 @@ CURRENCY_NAMES = {"USD": "美元", "CNY": "人民币"}
 HEADER_DYNAMIC_PREFIX_BASE = "0.0.1.0.0.0.0"
 HEADER_COMMON_SUFFIX_TEMPLATE = "0.0.0.1.1.0.0.0.0.1.0.2.0.0.0.0.0.0.0.{index}.0"
 HEADER_COMMON_LABEL_SUFFIX_TEMPLATE = "0.0.0.1.1.0.0.0.0.1.0.2.0.0.0.0.0.0.0.{index}"
-FINANCE_ORG_LABEL_SUFFIX = "0.0.0.1.1.0.0.0.1.1.1.0"
 FINANCE_ORG_COMPACT_LABEL_SUFFIX = "0.0.0.1.1.0.0.0.0.1.1.0"
-FINANCE_ORG_LABEL_SUFFIX_VARIANTS = (
-    ("observed-compact", FINANCE_ORG_COMPACT_LABEL_SUFFIX),
-    ("configured-builder", FINANCE_ORG_LABEL_SUFFIX),
-)
 HEADER_LIVE_SEMANTIC_FALLBACK_TIMEOUT = 0.35
 HEADER_FORM_TEXT_INDEXES = {
     "单据日期": 5,
@@ -142,35 +137,6 @@ def run_receipt_new_probe_with_jab(jab=None):
         "stdout": proc.stdout,
         "stderr": proc.stderr,
     }
-
-
-def find_context_by_path_readonly(jab, path, scope_hwnd=None, role=None):
-    context, vm_id, owned, window_info = jab.find_context_by_path_once(
-        path,
-        class_name="SunAwtCanvas",
-        scope_hwnd=scope_hwnd,
-        role=role,
-        require_showing=False,
-        require_valid_bounds=False,
-    )
-    if not context:
-        return {"ok": False, "reason": "path not found"}
-    try:
-        info = jab.get_context_info(vm_id, context)
-        text = jab.get_text_context_value(vm_id, context)
-        return {
-            "ok": True,
-            "window": window_info,
-            "name": info.name.strip() if info else "",
-            "description": info.description.strip() if info else "",
-            "role": (info.role_en_US.strip() or info.role.strip()) if info else "",
-            "states": (
-                (info.states_en_US.strip() or info.states.strip()) if info else ""
-            ),
-            "text": text,
-        }
-    finally:
-        jab.release_contexts(vm_id, owned)
 
 
 def is_valid_customer_name_candidate(value):
@@ -479,18 +445,6 @@ def validate_receipt_header_scope_anchor(
         "anchor_text": anchor_text,
         "window": window_info,
     }
-
-
-def finance_org_label_info_matches(info):
-    if not info:
-        return False
-    for text in (
-        str(getattr(info, "name", "") or "").strip(),
-        str(getattr(info, "description", "") or "").strip(),
-    ):
-        if text == HEADER_SCOPE_ANCHOR_TEXT:
-            return True
-    return False
 
 
 def find_finance_org_header_scope_by_paths(
