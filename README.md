@@ -57,8 +57,10 @@
 - `core/nc_voucher_workflow.py`：制单窗口匹配、保存、关闭后验证。
 - `core/nc_switch_generated_workflow.py`：切换到已生成/正式单据列表。
 - `core/nc_backfill_workflow.py`：已生成列表凭证号回填。
+- `core/nc_generated_result_locator.py`：凭证已生成结果表定位，只在单据生成模块 scope 内确认含真实凭证号列的结果表。
 - `core/nc_table_matcher.py`：NC 表格按金额、对手方、日期的匹配逻辑。
 - `core/receipt_entry.py`：收款单 Excel 本地预检、主体映射、Sheet2 机器结果表和 NC 后验匹配基础模型。
+- `core/receipt_post_query_only.py`：收款单补做后验查询入口，基于 Sheet2 待补行重建查询目标并写回结果。
 - `core/receipt_sheet.py`：Sheet2 表头维护、旧噪音列删除和当前计划结果区重写。
 - `core/errors.py`：NC workflow 领域异常，区分页面状态、表格匹配、JAB 控件、JAB 动作、Excel 写入锁和流程契约失败。
 - `core/jab_operator.py`：JAB 底层封装，负责读表、选行、按钮动作、F3/F5、关闭窗口；AWT 残留清理只保留显式入口，不随 JAB 启停自动执行。
@@ -82,7 +84,8 @@
 - `tools/close_awt_popup_residue.py`
 - `tools/receipt_business_memo_probe.py`：收款单表头 `商务领款备忘` path 现场探测，只作诊断。
 - `tools/receipt_finance_org_path_probe.py`：财务组织 label path 现场探测，只作诊断。
-- `tools/voucher_path_stability_probe.py`：凭证待生成工具栏和相关控件 path 稳定性采样，只作诊断。
+- `tools/receipt_runtime_monitor.py`：运行期只读监控，观察 run_state、Java/Python 进程、内存、JAB/线程提示和卡顿。
+- `tools/receipt_runtime_monitor_gui_logs.bat` / `tools/receipt_runtime_monitor_stress.bat` / `tools/voucher_runtime_monitor_stress.bat`：Windows 现场监控入口。
 - `tools/query_jab.bat`
 - `tools/run_jab_probe.bat`
 
@@ -174,6 +177,8 @@ cd /mnt/h/python脚本/.venv/nc_auto_v2
 /mnt/h/python脚本/.venv/nc_auto_v2/.venv-local/Scripts/python.exe tools/jab_batch.py backfill
 ```
 
+当凭证已生成但首次查询已生成列表为空、NC 刷新慢或 Excel C 列仍是文字状态时，可以只重跑回填；该命令不生成、不保存凭证。
+
 只校验当前页面，不从待生成页自动切换：
 
 ```bash
@@ -263,10 +268,11 @@ cd /mnt/h/python脚本/.venv/nc_auto_v2
 | `tools/jab_batch.py plan` | 是 | 否 | 只读待生成表 | 否 | 凭证批量只读规划 |
 | `tools/jab_batch.py generate --yes` | 是 | 是 | 是 | 是，保存凭证 | 凭证正式生成入口 |
 | `tools/jab_batch.py switch-generated` | 否 | 否 | 是 | 否 | 凭证页签切换 |
-| `tools/jab_batch.py backfill` | 是 | 是 | 读取已生成表 | 否 | 凭证号回填 |
+| `tools/jab_batch.py backfill` | 是 | 是 | 读取已生成表 | 否 | 凭证号回填；可在已生成列表刷新后单独重跑 |
 | `tools/receipt_entry_check.py` | 是 | 否 | 否 | 否 | 收款单本地预检 |
 | `tools/receipt_entry_check.py --write` | 是 | 是，重写 Sheet2 当前计划结果区 | 否 | 否 | 收款单计划结果写入 |
 | `tools/receipt_full_flow_entry.py` | 是 | 写本批 Sheet2 结果 | 是 | 桌面正式默认保存，CLI 需 `--save` | 收款单完整流程正式入口 |
+| `tools/receipt_full_flow_entry.py --post-query-only --query-after-save` | 是 | 写 Sheet2 后验结果 | 是，只查询 | 否 | 收款单补做后验查询 |
 | `tools/receipt_full_flow_save_query_write_test.py` | 是 | 默认保存后写 Sheet2 本批结果 | 是 | 可选保存 | 现场测试：保存/不保存/故障恢复/verify 审查 |
 | `tools/receipt_query_fill.py --confirm --read-results` | 是 | 否 | 是 | 否 | 收款单查询/抽取组件 |
 | `tools/receipt_query_fill.py --dry-run-match` | 是 | 否 | 是 | 否 | 历史查重/诊断入口，只读 |
@@ -363,7 +369,7 @@ C:\Users\Queclink\Desktop\6.1凭证.xlsx
 - C 列统一承担状态/凭证号写入。
 - `plan` / `generate` 跳过 C 列已有值的行。
 - 生成成功但未回填凭证号时，C 列写 `已生成待回填`。
-- `backfill` 只读取 C 列等于 `已生成待回填` 的 key 行，并替换为凭证号。
+- `backfill` 跳过 C 列已有真实数值凭证号的行；C 列为空、`已生成待回填` 或错误文字的 key 行都可参与匹配并替换为凭证号。
 
 ## NC 表格列位
 
@@ -390,7 +396,7 @@ C:\Users\Queclink\Desktop\6.1凭证.xlsx
 - 凭证号列：`col=22`
 - 凭证号回填时去前导 0。
 - 凭证号有效范围：`1 <= 凭证号 <= 9999`。
-- 页面状态识别只用真实凭证号判定已生成；`00000000` 不算，列数和日期不作为页面证明。
+- 已生成结果表定位只在单据生成模块 scope 内进行，先按动态模块前缀找到当前 scope，再找第 22 列含真实凭证号的结果表；`00000000` 不算，列数、日期和工具栏文字不作为页面证明。
 
 收款单查询结果表：
 
@@ -422,6 +428,7 @@ C:\Users\Queclink\Desktop\6.1凭证.xlsx
 - 当前会识别缺必需列、起始行无效、银行为空/未配置/账户禁用、账户主体不存在、日期错误、银行来款名为空、金额错误或非正、币种为空或不支持、客户编码为空、手续费错误或负数、以及本批 Sheet1 内重复。
 - 重复键为 `主体 + 到款日期 + 银行 + 币种 + 客户编码 + 银行来款名 + 金额`。同一 key 出现多行时标 `DUPLICATE_EXCEL_ROWS`，整组不录入。
 - 通过预检的行按主体分组供后续录入使用；录入前不查 NC。全部录入后再进入后验查询阶段，查询结果只影响 Sheet2 的 `NC客户名称`、`后验核对状态` 和 `异常原因`。`--query-after-save` 已接入正式后验查询：按本批保存成功行的主体分组，最多四个主体；每个主体用本批日期区间查一次 NC，先改每页 500，再按页读取并只匹配本批目标。匹配使用录入客户编码后 NC 主表显示出的客户名，不使用 Sheet1 银行来款名；名称归一化相似度阈值不低于 90，金额必须精确相等。
+- `--post-query-only` 是补做后验查询入口：从 Sheet2 读取仍需查询/未匹配/异常的行，按当前 Excel 列映射和 GUI 传入的字段映射重建查询目标，执行同一套后验查询和 Sheet2 写回；该模式不录入、不保存、不新增收款单。成功写回前会清除旧行样式，避免成功行仍保留红色失败底色。
 - Sheet2 本批结果按主体、到款日期、原 Sheet1 行号排序；每个主体块后追加 `主体合计：xxx` 行，汇总 `🟪原始金额`、`手续费`、`🟪到账金额`。
 - 收款单录入 path 策略的稳定事实：当前页路径前缀会随打开的 NC 页面/页签动态变化，不能把旧固定后缀当主路。正式入口用 `财务组织(O)` 锚点建立当前 canvas/scope 缓存，首个字段语义定位成功后学习本次表头模板，后续字段优先复用；失败时只做当前字段受限语义定位和弹窗恢复，不走鼠标/bounds，也不恢复 `finance-org-write-path`。
 - 收款单查询条件也按同一口径处理：F3 打开查询条件后先解析查询窗口自己的动态前缀，拼接 `收款财务组织`、`单据日期起止` 的稳定后缀写入；动态 path 失败后走当前查询窗口内的语义路径推断，不再回退旧 near-label 写入。F3 触发用 `pyautogui.press("f3")` 按 `0.2s` 重试直到 `查询条件/SunAwtDialog` 可见，裸 SendInput F3 现场验证不稳定。
@@ -517,14 +524,14 @@ JAB 查询入口现状：
 
 `backfill` 从已生成表回填凭证号到 Excel C 列。默认会先识别页面状态：
 
-- 已在 `generated`：直接回填。
-- 当前是 `pending`：先自动执行 `switch-generated`，再回填。
-- 当前是 `voucher_open`、`query_open`、`loading`、`error`：停止并报告状态，避免按错误表格列位读取。
+- 已生成结果表能被 `nc_generated_result_locator` 定位：直接回填。
+- 结果表未出现且当前是 `pending`：先自动执行 `switch-generated`，再用结果表定位器确认。
+- 当前是 `voucher_open`、`query_open`、`loading`、`error` 或结果表定位失败：停止并报告状态，避免按错误表格列位读取。
 - 如需旧的只校验行为，使用 `--no-backfill-auto-switch`。
 
 逻辑：
 
-1. 读取 Excel 中 C 列等于 `已生成待回填` 的 key 行。
+1. 读取 Excel 中 C 列不是有效数值凭证号的 key 行。
 2. 读取已生成表。
 3. 按 `金额 + 对手方` 匹配。
 4. 历史重复时，优先取凭证日期等于当天的记录。

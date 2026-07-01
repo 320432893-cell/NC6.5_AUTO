@@ -53,6 +53,35 @@ def test_looks_like_voucher(handler):
     assert not handler._looks_like_voucher(0)
 
 
+def test_backfill_load_skips_only_numeric_voucher_status(tmp_path):
+    excel = tmp_path / "voucher.xlsx"
+    write_workbook(
+        excel,
+        [
+            [Decimal("100.00"), "客户A", "已生成未取到凭证号"],
+            [Decimal("200.00"), "客户B", "回填未找到"],
+            [Decimal("300.00"), "客户C", ""],
+            [Decimal("400.00"), "客户D", "00123"],
+        ],
+    )
+    local_handler = DataHandler(
+        {
+            "excel_path": str(excel),
+            "sheet_my": "Sheet1",
+            "has_header": False,
+            "jab_batch": {},
+        }
+    )
+
+    items = local_handler.load_jab_batch_data(
+        skip_filled=True,
+        skip_any_status=False,
+    )
+
+    assert [item.row for item in items] == [1, 2, 3]
+    assert [item.partner for item in items] == ["客户A", "客户B", "客户C"]
+
+
 def test_save_workbook_wraps_permission_error(handler):
     class LockedWorkbook:
         closed = False

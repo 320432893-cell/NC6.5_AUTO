@@ -12,6 +12,7 @@ from core.receipt_parsing import format_receipt_value, format_receipt_values
 
 
 PUNCTUATION_RE = re.compile(r"[^0-9A-Z\u4e00-\u9fff]+")
+TOKEN_RE = re.compile(r"[0-9A-Z\u4e00-\u9fff]+")
 DEFAULT_NAME_MATCH_THRESHOLD = 80
 
 
@@ -119,6 +120,12 @@ def normalize_counterparty(value):
     return PUNCTUATION_RE.sub("", text)
 
 
+def counterparty_tokens(value):
+    text = unicodedata.normalize("NFKC", str(value or "")).upper()
+    text = re.sub(r"^\s*\d+\s*/\s*", "", text)
+    return TOKEN_RE.findall(text)
+
+
 def counterparty_similarity(left, right):
     left_key = normalize_counterparty(left)
     right_key = normalize_counterparty(right)
@@ -129,7 +136,110 @@ def counterparty_similarity(left, right):
     return round(SequenceMatcher(None, left_key, right_key).ratio() * 100)
 
 
-def names_match(left, right, threshold=DEFAULT_NAME_MATCH_THRESHOLD):
+def counterparty_match_details(left, right, threshold=DEFAULT_NAME_MATCH_THRESHOLD):
+    score = counterparty_similarity(left, right)
+    threshold = int(threshold)
     if not left or not right:
-        return False
-    return counterparty_similarity(left, right) >= int(threshold)
+        return {
+            "ok": False,
+            "score": score,
+            "threshold": threshold,
+            "method": "empty",
+            "reason": "名称为空",
+        }
+    if score >= threshold:
+        return {
+            "ok": True,
+            "score": score,
+            "threshold": threshold,
+            "method": "similarity",
+            "reason": None,
+        }
+    alias = counterparty_alias_match(left, right)
+    if alias.get("ok"):
+        return {
+            **alias,
+            "score": score,
+            "threshold": threshold,
+        }
+    return {
+        "ok": False,
+        "score": score,
+        "threshold": threshold,
+        "method": "similarity",
+        "reason": f"相似度={score}<阈值{threshold}",
+    }
+
+
+def counterparty_alias_match(left, right):
+    left_key = normalize_counterparty(left)
+    right_key = normalize_counterparty(right)
+    if not left_key or not right_key:
+        return {"ok": False, "method": "alias", "reason": "归一化名称为空"}
+    if left_key == right_key:
+        return {"ok": True, "method": "normalized_equal", "reason": None}
+    long_text, short_text = (
+        (str(left or ""), str(right or ""))
+        if len(left_key) >= len(right_key)
+        else (str(right or ""), str(left or ""))
+    )
+    long_key = normalize_counterparty(long_text)
+    short_key = normalize_counterparty(short_text)
+    long_tokens = counterparty_tokens(long_text)
+    short_tokens = counterparty_tokens(short_text)
+    if len(short_key) < 4:
+        return {
+            "ok": False,
+            "method": "alias",
+            "reason": "简称过短，不做包含放行",
+        }
+    if len(short_tokens) >= 2 and token_sequence_count(long_tokens, short_tokens) > 1:
+        return {
+            "ok": False,
+            "method": "alias",
+            "reason": "长名称中重复出现短名称，不做包含放行",
+        }
+    if long_key.startswith(short_key):
+        return {
+            "ok": True,
+            "method": "normalized_prefix",
+            "reason": f"归一化长名称以前缀包含短名称：{short_key}",
+        }
+    if (
+        long_tokens
+        and short_tokens
+        and len(short_tokens) == 1
+        and len(short_tokens[0]) >= 4
+        and long_tokens[0].startswith(short_tokens[0])
+    ):
+        return {
+            "ok": True,
+            "method": "first_token_prefix",
+            "reason": f"首词简称匹配：{short_tokens[0]} -> {long_tokens[0]}",
+        }
+    if len(short_tokens) >= 2 and token_sequence_count(long_tokens, short_tokens) == 1:
+        return {
+            "ok": True,
+            "method": "token_sequence_contains",
+            "reason": f"长名称按词包含短名称：{' '.join(short_tokens)}",
+        }
+    return {
+        "ok": False,
+        "method": "alias",
+        "reason": "未命中安全包含/简称规则",
+    }
+
+
+def token_sequence_count(tokens, needle):
+    if not tokens or not needle or len(needle) > len(tokens):
+        return 0
+    count = 0
+    width = len(needle)
+    for index in range(0, len(tokens) - width + 1):
+        if tokens[index : index + width] == needle:
+            count += 1
+    return count
+
+
+def names_match(left, right, threshold=DEFAULT_NAME_MATCH_THRESHOLD):
+    return bool(counterparty_match_details(left, right, threshold).get("ok"))

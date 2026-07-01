@@ -2,7 +2,8 @@
 set -euo pipefail
 
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DEST_DIR="${NC_AUTO_WINDOWS_DIR:-/mnt/h/python脚本/.venv/nc_auto_v2}"
+DEFAULT_DEST_DIRS="/mnt/h/NC6.5_AUTO:/mnt/h/python脚本/.venv/nc_auto_v2"
+DEST_DIRS="${NC_AUTO_WINDOWS_DIR:-$DEFAULT_DEST_DIRS}"
 INTERVAL="${NC_AUTO_SYNC_INTERVAL:-2}"
 MODE="once"
 DRY_RUN=0
@@ -11,15 +12,16 @@ usage() {
   cat <<'EOF'
 Usage: tools/sync_to_windows.sh [--watch] [--dry-run] [--dest PATH]
 
-Sync the WSL source repo to the Windows/H-drive JAB runtime mirror.
+Sync the WSL source repo to the Windows/H-drive JAB runtime mirrors.
 
 Options:
   --watch       Keep syncing every NC_AUTO_SYNC_INTERVAL seconds, default 2.
   --dry-run     Show what would change without writing files.
-  --dest PATH   Override destination path.
+  --dest PATH   Override destination path. Can be repeated.
 
 Environment:
-  NC_AUTO_WINDOWS_DIR      Destination path, default /mnt/h/python脚本/.venv/nc_auto_v2
+  NC_AUTO_WINDOWS_DIR      Colon-separated destination paths.
+                           Default /mnt/h/NC6.5_AUTO:/mnt/h/python脚本/.venv/nc_auto_v2
   NC_AUTO_SYNC_INTERVAL    Watch interval seconds, default 2
 EOF
 }
@@ -35,7 +37,13 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     --dest)
-      DEST_DIR="${2:?--dest requires a path}"
+      if [[ "$DEST_DIRS" == "$DEFAULT_DEST_DIRS" ]]; then
+        DEST_DIRS=""
+      fi
+      if [[ -n "$DEST_DIRS" ]]; then
+        DEST_DIRS+=":"
+      fi
+      DEST_DIRS+="${2:?--dest requires a path}"
       shift 2
       ;;
     -h|--help)
@@ -72,13 +80,19 @@ if [[ "$DRY_RUN" -eq 1 ]]; then
 fi
 
 sync_once() {
-  mkdir -p "$DEST_DIR"
-  rsync "${RSYNC_ARGS[@]}" "$SRC_DIR/" "$DEST_DIR/"
-  printf '[sync] %s -> %s\n' "$SRC_DIR" "$DEST_DIR"
+  IFS=':' read -r -a dests <<< "$DEST_DIRS"
+  for dest_dir in "${dests[@]}"; do
+    if [[ -z "$dest_dir" ]]; then
+      continue
+    fi
+    mkdir -p "$dest_dir"
+    rsync "${RSYNC_ARGS[@]}" "$SRC_DIR/" "$dest_dir/"
+    printf '[sync] %s -> %s\n' "$SRC_DIR" "$dest_dir"
+  done
 }
 
 if [[ "$MODE" == "watch" ]]; then
-  echo "[sync] watch mode: interval=${INTERVAL}s, dest=${DEST_DIR}"
+  echo "[sync] watch mode: interval=${INTERVAL}s, dest=${DEST_DIRS}"
   while true; do
     sync_once
     sleep "$INTERVAL"

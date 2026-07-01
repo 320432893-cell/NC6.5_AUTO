@@ -74,40 +74,6 @@ class NCStateDetector:
             f"actual={last_state.name} reason={last_state.reason}"
         )
 
-    def wait_for_page_state(self, expected, items=None, command="", timeout=None):
-        deadline = time.time() + float(timeout if timeout is not None else self.state_wait_timeout)
-        last_state = None
-        while True:
-            last_state = self.detect_page_state(items=items)
-            self.record_event(
-                "nc_page_state_wait",
-                command=command,
-                expected=expected,
-                actual=last_state.name,
-                reason=last_state.reason,
-                match_ratio=last_state.match_ratio,
-            )
-            if last_state.name == expected:
-                self.record_transition(
-                    "state_wait_passed",
-                    to_state=last_state.name,
-                    command=command,
-                    expected=expected,
-                    reason=last_state.reason,
-                )
-                log.info(
-                    f"NC 页面状态等待通过: expected={expected} reason={last_state.reason}"
-                )
-                return last_state
-            if time.time() >= deadline:
-                break
-            time.sleep(self.state_wait_interval)
-
-        raise WorkflowStateError(
-            f"NC 页面状态等待超时: command={command} expected={expected} "
-            f"actual={last_state.name} reason={last_state.reason}"
-        )
-
     def detect_page_state(self, items=None):
         voucher_state = self.detect_voucher_window_state()
         if voucher_state.name == "voucher_open":
@@ -136,9 +102,6 @@ class NCStateDetector:
                 "error",
                 f"父页面/主表均未检测到，停止深度重试 parent={has_parent} tables={len(tables)}",
             )
-
-        if main and self.is_generated_signature(main):
-            return NCPageState("generated", "父页+真实凭证号表特征", table=main)
 
         if pending_toolbar.get("ok") and main:
             ratio = self.table_match_ratio(main.get("rows", []), items or [])
@@ -214,13 +177,6 @@ class NCStateDetector:
                 "制单窗口特征不完整: "
                 f"buttons={sorted(visible_buttons)} tokens={sorted(button_tokens)}"
             ),
-        )
-
-    def is_generated_signature(self, table):
-        vouchers = table.get("voucher_values", [])
-        return any(
-            normalize_generated_voucher(value, self.generated_voucher_max)
-            for value in vouchers
         )
 
     def table_match_ratio(self, rows, items):

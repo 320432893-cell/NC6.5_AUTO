@@ -1,5 +1,7 @@
 import re
+import tempfile
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 
 import openpyxl
 
@@ -173,6 +175,37 @@ class DataHandler:
         if errors:
             raise ExcelPreflightError("; ".join(errors + warnings))
         return report
+
+    def assert_excel_writable(self, operation="写入凭证状态/凭证号"):
+        """Fail before NC is touched when the workbook is locked by Excel/WPS."""
+        source = Path(self.excel_path)
+        temp_path = None
+        try:
+            with source.open("r+b"):
+                pass
+            with tempfile.NamedTemporaryFile(
+                dir=str(source.parent),
+                prefix=f".{source.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as temp_file:
+                temp_path = Path(temp_file.name)
+        except PermissionError as e:
+            raise ExcelLockedError(
+                f"Excel 文件无法写入，可能正被 WPS/Excel 打开: "
+                f"operation={operation} path={self.excel_path}"
+            ) from e
+        except OSError as e:
+            raise ExcelLockedError(
+                f"Excel 文件写入预检失败: operation={operation} "
+                f"path={self.excel_path} reason={e}"
+            ) from e
+        finally:
+            if temp_path is not None:
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     def detect_header_mismatch(self):
         wb = openpyxl.load_workbook(self.excel_path, read_only=True, data_only=True)

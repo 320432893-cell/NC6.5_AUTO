@@ -46,6 +46,27 @@ class JABTableMixin:
             timeout=timeout,
         )
 
+    def read_table_snapshot_by_path(
+        self,
+        table_path,
+        amount_col=None,
+        partner_col=None,
+        voucher_col=None,
+        extra_cols=None,
+        limit=None,
+        window_class="SunAwtCanvas",
+    ):
+        return jab_table_ops.read_table_snapshot_by_path(
+            self,
+            table_path,
+            amount_col=amount_col,
+            partner_col=partner_col,
+            voucher_col=voucher_col,
+            extra_cols=extra_cols,
+            limit=limit,
+            window_class=window_class,
+        )
+
     def read_all_table_cells(
         self,
         max_rows=None,

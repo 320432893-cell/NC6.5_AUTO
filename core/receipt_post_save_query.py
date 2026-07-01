@@ -47,7 +47,13 @@ class TimingRecorder:
         return result
 
 
-def run_post_save_batch_query(config, selected_rows, row_reports):
+def run_post_save_batch_query(
+    config,
+    selected_rows,
+    row_reports,
+    jab=None,
+    jab_lock=None,
+):
     reports_by_row = {int(report.get("excel_row")): report for report in row_reports}
     targets = [
         BatchQueryTarget(row=row, row_report=reports_by_row.get(row.row) or {})
@@ -57,9 +63,7 @@ def run_post_save_batch_query(config, selected_rows, row_reports):
     results_by_row = {
         row.row: ReceiptBatchResultRow(
             plan_row=row,
-            local_status=(
-                "通过" if (reports_by_row.get(row.row) or {}).get("ok") else "异常"
-            ),
+            local_status=entry_local_status(reports_by_row.get(row.row) or {}),
             exception_reason=(
                 ""
                 if (reports_by_row.get(row.row) or {}).get("ok")
@@ -96,28 +100,68 @@ def run_post_save_batch_query(config, selected_rows, row_reports):
     jab_cfg = query_cfg["jab"]
     extractor = ReceiptNCResultExtractor(config)
     timings = TimingRecorder()
-    jab = JABOperator(config)
+    owns_jab = jab is None
+    jab = jab or JABOperator(config)
     try:
-        timings.measure("jab.ensure-started", jab.ensure_started)
-        for org_code, group_targets in grouped.items():
-            group_report = query_one_org(
+        if jab_lock is None:
+            run_group_queries(
                 jab,
                 config,
                 query_cfg,
                 jab_cfg,
                 extractor,
-                org_code,
-                group_targets,
+                grouped,
                 timings,
+                report,
+                results_by_row,
             )
-            report["groups"].append(group_report)
-            apply_group_match_results(results_by_row, group_targets, group_report)
-            if not group_report.get("ok"):
-                report["ok"] = False
+        else:
+            with jab_lock:
+                run_group_queries(
+                    jab,
+                    config,
+                    query_cfg,
+                    jab_cfg,
+                    extractor,
+                    grouped,
+                    timings,
+                    report,
+                    results_by_row,
+                )
     finally:
-        jab.close()
+        if owns_jab:
+            jab.close()
     report["timings"] = timings.items
     return [results_by_row[row.row] for row in selected_rows], report
+
+
+def run_group_queries(
+    jab,
+    config,
+    query_cfg,
+    jab_cfg,
+    extractor,
+    grouped,
+    timings,
+    report,
+    results_by_row,
+):
+    timings.measure("jab.ensure-started", jab.ensure_started)
+    for org_code, group_targets in grouped.items():
+        group_report = query_one_org(
+            jab,
+            config,
+            query_cfg,
+            jab_cfg,
+            extractor,
+            org_code,
+            group_targets,
+            timings,
+        )
+        report["groups"].append(group_report)
+        apply_group_match_results(results_by_row, group_targets, group_report)
+        if not group_report.get("ok"):
+            report["ok"] = False
 
 
 def group_targets_by_org(targets):
@@ -380,6 +424,9 @@ def apply_group_match_results(results_by_row, targets, group_report):
 
 
 def format_entry_failure(report):
+    sheet2_reason = str(report.get("sheet2_exception_reason") or "").strip()
+    if sheet2_reason:
+        return sheet2_reason
     failed_step = str(report.get("failed_step") or "").strip()
     reason = str(report.get("reason") or "").strip()
     if failed_step.startswith("save"):
@@ -389,3 +436,11 @@ def format_entry_failure(report):
             f"录入失败-{failed_step}:{reason}" if reason else f"录入失败-{failed_step}"
         )
     return reason or "录入失败"
+
+
+def entry_local_status(report):
+    if report.get("business_exception_skipped"):
+        return "跳过"
+    if report.get("ok"):
+        return "通过"
+    return "异常"

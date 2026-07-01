@@ -180,8 +180,15 @@ def cancel_current_receipt_entry(
     timeout=3.0,
     interval=0.1,
     confirm_wait=0.8,
+    jab=None,
 ):
-    jab = JABOperator(config)
+    owns_jab = jab is None
+    jab = jab or JABOperator(config)
+    previous_hide_blank_awt_windows_enabled = getattr(
+        jab,
+        "hide_blank_awt_windows_enabled",
+        None,
+    )
     jab.hide_blank_awt_windows_enabled = False
     report = {
         "ok": False,
@@ -249,7 +256,10 @@ def cancel_current_receipt_entry(
             report["reason"] = wait_parent.get("reason") or "取消后未确认父页新增可用"
         return report
     finally:
-        jab.close()
+        if previous_hide_blank_awt_windows_enabled is not None:
+            jab.hide_blank_awt_windows_enabled = previous_hide_blank_awt_windows_enabled
+        if owns_jab:
+            jab.close()
 
 def should_retry_row_by_cancel_reopen(row_report):
     if not row_report or row_report.get("ok"):

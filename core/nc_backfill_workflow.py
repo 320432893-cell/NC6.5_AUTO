@@ -41,7 +41,7 @@ class NCBackfillWorkflow:
                 auto_switch=auto_switch,
             )
             items = self.processor.pending_workflow.load_pending_items(
-                skip_filled=False,
+                skip_filled=True,
                 skip_any_status=False,
                 limit=limit,
                 start_row=start_row,
@@ -57,14 +57,11 @@ class NCBackfillWorkflow:
                 context="backfill",
             )
             self.run_state.event("excel_preflight_passed", **preflight)
+            self.run_state.set_stage("excel_write_preflight", context="backfill")
+            self.data_handler.assert_excel_writable("回填前写入凭证号预检")
+            self.run_state.event("excel_write_preflight_passed", context="backfill")
             items: list[ExcelVoucherItem] = [
-                item
-                for item in items
-                if not item.parse_error
-                and (
-                    not require_generated_status
-                    or str(item.voucher or "").strip() == self.generated_status
-                )
+                item for item in items if not item.parse_error
             ]
             if require_generated_status:
                 with self.perf.span("excel_save_split_columns", rows=len(items)):
@@ -202,6 +199,27 @@ class NCBackfillWorkflow:
             )
             return self.switch_to_generated_list(assume_parent_ready=True)
 
+        try:
+            with self.perf.span("backfill_generated_locator_precheck"):
+                state = self.switch_generated_workflow.wait_for_generated_result_table(
+                    timeout=float(
+                        self.batch_cfg.get("generated_result_precheck_timeout", 0.2)
+                    )
+                )
+            self.record_event(
+                "backfill_preflight_state",
+                state=state.name,
+                reason=state.reason,
+                auto_switch=auto_switch,
+            )
+            return state
+        except WorkflowStateError as locator_error:
+            self.record_event(
+                "backfill_generated_locator_miss",
+                error=str(locator_error),
+                auto_switch=auto_switch,
+            )
+
         state = self.detect_page_state(items)
         self.record_event(
             "backfill_preflight_state",
@@ -210,7 +228,9 @@ class NCBackfillWorkflow:
             auto_switch=auto_switch,
         )
         if state.name == "generated":
-            return state
+            raise WorkflowStateError(
+                "旧页面状态识别检测到已生成，但未通过结果表 path+凭证号列定位，拒绝回填"
+            )
         if state.name == "pending" and auto_switch:
             self.record_transition(
                 "backfill_auto_switch_generated",

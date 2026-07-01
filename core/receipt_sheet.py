@@ -16,6 +16,8 @@ GROUP_FILL = "D9EAF7"
 SUMMARY_FILL = "FFF2CC"
 SUCCESS_FILL = "E2F0D9"
 ERROR_FILL = "FCE4D6"
+EXCEPTION_FILL = "FF0000"
+EXCEPTION_FONT = "FFFFFF"
 
 
 RESULT_SHEET_HEADERS = [
@@ -177,6 +179,8 @@ def append_plan_sheet_row(ws, columns, row_number, values):
     row_by_header = dict(zip(RESULT_SHEET_HEADERS, values, strict=True))
     for header, value in row_by_header.items():
         ws.cell(row=row_number, column=columns[header], value=value)
+    clear_result_row_style(ws, columns, row_number)
+    apply_plan_row_style(ws, columns, row_number, row_by_header)
     return row_number + 1
 
 
@@ -226,7 +230,14 @@ def apply_summary_style(cell):
 
 
 def apply_result_row_style(ws, columns, row_number, values):
-    status = dict(zip(RESULT_SHEET_HEADERS, values, strict=True)).get("后验核对状态")
+    row_by_header = dict(zip(RESULT_SHEET_HEADERS, values, strict=True))
+    clear_result_row_style(ws, columns, row_number)
+    local_status = str(row_by_header.get("本地预检状态") or "").strip()
+    exception_reason = str(row_by_header.get("异常原因") or "").strip()
+    if local_status in {"异常", "跳过"} or exception_reason:
+        apply_exception_style(ws, columns, row_number)
+        return
+    status = row_by_header.get("后验核对状态")
     fill_color = None
     if status == "后验通过":
         fill_color = SUCCESS_FILL
@@ -236,7 +247,63 @@ def apply_result_row_style(ws, columns, row_number, values):
         return
     fill = PatternFill("solid", fgColor=fill_color)
     for column in range(1, max(columns.values(), default=0) + 1):
-        ws.cell(row=row_number, column=column).fill = fill
+            ws.cell(row=row_number, column=column).fill = fill
+
+
+def clear_result_row_style(ws, columns, row_number):
+    max_column = max(columns.values(), default=0)
+    if not max_column:
+        return
+    for column in range(1, max_column + 1):
+        cell = ws.cell(row=row_number, column=column)
+        if PatternFill is not None:
+            cell.fill = PatternFill(fill_type=None)
+        if Font is not None:
+            cell.font = Font()
+
+
+def read_result_sheet_rows(wb, sheet_name, header_row):
+    if sheet_name not in wb.sheetnames:
+        return []
+    ws = wb[sheet_name]
+    columns = ensure_result_sheet_headers(ws, header_row)
+    rows = []
+    max_column = max(columns.values(), default=0)
+    for row_number in range(header_row + 1, ws.max_row + 1):
+        values = {
+            header: ws.cell(row=row_number, column=column).value
+            for header, column in columns.items()
+            if header in RESULT_SHEET_HEADERS
+        }
+        if not any(value not in (None, "") for value in values.values()):
+            continue
+        rows.append(
+            {
+                "row_number": row_number,
+                "values": values,
+                "is_group_or_summary": not isinstance(values.get("原Sheet1行号"), int),
+                "max_column": max_column,
+            }
+        )
+    return rows
+
+
+def apply_plan_row_style(ws, columns, row_number, row_by_header):
+    local_status = str(row_by_header.get("本地预检状态") or "").strip()
+    exception_reason = str(row_by_header.get("异常原因") or "").strip()
+    if local_status == "异常" or exception_reason:
+        apply_exception_style(ws, columns, row_number)
+
+
+def apply_exception_style(ws, columns, row_number):
+    if PatternFill is not None:
+        fill = PatternFill("solid", fgColor=EXCEPTION_FILL)
+        for column in range(1, max(columns.values(), default=0) + 1):
+            ws.cell(row=row_number, column=column).fill = fill
+    if Font is not None:
+        font = Font(color=EXCEPTION_FONT, bold=True)
+        for column in range(1, max(columns.values(), default=0) + 1):
+            ws.cell(row=row_number, column=column).font = font
 
 
 def rewrite_batch_result_sheet(wb, sheet_name, header_row, results):

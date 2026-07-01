@@ -26,11 +26,12 @@ def build_batch_results(selected_rows, row_reports):
     for row in selected_rows:
         report = reports_by_row.get(row.row) or {}
         ok = bool(report.get("ok"))
+        skipped = bool(report.get("business_exception_skipped"))
         reason = "" if ok else format_row_failure_reason(report)
         results.append(
             ReceiptBatchResultRow(
                 plan_row=row,
-                local_status="通过" if ok else "异常",
+                local_status="跳过" if skipped else ("通过" if ok else "异常"),
                 exception_reason=reason,
                 nc_customer_name=str(report.get("nc_customer_name") or "").strip(),
                 nc_document_no=str(report.get("nc_document_no") or "").strip(),
@@ -62,6 +63,9 @@ def post_query_skip_reason(rows, exit_code):
     return "后验查询条件未满足"
 
 def format_row_failure_reason(report):
+    sheet2_reason = str(report.get("sheet2_exception_reason") or "").strip()
+    if sheet2_reason:
+        return sheet2_reason
     failed_step = str(report.get("failed_step") or "").strip()
     reason = str(report.get("reason") or "").strip()
     if failed_step.startswith("save"):

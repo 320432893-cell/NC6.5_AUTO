@@ -12,6 +12,7 @@ from core.receipt_post_save_query import (
     document_no_sort_number,
     group_targets_by_org,
     match_snapshot_to_result,
+    run_post_save_batch_query,
 )
 
 
@@ -169,3 +170,95 @@ def test_group_targets_by_org_groups_and_sorts_by_date_then_row():
 
     assert list(grouped) == ["A001", "A006"]
     assert [target.row.row for target in grouped["A001"]] == [1, 3]
+
+
+def test_run_post_save_batch_query_reuses_external_jab_without_closing(monkeypatch):
+    calls = {"closed": 0, "ensured": 0}
+
+    class FakeJAB:
+        def ensure_started(self):
+            calls["ensured"] += 1
+
+        def close(self):
+            calls["closed"] += 1
+
+    monkeypatch.setattr(
+        "core.receipt_post_save_query.query_one_org",
+        lambda _jab, _config, _query_cfg, _jab_cfg, _extractor, org_code, targets, _timings: {
+            "ok": True,
+            "organization_code": org_code,
+            "target_rows": [target.row.row for target in targets],
+            "match": {"matched": {}, "issues": {}},
+        },
+    )
+    monkeypatch.setattr(
+        "core.receipt_post_save_query.apply_group_match_results",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "core.receipt_post_save_query.ReceiptNCResultExtractor",
+        lambda _config: object(),
+    )
+
+    jab = FakeJAB()
+    config = {"receipt_entry": {"query": {"jab": {}}}}
+    results, report = run_post_save_batch_query(
+        config,
+        [plan_row(1)],
+        [{"excel_row": 1, "ok": True, "nc_customer_name": "PAYER-1"}],
+        jab=jab,
+    )
+
+    assert report["ok"] is True
+    assert [item.plan_row.row for item in results] == [1]
+    assert calls["ensured"] == 1
+    assert calls["closed"] == 0
+
+
+def test_post_save_query_preserves_business_skipped_rows(monkeypatch):
+    class FakeJAB:
+        def ensure_started(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(
+        "core.receipt_post_save_query.query_one_org",
+        lambda _jab, _config, _query_cfg, _jab_cfg, _extractor, org_code, targets, _timings: {
+            "ok": True,
+            "organization_code": org_code,
+            "target_rows": [target.row.row for target in targets],
+            "match": {"matched": {1: "D001"}, "issues": {}},
+        },
+    )
+    monkeypatch.setattr(
+        "core.receipt_post_save_query.apply_group_match_results",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "core.receipt_post_save_query.ReceiptNCResultExtractor",
+        lambda _config: object(),
+    )
+
+    results, report = run_post_save_batch_query(
+        {"receipt_entry": {"query": {"jab": {}}}},
+        [plan_row(1), plan_row(2)],
+        [
+            {"excel_row": 1, "ok": True, "nc_customer_name": "PAYER-1"},
+            {
+                "excel_row": 2,
+                "ok": False,
+                "business_exception_skipped": True,
+                "sheet2_exception_reason": "客户名称不匹配；已取消当前单据并跳过",
+                "nc_customer_name": "WRONG NAME",
+            },
+        ],
+        jab=FakeJAB(),
+    )
+
+    assert report["ok"] is True
+    assert results[0].local_status == "通过"
+    assert results[1].local_status == "跳过"
+    assert results[1].exception_reason == "客户名称不匹配；已取消当前单据并跳过"
+    assert results[1].nc_customer_name == "WRONG NAME"

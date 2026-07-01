@@ -1,6 +1,7 @@
 from collections import defaultdict
 from decimal import Decimal
 
+from core.errors import WorkflowStateError
 from core.models import (
     ExcelVoucherItem,
     GeneratedVoucherMatch,
@@ -22,6 +23,8 @@ class NCTableMatcher:
         voucher_col=None,
         prefer_generated_date=False,
         limit=None,
+        table_path=None,
+        window_class="SunAwtCanvas",
     ) -> tuple[list[PendingMatch], list[MatchIssue]]:
         extra_cols = [self.generated_date_col] if prefer_generated_date else None
         with self.perf.span(
@@ -30,18 +33,31 @@ class NCTableMatcher:
             voucher_col=voucher_col,
             prefer_generated_date=prefer_generated_date,
             limit=limit,
+            table_path=table_path,
         ):
-            snapshot = self.jab.read_table_snapshot(
-                voucher_col=voucher_col,
-                extra_cols=extra_cols,
-                limit=limit,
-            )
+            if table_path:
+                snapshot = self.jab.read_table_snapshot_by_path(
+                    table_path,
+                    voucher_col=voucher_col,
+                    extra_cols=extra_cols,
+                    limit=limit,
+                    window_class=window_class,
+                )
+            else:
+                snapshot = self.jab.read_table_snapshot(
+                    voucher_col=voucher_col,
+                    extra_cols=extra_cols,
+                    limit=limit,
+                )
+        if table_path and not snapshot:
+            raise WorkflowStateError(f"已生成结果表读取为空，拒绝回填: path={table_path}")
         self.perf.event("pending_snapshot_loaded", rows=len(snapshot))
         self.run_state.event(
             "table_snapshot_loaded",
             rows=len(snapshot),
             voucher_col=voucher_col,
             prefer_generated_date=prefer_generated_date,
+            table_path=table_path,
         )
         index = defaultdict(list)
         for row in snapshot:
@@ -88,10 +104,18 @@ class NCTableMatcher:
         items: list[ExcelVoucherItem],
         voucher_col,
     ) -> tuple[list[GeneratedVoucherMatch], list[MatchIssue]]:
+        table_path = getattr(self.processor, "generated_result_table_path", None)
+        if not table_path:
+            raise WorkflowStateError("未定位到已生成结果表，拒绝按全局主表回填凭证号")
+
         matches, issues = self.match_current_table(
             items,
             voucher_col=voucher_col,
             prefer_generated_date=True,
+            table_path=table_path,
+            window_class=getattr(
+                self.processor, "generated_result_table_window_class", "SunAwtCanvas"
+            ),
         )
         generated_matches = [
             GeneratedVoucherMatch(

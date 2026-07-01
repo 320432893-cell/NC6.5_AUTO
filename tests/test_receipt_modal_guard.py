@@ -28,6 +28,10 @@ def test_recover_cancelable_modal_now_sends_alt_c(monkeypatch):
         "core.receipt_modal_guard.send_hotkey_alt_c",
         lambda: calls.__setitem__("alt_c", calls["alt_c"] + 1),
     )
+    monkeypatch.setattr(
+        "core.receipt_modal_guard.focus_window",
+        lambda hwnd: {"ok": True, "hwnd": hwnd},
+    )
 
     result = recover_cancelable_modal_now(object(), stage="明细主行", settle_timeout=0)
 

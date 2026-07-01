@@ -21,7 +21,7 @@ from core.receipt_locator_cache import (
     extract_entry_scope_hwnd,
 )
 
-from core.receipt_report import build_console_report_lines
+from core.receipt_report import build_console_report_lines, format_row_failure_reason
 from tools.receipt_full_flow_entry import (
     business_from_plan_row,
     build_header_verify_expectations,
@@ -43,7 +43,10 @@ from tools.receipt_full_flow_entry import (
 )
 from core.receipt_post_save_query import target_to_match_row
 from core.receipt_post_save_query import format_query_exception
-from core.receipt_save_cancel import should_retry_row_by_cancel_reopen
+from core.receipt_save_cancel import (
+    cancel_current_receipt_entry,
+    should_retry_row_by_cancel_reopen,
+)
 
 _PATCH_TARGET_MODULES = [full_flow, cp, _locator, _save_cancel, _report, _row_stages]
 
@@ -278,6 +281,374 @@ def test_header_counterparty_locator_failure_does_not_retry():
             },
         }
     ) is False
+
+
+def test_customer_name_mismatch_is_skippable_business_exception():
+    report = {
+        "ok": False,
+        "failed_step": "header-unified-check",
+        "reason": "表头字段核验失败：客户",
+        "plan_row": {"payer_name": "ACME LTD"},
+        "header_unified_check": {
+            "summary": {
+                "failed": [
+                    {
+                        "label": "客户",
+                        "mode": "customer_name_similarity",
+                        "expected": "ACME LTD",
+                        "actual": "OTHER CUSTOMER",
+                        "score": 35,
+                        "threshold": 80,
+                    }
+                ]
+            }
+        },
+    }
+
+    assert full_flow.is_skippable_business_exception(report) is True
+    full_flow.mark_skipped_business_exception(report, {"ok": True})
+
+    assert report["business_exception_skipped"] is True
+    assert report["error_category"] == "customer_name_mismatch"
+    assert report["nc_customer_name"] == "OTHER CUSTOMER"
+    assert "客户名称不匹配" in report["sheet2_exception_reason"]
+    assert "ACME LTD" in report["sheet2_exception_reason"]
+    assert "OTHER CUSTOMER" in report["sheet2_exception_reason"]
+    assert "相似度=35<阈值80" in report["sheet2_exception_reason"]
+    assert "已取消当前单据并跳过" in report["sheet2_exception_reason"]
+
+
+def test_non_customer_header_unified_failure_is_not_skippable():
+    report = {
+        "ok": False,
+        "failed_step": "header-unified-check",
+        "reason": "表头字段核验失败：币种",
+        "header_unified_check": {
+            "summary": {
+                "failed": [
+                    {
+                        "label": "币种",
+                        "mode": "currency",
+                        "expected": "CNY",
+                        "actual": "USD",
+                    }
+                ]
+            }
+        },
+    }
+
+    assert full_flow.is_skippable_business_exception(report) is False
+
+
+def test_customer_name_missing_is_skippable_with_readback_details():
+    report = {
+        "ok": False,
+        "failed_step": "header-customer-name",
+        "reason": "客户名称未确认：客户字段未回显有效 NC 客户名称",
+        "plan_row": {"payer_name": "ACME LTD"},
+        "customer_name_readback": {
+            "ok": False,
+            "value": "",
+            "reason": "客户字段未回显有效 NC 客户名称；读回：path-readback: reason=空",
+        },
+    }
+
+    full_flow.mark_skipped_business_exception(report, {"ok": True})
+
+    assert report["error_category"] == "customer_name_missing"
+    assert "客户名称未确认" in report["sheet2_exception_reason"]
+    assert "Excel银行来款名='ACME LTD'" in report["sheet2_exception_reason"]
+    assert "已取消当前单据并跳过" in report["sheet2_exception_reason"]
+
+
+def test_counterparty_not_customer_after_repair_is_skippable():
+    report = {
+        "ok": False,
+        "failed_step": "header-counterparty-type",
+        "reason": "往来对象未确认客户",
+        "header_counterparty": {
+            "ok": False,
+            "expected": "客户",
+            "actual": "供应商",
+            "state": {"state": "repairable-conflict", "actual": "供应商"},
+            "repair": {"method": "embedded-selection-api", "ok": True},
+            "after_detail": {"value": "供应商"},
+        },
+    }
+
+    full_flow.mark_skipped_business_exception(report, {"ok": True})
+
+    assert report["error_category"] == "counterparty_not_customer"
+    assert "往来对象不是客户" in report["sheet2_exception_reason"]
+    assert "实际='供应商'" in report["sheet2_exception_reason"]
+    assert "修复方式=embedded-selection-api ok=True" in report["sheet2_exception_reason"]
+
+
+def test_counterparty_locator_failure_is_not_skippable_business_exception():
+    report = {
+        "ok": False,
+        "failed_step": "header-counterparty-type",
+        "reason": "nearby scope 不是 Java 窗口",
+        "header_counterparty": {
+            "ok": False,
+            "actual": "供应商",
+            "detail": {"value": "供应商"},
+        },
+    }
+
+    assert full_flow.is_skippable_business_exception(report) is False
+
+
+def test_sheet2_failure_reason_prefers_business_exception_detail():
+    assert (
+        format_row_failure_reason(
+            {
+                "failed_step": "header-unified-check",
+                "reason": "旧原因",
+                "sheet2_exception_reason": "客户名称不匹配；已取消当前单据并跳过",
+            }
+        )
+        == "客户名称不匹配；已取消当前单据并跳过"
+    )
+
+
+def test_handle_skippable_business_exception_cancels_and_marks_skip(monkeypatch):
+    events = []
+
+    class Recorder:
+        def event(self, name, **kwargs):
+            events.append((name, kwargs))
+
+    report = {
+        "ok": False,
+        "excel_row": 2001,
+        "failed_step": "header-unified-check",
+        "reason": "表头字段核验失败：客户",
+        "plan_row": {"payer_name": "ACME LTD"},
+        "header_unified_check": {
+            "summary": {
+                "failed": [
+                    {
+                        "label": "客户",
+                        "mode": "customer_name_similarity",
+                        "expected": "ACME LTD",
+                        "actual": "OTHER CUSTOMER",
+                        "score": 35,
+                        "threshold": 80,
+                    }
+                ]
+            }
+        },
+    }
+
+    monkeypatch.setattr(
+        full_flow,
+        "run_with_jab_lock",
+        lambda _lock, func, *args, **kwargs: func(*args, **kwargs),
+    )
+    monkeypatch.setattr(
+        full_flow,
+        "cancel_current_receipt_entry",
+        lambda *_args, **_kwargs: {"ok": True},
+    )
+
+    assert full_flow.handle_skippable_business_exception(
+        report,
+        config={},
+        jab=object(),
+        jab_lock=object(),
+        recorder=Recorder(),
+    ) is True
+
+    assert report["business_exception_skipped"] is True
+    assert report["error_category"] == "customer_name_mismatch"
+    assert "客户名称不匹配" in report["sheet2_exception_reason"]
+    assert [name for name, _ in events] == [
+        "row-business-exception-cancel",
+        "row-business-exception-skipped",
+    ]
+
+
+def test_handle_skippable_row_failure_cancels_generic_header_failure(monkeypatch):
+    events = []
+
+    class Recorder:
+        def event(self, name, **kwargs):
+            events.append((name, kwargs))
+
+    report = {
+        "ok": False,
+        "excel_row": 2003,
+        "failed_step": "header-unified-check",
+        "reason": "表头字段核验失败：备注: expected='待处理款项' actual=''",
+        "header_unified_check": {
+            "summary": {
+                "failed": [
+                    {
+                        "label": "备注",
+                        "mode": "text_exact",
+                        "expected": "待处理款项",
+                        "actual": "",
+                        "reason": "备注核验失败：expected='待处理款项' actual=''",
+                    }
+                ]
+            }
+        },
+        "save": {"skipped": True},
+    }
+
+    monkeypatch.setattr(
+        full_flow,
+        "run_with_jab_lock",
+        lambda _lock, func, *args, **kwargs: func(*args, **kwargs),
+    )
+    monkeypatch.setattr(
+        full_flow,
+        "cancel_current_receipt_entry",
+        lambda *_args, **_kwargs: {"ok": True},
+    )
+
+    assert full_flow.handle_skippable_row_failure(
+        report,
+        config={},
+        jab=object(),
+        jab_lock=object(),
+        recorder=Recorder(),
+    ) is True
+
+    assert report["row_failure_skipped"] is True
+    assert report["business_exception_skipped"] is True
+    assert report["error_category"] == "row_failure"
+    assert "失败步骤=header-unified-check" in report["sheet2_exception_reason"]
+    assert "字段=备注" in report["sheet2_exception_reason"]
+    assert "核验方式=精确文本" in report["sheet2_exception_reason"]
+    assert "期望='待处理款项'" in report["sheet2_exception_reason"]
+    assert "实际=空" in report["sheet2_exception_reason"]
+    assert [name for name, _ in events] == [
+        "row-failure-cancel",
+        "row-failure-skipped",
+    ]
+
+
+def test_skippable_header_fill_failure_reason_includes_field_detail():
+    report = {
+        "ok": False,
+        "excel_row": 1986,
+        "failed_step": "header-fill",
+        "reason": "表头字段写入失败: 财务组织 - 表头字段写入失败",
+        "header_steps": [
+            {
+                "ok": False,
+                "label": "财务组织",
+                "value": "上海移为通信技术股份有限公司",
+                "path": "finance.path",
+                "reason": "表头字段写入失败",
+            }
+        ],
+    }
+
+    reason = full_flow.format_skippable_row_failure_reason(report)
+
+    assert "表头写入失败" in reason
+    assert "字段=财务组织" in reason
+    assert "期望写入='上海移为通信技术股份有限公司'" in reason
+    assert "path=finance.path" in reason
+
+
+def test_skippable_fee_line_failure_reason_includes_field_detail():
+    report = {
+        "ok": False,
+        "excel_row": 2039,
+        "failed_step": "detail-fee-line",
+        "reason": "手续费行处理失败",
+        "fee_steps": [
+            {
+                "ok": False,
+                "immediate_verify": {
+                    "verifications": [
+                        {
+                            "name": "收款业务类型",
+                            "expected": "手续费",
+                            "actual": "货款",
+                        }
+                    ]
+                },
+            }
+        ],
+    }
+
+    reason = full_flow.format_skippable_row_failure_reason(report)
+
+    assert "手续费行处理失败" in reason
+    assert "收款业务类型" in reason
+    assert "期望='手续费'，实际='货款'" in reason
+
+
+def test_handle_skippable_row_failure_skips_open_failure_without_cancel(monkeypatch):
+    events = []
+    cancel_called = {"value": False}
+
+    class Recorder:
+        def event(self, name, **kwargs):
+            events.append((name, kwargs))
+
+    report = {
+        "ok": False,
+        "excel_row": 2000,
+        "failed_step": "open-self-made",
+        "reason": "未找到新增按钮；正式收款流程不回退 Ctrl+N",
+        "save": {"skipped": True},
+    }
+
+    monkeypatch.setattr(
+        full_flow,
+        "cancel_current_receipt_entry",
+        lambda *_args, **_kwargs: cancel_called.__setitem__("value", True),
+    )
+
+    assert full_flow.handle_skippable_row_failure(
+        report,
+        config={},
+        jab=object(),
+        jab_lock=object(),
+        recorder=Recorder(),
+    ) is True
+
+    assert cancel_called["value"] is False
+    assert report["row_failure_skipped"] is True
+    assert "无需取消当前单据" in report["row_failure_cancel"]["reason"]
+    assert [name for name, _ in events] == ["row-failure-skipped"]
+
+
+def test_skippable_row_failure_refuses_save_attempted_failure():
+    assert full_flow.is_skippable_row_failure(
+        {
+            "ok": False,
+            "failed_step": "save",
+            "save_attempted": True,
+            "reason": "保存失败",
+        }
+    ) is False
+
+
+def test_batch_result_marks_business_exception_as_skipped():
+    row = plan_row(2001)
+    results = _report.build_batch_results(
+        [row],
+        [
+            {
+                "excel_row": 2001,
+                "ok": False,
+                "business_exception_skipped": True,
+                "sheet2_exception_reason": "客户名称不匹配；已取消当前单据并跳过",
+                "nc_customer_name": "OTHER CUSTOMER",
+            }
+        ],
+    )
+
+    assert results[0].local_status == "跳过"
+    assert results[0].exception_reason == "客户名称不匹配；已取消当前单据并跳过"
+    assert results[0].nc_customer_name == "OTHER CUSTOMER"
 
 
 def test_read_customer_name_after_header_uses_customer_description(monkeypatch):
@@ -786,6 +1157,71 @@ def test_save_receipt_promotes_scope_hwnd_to_root_before_hotkey(monkeypatch):
     assert result["precondition"]["target_hwnd"] == 13579
 
 
+def test_cancel_current_receipt_entry_reuses_external_jab_without_closing(monkeypatch):
+    calls = {"closed": 0, "ctrl_q": 0, "alt_y": 0}
+
+    class FakeJAB:
+        def __init__(self):
+            self.hide_blank_awt_windows_enabled = True
+
+        def ensure_started(self):
+            return True
+
+        def maximize_window_by_handle(self, hwnd):
+            return {"ok": True, "hwnd": hwnd}
+
+        def close(self):
+            calls["closed"] += 1
+
+    jab = FakeJAB()
+
+    patch_all(monkeypatch, "collect_receipt_new_windows",
+        lambda _jab: [{"hwnd": 12345}],
+    )
+    patch_all(monkeypatch, "detect_self_made_entry_state",
+        lambda _windows: {
+            "ok": True,
+            "hits": [{"window": {"hwnd": 12345}}],
+        },
+    )
+    patch_all(monkeypatch, "root_hwnd",
+        lambda hwnd: hwnd,
+    )
+    patch_all(monkeypatch, "foreground_matches_window",
+        lambda window: {"ok": True, "target_window": window},
+    )
+    patch_all(monkeypatch, "collect_visible_java_dialogs",
+        lambda _jab: [] if calls["ctrl_q"] == 0 else [
+            {
+                "hwnd": 67890,
+                "title": "确认取消",
+                "class_name": "SunAwtDialog",
+                "buttons": [{"name": "是(Y)"}, {"name": "否(N)"}],
+            }
+        ],
+    )
+    patch_all(monkeypatch, "send_hotkey_ctrl_q",
+        lambda: calls.__setitem__("ctrl_q", calls["ctrl_q"] + 1),
+    )
+    patch_all(monkeypatch, "send_hotkey_alt_y",
+        lambda: calls.__setitem__("alt_y", calls["alt_y"] + 1),
+    )
+    patch_all(monkeypatch, "focus_window",
+        lambda hwnd: {"ok": True, "hwnd": hwnd},
+    )
+    patch_all(monkeypatch, "wait_receipt_parent_new_ready_after_entry_exit",
+        lambda *_args, **_kwargs: {"ok": True},
+    )
+
+    result = cancel_current_receipt_entry({}, jab=jab)
+
+    assert result["ok"] is True
+    assert calls["closed"] == 0
+    assert calls["ctrl_q"] == 1
+    assert calls["alt_y"] == 1
+    assert jab.hide_blank_awt_windows_enabled is True
+
+
 def test_save_receipt_does_not_treat_missing_entry_buttons_as_success_without_new_button(
     monkeypatch,
 ):
@@ -1011,6 +1447,35 @@ def test_run_one_row_uses_detail_pipeline_verifier(monkeypatch):
     assert report["before_table"]["skipped"] is True
     assert report["after_table"]["skipped"] is True
     assert calls["closed"] == 0.2
+
+
+def test_run_one_row_keeps_external_jab_open_on_failure(monkeypatch):
+    class ExternalJAB:
+        def __init__(self):
+            self.closed = 0
+
+        def ensure_started(self):
+            return True
+
+        def close(self):
+            self.closed += 1
+
+    external_jab = ExternalJAB()
+
+    patch_all(monkeypatch, "open_self_made_entry",
+        lambda _config, _jab=None: {"ok": False, "reason": "open failed"},
+    )
+    patch_all(monkeypatch, "JABOperator",
+        lambda _config: (_ for _ in ()).throw(
+            AssertionError("external JAB should be reused")
+        ),
+    )
+
+    report = run_one_row({}, plan_row(10), save_enabled=False, jab=external_jab)
+
+    assert report["ok"] is False
+    assert report["failed_step"] == "open-self-made"
+    assert external_jab.closed == 0
 
 
 def test_run_one_row_verifies_extra_text_fields_in_pipeline(monkeypatch):
@@ -1514,6 +1979,24 @@ def test_customer_verify_uses_payer_name_similarity_threshold():
         == 98
     )
     assert customer_name_similarity("ACME LTD", "移为") < 80
+
+
+def test_customer_verify_accepts_safe_alias_prefix():
+    result = full_flow.evaluate_header_target_read(
+        {
+            "label": "客户",
+            "expectation": {
+                "mode": "customer_name_similarity",
+                "expected": "TINGCO SAS",
+                "threshold": 80,
+            },
+        },
+        "TING",
+    )
+
+    assert result["ok"] is True
+    assert result["score"] < 80
+    assert result["match_method"] == "normalized_prefix"
 
 
 def test_build_header_verify_expectations_uses_payer_name_for_customer():

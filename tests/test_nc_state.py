@@ -2,12 +2,7 @@ from decimal import Decimal
 from typing import cast
 
 from core.nc_page_probe import NCPageProbe
-from core.nc_state import (
-    NCStateDetector,
-    choose_main_signature_table,
-    looks_loading,
-    normalize_generated_voucher,
-)
+from core.nc_state import NCStateDetector, normalize_generated_voucher
 
 
 def test_normalize_generated_voucher():
@@ -18,26 +13,6 @@ def test_normalize_generated_voucher():
     assert normalize_generated_voucher("00000000", 9999) is None
     assert normalize_generated_voucher("10000", 9999) is None
     assert normalize_generated_voucher("未生成", 9999) is None
-
-
-def test_choose_main_signature_table_prefers_largest_area():
-    tables = [
-        {"row_count": 2, "col_count": 5},
-        {"row_count": 10, "col_count": 3},
-        {"row_count": 1, "col_count": 1},
-    ]
-
-    assert choose_main_signature_table(tables) == {"row_count": 10, "col_count": 3}
-
-
-def test_looks_loading():
-    assert looks_loading([], [])
-    assert looks_loading([{"name": "单据生成"}], [])
-    assert looks_loading([], [{"row_count": 0, "col_count": 25}])
-    assert not looks_loading(
-        [{"name": "单据生成"}],
-        [{"row_count": 3, "col_count": 25, "rows": [{"amount": Decimal("1.00")}]}],
-    )
 
 
 class FakeJAB:
@@ -153,32 +128,7 @@ def test_detect_page_state_accepts_pending_toolbar_with_41_col_table():
     assert "待生成工具栏顺序匹配" in state.reason
 
 
-def test_detect_page_state_prefers_generated_voucher_over_pending_toolbar():
-    detector = make_detector(
-        ToolbarProbe(
-            {
-                "ok": True,
-                "reason": "单据生成父页+待生成工具栏顺序匹配",
-                "parent_count": 1,
-            },
-            [
-                {
-                    "row_count": 3,
-                    "col_count": 41,
-                    "voucher_values": ["00000001", "00000002"],
-                    "rows": [],
-                }
-            ],
-        )
-    )
-
-    state = detector.detect_page_state([])
-
-    assert state.name == "generated"
-    assert "真实凭证号" in state.reason
-
-
-def test_detect_page_state_treats_zero_vouchers_as_pending():
+def test_detect_page_state_treats_voucher_values_as_pending_when_toolbar_matches():
     detector = make_detector(
         ToolbarProbe(
             {

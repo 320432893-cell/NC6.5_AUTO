@@ -191,6 +191,14 @@ class DetailPipelineVerifier:
         if self._thread is not None:
             self._thread.join(timeout=max(float(timeout), 0.0))
         self.finished_at = time.perf_counter()
+        return {
+            "ok": not (self._thread and self._thread.is_alive()),
+            "thread_alive": bool(self._thread and self._thread.is_alive()),
+            "timeout": float(timeout),
+            "seconds_since_started": round(self.finished_at - self.started_at, 3)
+            if self.started_at
+            else None,
+        }
 
     def _new_task_id(self, prefix):
         return f"{prefix}-{uuid.uuid4().hex[:10]}"

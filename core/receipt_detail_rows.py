@@ -222,6 +222,19 @@ def run_fee_only(
         after_field=after_field,
         recover_after_failure=recover_after_failure,
     )
+    repair = repair_fee_business_type_if_needed(
+        timings,
+        jab,
+        fee_business,
+        refreshed,
+        steps,
+        after_field=after_field,
+        recover_after_failure=recover_after_failure,
+    )
+    if repair.get("attempted"):
+        steps.append(repair)
+        if repair.get("ok"):
+            steps = replace_fee_business_type_step_with_repair(steps, repair)
     fee_cells = cells_from_steps(steps)
     clear_account = {
         "ok": normalize_text(fee_cells.get(str(ACCOUNT_COL))) == "",
@@ -253,3 +266,92 @@ def run_fee_only(
         )
     delete_extra["timings"] = timings.items
     return add_row, steps, clear_account, delete_extra
+
+
+def repair_fee_business_type_if_needed(
+    timings,
+    jab,
+    fee_business,
+    located,
+    steps,
+    after_field=None,
+    recover_after_failure=None,
+):
+    failed = first_failed_fee_business_type_step(steps)
+    if not failed:
+        return {
+            "ok": True,
+            "attempted": False,
+            "skipped": True,
+            "reason": "手续费业务类型无需修复",
+        }
+    retry_steps = timings.measure(
+        "fee.rewrite-business-type",
+        write_detail_line_by_screen,
+        jab,
+        fee_business,
+        located,
+        fields=[FEE_FIELDS[0]],
+        row_index=1,
+        after_field=after_field,
+        recover_after_failure=recover_after_failure,
+    )
+    ok = bool(retry_steps) and all(step.get("ok") for step in retry_steps)
+    return {
+        "ok": ok,
+        "attempted": True,
+        "name": "手续费业务类型修复",
+        "field": "收款业务类型",
+        "target": {"row": 1, "col": 1},
+        "retry_steps": retry_steps,
+        "reason": None
+        if ok
+        else summarize_fee_business_type_repair_failure(retry_steps),
+    }
+
+
+def first_failed_fee_business_type_step(steps):
+    for step in steps or []:
+        if step.get("ok"):
+            continue
+        name = str(step.get("name") or "").strip()
+        target_col = (step.get("target") or {}).get("col") or 1
+        try:
+            target_col = int(target_col)
+        except (TypeError, ValueError):
+            target_col = 1
+        if name == "收款业务类型" and target_col == 1:
+            return step
+    return None
+
+
+def replace_fee_business_type_step_with_repair(steps, repair):
+    retry_steps = repair.get("retry_steps") or []
+    if not retry_steps:
+        return steps
+    replacement = dict(retry_steps[0])
+    replacement["repair_of"] = "fee_business_type"
+    replacement["repair"] = {
+        "ok": True,
+        "method": "rewrite-second-row-business-type-once",
+    }
+    replaced = False
+    result = []
+    for step in steps:
+        if step is repair:
+            continue
+        if not replaced and first_failed_fee_business_type_step([step]):
+            result.append(replacement)
+            replaced = True
+        else:
+            result.append(step)
+    if not replaced:
+        result.insert(0, replacement)
+    return result
+
+
+def summarize_fee_business_type_repair_failure(retry_steps):
+    for step in retry_steps or []:
+        if not step.get("ok"):
+            return str(step.get("reason") or "手续费业务类型重写后仍未通过").strip()
+    return "手续费业务类型重写未返回有效步骤"

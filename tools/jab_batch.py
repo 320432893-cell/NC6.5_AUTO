@@ -10,6 +10,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from core.data_handler import DataHandler  # noqa: E402
+from core.errors import ExcelLockedError  # noqa: E402
 from core.jab_batch_processor import JABBatchProcessor  # noqa: E402
 from core.logger import log  # noqa: E402
 from core.utils import load_config  # noqa: E402
@@ -253,6 +254,45 @@ def main():  # noqa: C901 (intentional single-function dispatch)
         }
         print(json.dumps(envelope, ensure_ascii=False))
 
+    def _partial_summary_from_run_state() -> dict:
+        counts = processor.run_state.data.get("counts") or {}
+
+        def _count(*names: str) -> int:
+            for name in names:
+                try:
+                    value = int(counts.get(name) or 0)
+                except (TypeError, ValueError):
+                    value = 0
+                if value:
+                    return value
+            return 0
+
+        succeeded = _count("saved", "resume_saved", "backfilled")
+        total = _count("generate_items_total", "excel_loaded")
+        save_batches = _count("save_batches", "resume_save_batches")
+        summary = {
+            "total": total,
+            "succeeded": succeeded,
+            "failed": 0,
+            "skipped": _count("skipped"),
+        }
+        if save_batches:
+            summary["save_batches"] = save_batches
+        if succeeded:
+            summary["saved"] = succeeded
+        return summary
+
+    def _count_from_run_state(*names: str) -> int:
+        counts = processor.run_state.data.get("counts") or {}
+        for name in names:
+            try:
+                value = int(counts.get(name) or 0)
+            except (TypeError, ValueError):
+                value = 0
+            if value:
+                return value
+        return 0
+
     try:
         if args.command == "read-queue":
             processor.run_state.set_stage(
@@ -279,6 +319,11 @@ def main():  # noqa: C901 (intentional single-function dispatch)
                 context="read_queue",
             )
             processor.run_state.event("excel_preflight_passed", **preflight)
+            processor.run_state.set_stage("excel_write_preflight", context="read_queue")
+            processor.data_handler.assert_excel_writable("读取队列前写入拆分列预检")
+            processor.run_state.event(
+                "excel_write_preflight_passed", context="read_queue"
+            )
             split_updates = processor.data_handler.save_jab_split_columns(pending)
             processor.run_state.update_counts(
                 excel_loaded=len(items),
@@ -496,21 +541,49 @@ def main():  # noqa: C901 (intentional single-function dispatch)
             )
             print(f"回填完成: {len(updates)} 行")
             if args.json_output:
+                pending = _count_from_run_state("backfill_pending")
+                backfilled = sum(1 for value in updates.values() if isinstance(value, int))
+                issues = max(0, pending - backfilled)
+                skipped = 0 if pending else 0
+                if pending <= 0:
+                    exit_code = 2
+                    ok = True
+                    message = "没有待匹配凭证号的 Excel 行：C列为空/状态文本才会参与，已有数字凭证号会跳过"
+                elif backfilled == pending and issues == 0:
+                    exit_code = 0
+                    ok = True
+                    message = ""
+                else:
+                    exit_code = 1
+                    ok = False
+                    message = (
+                        "凭证号回填未全部匹配："
+                        f"待匹配{pending}行，回填凭证号{backfilled}行，问题{issues}行"
+                    )
                 items = [
-                    {"ref": str(ref), "outcome": "success", "reason": ""}
-                    for ref in updates
+                    {
+                        "ref": str(ref),
+                        "outcome": (
+                            "success" if isinstance(value, int) else "failed"
+                        ),
+                        "reason": "" if isinstance(value, int) else str(value),
+                    }
+                    for ref, value in updates.items()
                 ]
-                succeeded = len(updates)
                 _emit_envelope(
-                    ok=True,
-                    exit_code=0,
+                    ok=ok,
+                    exit_code=exit_code,
                     summary={
-                        "total": succeeded,
-                        "succeeded": succeeded,
-                        "failed": 0,
-                        "skipped": 0,
+                        "total": pending,
+                        "succeeded": backfilled,
+                        "failed": issues,
+                        "skipped": skipped,
+                        "backfilled": backfilled,
+                        "issue_updates": issues,
                     },
                     items=items,
+                    error_category="none" if ok or exit_code == 2 else "partial",
+                    error_message=message,
                 )
             return
 
@@ -552,12 +625,16 @@ def main():  # noqa: C901 (intentional single-function dispatch)
             is_aborted = isinstance(exc, KeyboardInterrupt) or (
                 isinstance(exc, SystemExit) and getattr(exc, "code", 0) == 3
             )
+            if isinstance(exc, ExcelLockedError):
+                error_category = "excel_locked"
+            else:
+                error_category = "aborted" if is_aborted else "environment"
             _emit_envelope(
                 ok=False,
                 exit_code=3 if is_aborted else 4,
-                summary={"total": 0, "succeeded": 0, "failed": 0, "skipped": 0},
+                summary=_partial_summary_from_run_state(),
                 items=[],
-                error_category="aborted" if is_aborted else "environment",
+                error_category=error_category,
                 error_message=f"{type(exc).__name__}: {exc}",
                 can_resume=(args.command == "generate"),
                 resume_command=(

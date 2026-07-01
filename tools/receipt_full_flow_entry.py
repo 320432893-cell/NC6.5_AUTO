@@ -19,7 +19,7 @@ if str(ROOT) not in sys.path:
 from core.errors import ExcelLockedError  # noqa: E402
 from core.jab_operator import JABOperator  # noqa: E402
 from core.receipt_entry import ReceiptEntryWorkbook  # noqa: E402
-from core.receipt_matching import counterparty_similarity  # noqa: E402
+from core.receipt_matching import counterparty_match_details, counterparty_similarity  # noqa: E402
 from core.run_state import RunStateRecorder  # noqa: E402
 from core.utils import load_config  # noqa: E402
 from core.receipt_detail_async_verifier import DetailPipelineVerifier  # noqa: E402
@@ -34,6 +34,7 @@ from core.receipt_modal_guard import (  # noqa: E402
     recover_cancelable_modal_now,
 )
 from core.receipt_post_save_query import run_post_save_batch_query  # noqa: E402
+from core.receipt_post_query_only import run_post_query_only  # noqa: E402
 from core.receipt_self_made_fill_trial import (  # noqa: E402
     fill_header,
     find_receipt_header_field_by_dynamic_path,
@@ -134,6 +135,11 @@ def parse_args(argv=None):
         help="保存后按主体/日期区间查询 NC。当前仅在 --save 后允许。",
     )
     parser.add_argument(
+        "--post-query-only",
+        action="store_true",
+        help="只基于 Sheet2 待补行重新做后验查询并回写 Sheet2；不录入、不保存。",
+    )
+    parser.add_argument(
         "--excel-text-field-map",
         action="append",
         default=[],
@@ -183,11 +189,13 @@ def main(argv=None):
         )
         policy["mode"] = args.validation_mode
         policy["skip_invalid_rows"] = args.validation_mode == "skip_invalid_rows"
+    if args.post_query_only and args.save:
+        raise SystemExit("--post-query-only 不允许配合 --save")
     if args.save:
         confirm_save(args)
-    if args.query_after_save and not args.save:
+    if args.query_after_save and not args.save and not args.post_query_only:
         raise SystemExit("--query-after-save 当前只允许配合 --save 使用")
-    if args.start_row is None or args.start_row <= 0:
+    if not args.post_query_only and (args.start_row is None or args.start_row <= 0):
         raise SystemExit("--start-row 必填且必须大于 0")
     if args.limit is not None and args.limit < 0:
         raise SystemExit("--limit 必须大于等于 0")
@@ -195,7 +203,10 @@ def main(argv=None):
     if args.write_plan_sheet and args.write_selected_plan_sheet:
         raise SystemExit("--write-plan-sheet 和 --write-selected-plan-sheet 只能选一个")
 
-    recorder = RunStateRecorder(command="receipt-full-flow", config=config)
+    recorder = RunStateRecorder(
+        command="receipt-post-query-only" if args.post_query_only else "receipt-full-flow",
+        config=config,
+    )
     recorder.set_stage("预检计划")
 
     report = {
@@ -208,6 +219,10 @@ def main(argv=None):
     started = time.perf_counter()
     try:
         workbook = ReceiptEntryWorkbook(config, excel_path=args.excel_path)
+        if args.post_query_only:
+            report, exit_code = run_post_query_only(config, workbook, recorder)
+            print_report(report, args)
+            return exit_code
         plan_rows, issues, summary = workbook.build_local_plan(write_sheet=False)
     except Exception as exc:  # 计划装载早退也要收尾 run_state，避免永停 running 态
         reason = f"计划装载失败：{exc}"
@@ -283,7 +298,10 @@ def main(argv=None):
     exit_code = 0
     _succeeded = 0
     _failed = 0
+    _skipped = 0
     header_scope_cache = {}
+    shared_jab = JABOperator(config)
+    shared_jab_lock = threading.RLock()
     try:
         for _step_idx, row in enumerate(selected_rows):
             recorder.set_stage(
@@ -301,15 +319,29 @@ def main(argv=None):
                 diagnose_header_after_pause=args.diagnose_header_after_pause,
                 diagnose_detail_repair=args.diagnose_detail_repair,
                 header_scope_cache=header_scope_cache,
+                jab=shared_jab,
+                jab_lock=shared_jab_lock,
             )
-            if should_retry_row_by_cancel_reopen(row_report):
+            skip_handled = handle_skippable_row_failure(
+                row_report,
+                config,
+                shared_jab,
+                shared_jab_lock,
+                recorder,
+            )
+            if not skip_handled and should_retry_row_by_cancel_reopen(row_report):
                 recorder.event(
                     "row-circuit-breaker-start",
                     excel_row=row.row,
                     failed_step=row_report.get("failed_step"),
                     reason=row_report.get("reason"),
                 )
-                cancel_report = cancel_current_receipt_entry(config)
+                cancel_report = run_with_jab_lock(
+                    shared_jab_lock,
+                    cancel_current_receipt_entry,
+                    config,
+                    jab=shared_jab,
+                )
                 recorder.event(
                     "row-circuit-breaker-cancel",
                     excel_row=row.row,
@@ -326,6 +358,8 @@ def main(argv=None):
                         diagnose_header_after_pause=args.diagnose_header_after_pause,
                         diagnose_detail_repair=args.diagnose_detail_repair,
                         header_scope_cache=header_scope_cache,
+                        jab=shared_jab,
+                        jab_lock=shared_jab_lock,
                     )
                     retry_report["circuit_breaker"] = {
                         "triggered": True,
@@ -350,6 +384,14 @@ def main(argv=None):
                         "cancel": cancel_report,
                         "reason": "取消当前未保存收款单失败，拒绝重试避免叠单",
                     }
+                if not row_report.get("ok"):
+                    handle_skippable_row_failure(
+                        row_report,
+                        config,
+                        shared_jab,
+                        shared_jab_lock,
+                        recorder,
+                    )
             report["rows"].append(row_report)
             if row_report.get("ok"):
                 _succeeded += 1
@@ -357,16 +399,32 @@ def main(argv=None):
                     total=len(selected_rows),
                     succeeded=_succeeded,
                     failed=_failed,
-                    skipped=0,
+                    skipped=_skipped,
                 )
                 recorder.event("row-done", excel_row=row.row, outcome="success")
+            elif row_report.get("row_failure_skipped"):
+                _skipped += 1
+                recorder.update_counts(
+                    total=len(selected_rows),
+                    succeeded=_succeeded,
+                    failed=_failed,
+                    skipped=_skipped,
+                )
+                recorder.event(
+                    "row-done",
+                    excel_row=row.row,
+                    outcome="skipped",
+                    error=row_report.get("sheet2_exception_reason")
+                    or row_report.get("reason")
+                    or row_report.get("failed_step"),
+                )
             else:
                 _failed += 1
                 recorder.update_counts(
                     total=len(selected_rows),
                     succeeded=_succeeded,
                     failed=_failed,
-                    skipped=0,
+                    skipped=_skipped,
                 )
                 recorder.event(
                     "row-done",
@@ -375,7 +433,8 @@ def main(argv=None):
                     error=row_report.get("reason") or row_report.get("failed_step"),
                 )
                 exit_code = 1
-                break
+                if not row_report.get("row_failure_skipped"):
+                    break
         batch_results = build_batch_results(selected_rows, report["rows"])
         report["post_query_requested"] = bool(args.query_after_save)
         report["post_query_executed"] = False
@@ -389,6 +448,8 @@ def main(argv=None):
                 config,
                 selected_rows,
                 report["rows"],
+                jab=shared_jab,
+                jab_lock=shared_jab_lock,
             )
             report["post_query"] = post_query
             report["post_query_executed"] = True
@@ -428,6 +489,8 @@ def main(argv=None):
     except Exception as _exc:
         recorder.finish("failed", error=str(_exc))
         raise
+    finally:
+        shared_jab.close()
 
 
 def confirm_save(args):
@@ -460,6 +523,408 @@ def filter_issues_for_rows(issues, selected_rows):
         for issue in issues
         if issue.excel_row is None or issue.excel_row in selected
     ]
+
+
+def is_skippable_business_exception(row_report):
+    return bool(skippable_business_exception_details(row_report))
+
+
+def is_skippable_row_failure(row_report):
+    if not row_report or row_report.get("ok"):
+        return False
+    if row_report.get("save_attempted"):
+        return False
+    save_report = row_report.get("save") or {}
+    if save_report and not save_report.get("skipped"):
+        return False
+    return True
+
+
+def handle_skippable_row_failure(
+    row_report,
+    config,
+    jab,
+    jab_lock,
+    recorder,
+):
+    if not is_skippable_row_failure(row_report):
+        return False
+    if not row_failure_requires_cancel(row_report):
+        mark_skipped_row_failure(
+            row_report,
+            {"ok": True, "skipped": True, "reason": "失败发生在开单前，无需取消当前单据"},
+        )
+        recorder.event(
+            "row-failure-skipped",
+            excel_row=row_report.get("excel_row"),
+            category=row_report.get("error_category") or "",
+            failed_step=row_report.get("failed_step") or "",
+            reason=row_report.get("sheet2_exception_reason") or "",
+        )
+        return True
+    skip_cancel_report = run_with_jab_lock(
+        jab_lock,
+        cancel_current_receipt_entry,
+        config,
+        jab=jab,
+    )
+    recorder.event(
+        "row-failure-cancel",
+        excel_row=row_report.get("excel_row"),
+        ok=bool(skip_cancel_report.get("ok")),
+        failed_step=row_report.get("failed_step") or "",
+        reason=skip_cancel_report.get("reason") or "",
+    )
+    if skip_cancel_report.get("ok"):
+        mark_skipped_row_failure(row_report, skip_cancel_report)
+        recorder.event(
+            "row-failure-skipped",
+            excel_row=row_report.get("excel_row"),
+            category=row_report.get("error_category") or "",
+            failed_step=row_report.get("failed_step") or "",
+            reason=row_report.get("sheet2_exception_reason") or "",
+        )
+    else:
+        row_report["row_failure_cancel"] = skip_cancel_report
+        row_report["business_exception_cancel"] = skip_cancel_report
+        row_report["sheet2_exception_reason"] = (
+            format_skippable_row_failure_reason(row_report)
+            + "；取消当前单据失败，已停止批次避免叠单："
+            + str(skip_cancel_report.get("reason") or "取消失败").strip()
+        )
+    return True
+
+
+def row_failure_requires_cancel(row_report):
+    failed_step = str((row_report or {}).get("failed_step") or "").strip()
+    return failed_step not in {"open-self-made"}
+
+
+def handle_skippable_business_exception(
+    row_report,
+    config,
+    jab,
+    jab_lock,
+    recorder,
+):
+    if row_report.get("ok") or not is_skippable_business_exception(row_report):
+        return False
+    skip_cancel_report = run_with_jab_lock(
+        jab_lock,
+        cancel_current_receipt_entry,
+        config,
+        jab=jab,
+    )
+    recorder.event(
+        "row-business-exception-cancel",
+        excel_row=row_report.get("excel_row"),
+        ok=bool(skip_cancel_report.get("ok")),
+        reason=skip_cancel_report.get("reason") or "",
+    )
+    if skip_cancel_report.get("ok"):
+        mark_skipped_business_exception(row_report, skip_cancel_report)
+        recorder.event(
+            "row-business-exception-skipped",
+            excel_row=row_report.get("excel_row"),
+            category=row_report.get("error_category") or "",
+            reason=row_report.get("sheet2_exception_reason") or "",
+        )
+    else:
+        row_report["business_exception_cancel"] = skip_cancel_report
+        row_report["sheet2_exception_reason"] = (
+            format_skippable_business_exception_reason(row_report)
+            + "；取消当前单据失败，已停止批次避免叠单："
+            + str(skip_cancel_report.get("reason") or "取消失败").strip()
+        )
+    return True
+
+
+def skippable_business_exception_details(row_report):
+    failed_step = str((row_report or {}).get("failed_step") or "").strip()
+    if failed_step == "header-unified-check":
+        return customer_name_mismatch_details(row_report)
+    if failed_step == "header-customer-name":
+        return customer_name_missing_details(row_report)
+    if failed_step == "header-counterparty-type":
+        return counterparty_not_customer_details(row_report)
+    return {}
+
+
+def customer_name_mismatch_details(row_report):
+    failed = (
+        ((row_report or {}).get("header_unified_check") or {})
+        .get("summary", {})
+        .get("failed")
+        or []
+    )
+    if not failed:
+        return {}
+    customer_failed = []
+    for item in failed:
+        mode = str(item.get("mode") or "").strip()
+        label = str(item.get("label") or "").strip()
+        if label != "客户" or mode != "customer_name_similarity":
+            return {}
+        customer_failed.append(item)
+    item = customer_failed[0]
+    return {
+        "category": "customer_name_mismatch",
+        "expected": item.get("expected") or excel_payer_name_from_report(row_report),
+        "actual": item.get("actual"),
+        "score": item.get("score"),
+        "threshold": item.get("threshold"),
+    }
+
+
+def customer_name_missing_details(row_report):
+    readback = (row_report or {}).get("customer_name_readback") or {}
+    return {
+        "category": "customer_name_missing",
+        "expected": excel_payer_name_from_report(row_report),
+        "actual": readback.get("value") or (row_report or {}).get("nc_customer_name"),
+        "reason": (row_report or {}).get("reason") or readback.get("reason"),
+    }
+
+
+def counterparty_not_customer_details(row_report):
+    report = (row_report or {}).get("header_counterparty") or {}
+    state = report.get("state") or {}
+    repair = report.get("repair") or {}
+    after_detail = report.get("after_detail") or {}
+    state_name = str(state.get("state") or "").strip()
+    actual = str(report.get("actual") or state.get("actual") or "").strip()
+    after_value = str(
+        after_detail.get("value") or after_detail.get("text") or ""
+    ).strip()
+    if state_name != "repairable-conflict" or not repair or not after_detail:
+        return {}
+    if (after_value or actual) == "客户":
+        return {}
+    return {
+        "category": "counterparty_not_customer",
+        "expected": report.get("expected") or "客户",
+        "actual": after_value or actual,
+        "before_actual": actual,
+        "state": state_name,
+        "repair_method": repair.get("method"),
+        "repair_ok": repair.get("ok"),
+        "repair_reason": repair.get("reason") or repair.get("error"),
+        "after": after_value,
+    }
+
+
+def excel_payer_name_from_report(row_report):
+    plan_row = (row_report or {}).get("plan_row") or {}
+    return str(plan_row.get("payer_name") or "").strip()
+
+
+def format_skippable_business_exception_reason(row_report):
+    details = skippable_business_exception_details(row_report)
+    if not details:
+        return str((row_report or {}).get("reason") or "录入失败").strip()
+    category = details.get("category")
+    if category == "customer_name_mismatch":
+        score = details.get("score")
+        threshold = details.get("threshold")
+        score_text = ""
+        if score is not None or threshold is not None:
+            score_text = f"；相似度={score}<阈值{threshold}"
+        return (
+            "客户名称不匹配："
+            f"Excel银行来款名={details.get('expected')!r}；"
+            f"NC读回客户={details.get('actual')!r}"
+            f"{score_text}"
+        )
+    if category == "customer_name_missing":
+        reason = str(details.get("reason") or "客户字段未回显有效 NC 客户名称").strip()
+        return (
+            "客户名称未确认："
+            f"Excel银行来款名={details.get('expected')!r}；"
+            f"NC读回客户={details.get('actual') or ''!r}；"
+            f"{reason}"
+        )
+    if category == "counterparty_not_customer":
+        repair_ok = details.get("repair_ok")
+        repair_text = ""
+        if details.get("repair_method") or repair_ok is not None:
+            repair_text = (
+                f"；修复方式={details.get('repair_method') or ''}"
+                f" ok={repair_ok}"
+            )
+        if details.get("repair_reason"):
+            repair_text += f" reason={details.get('repair_reason')}"
+        after_text = (
+            f"；修复后={details.get('after')!r}" if details.get("after") else ""
+        )
+        return (
+            "往来对象不是客户："
+            f"期望={details.get('expected')!r}；"
+            f"实际={details.get('actual')!r}；"
+            f"状态={details.get('state') or ''}"
+            f"{repair_text}{after_text}"
+        )
+    return str((row_report or {}).get("reason") or "录入失败").strip()
+
+
+def format_skippable_row_failure_reason(row_report):
+    details = skippable_business_exception_details(row_report)
+    if details:
+        return format_skippable_business_exception_reason(row_report)
+    failed_step = str((row_report or {}).get("failed_step") or "未知步骤").strip()
+    reason = detailed_row_failure_reason(row_report)
+    return f"行级异常：失败步骤={failed_step}；原因={reason}"
+
+
+def detailed_row_failure_reason(row_report):
+    failed_step = str((row_report or {}).get("failed_step") or "").strip()
+    if failed_step == "header-unified-check":
+        header_reason = header_unified_check_failure_reason(row_report)
+        if header_reason:
+            return header_reason
+    if failed_step == "header-fill":
+        header_reason = header_fill_failure_reason(row_report)
+        if header_reason:
+            return header_reason
+    if failed_step == "detail-fee-line":
+        fee_reason = detail_fee_line_failure_reason(row_report)
+        if fee_reason:
+            return fee_reason
+    return str((row_report or {}).get("reason") or "录入失败").strip()
+
+
+def header_unified_check_failure_reason(row_report):
+    failed = (
+        ((row_report or {}).get("header_unified_check") or {})
+        .get("summary", {})
+        .get("failed")
+        or []
+    )
+    if not failed:
+        return str((row_report or {}).get("reason") or "").strip()
+    parts = []
+    for item in failed[:4]:
+        label = str(item.get("label") or item.get("field") or "未知字段").strip()
+        mode = str(item.get("mode") or "").strip()
+        expected = item.get("expected")
+        actual = item.get("actual")
+        actual_text = "空" if actual in (None, "") else repr(actual)
+        detail = f"字段={label}；核验方式={header_verify_mode_name(mode)}"
+        if expected is not None:
+            detail += f"；期望={expected!r}"
+        detail += f"；实际={actual_text}"
+        if item.get("score") is not None or item.get("threshold") is not None:
+            detail += f"；相似度={item.get('score')}；阈值={item.get('threshold')}"
+        if item.get("reason"):
+            detail += f"；原因={item.get('reason')}"
+        parts.append(detail)
+    return "表头核验失败：" + "；".join(parts)
+
+
+def header_verify_mode_name(mode):
+    return {
+        "customer_name_similarity": "客户名称匹配",
+        "text_exact": "精确文本",
+        "date_exact": "日期精确匹配",
+        "currency": "币种匹配",
+        "legacy": "旧读回规则",
+    }.get(str(mode or "").strip(), str(mode or "未知").strip() or "未知")
+
+
+def header_fill_failure_reason(row_report):
+    failed_steps = [
+        step
+        for step in (row_report or {}).get("header_steps") or []
+        if not step.get("ok")
+    ]
+    if not failed_steps:
+        return str((row_report or {}).get("reason") or "").strip()
+    parts = []
+    for step in failed_steps[:4]:
+        label = str(step.get("label") or step.get("name") or "未知字段").strip()
+        expected = step.get("value")
+        reason = str(step.get("reason") or step.get("error") or "表头字段写入失败").strip()
+        detail = f"字段={label}"
+        if expected not in (None, ""):
+            detail += f"；期望写入={expected!r}"
+        if step.get("path"):
+            detail += f"；path={step.get('path')}"
+        detail += f"；原因={reason}"
+        parts.append(detail)
+    return "表头写入失败：" + "；".join(parts)
+
+
+def detail_fee_line_failure_reason(row_report):
+    problems = []
+    add_row = (row_report or {}).get("fee_row_add") or {}
+    if add_row and not add_row.get("ok"):
+        problems.append("增行失败：" + str(add_row.get("reason") or "未知原因").strip())
+    for index, step in enumerate((row_report or {}).get("fee_steps") or [], start=1):
+        if step.get("ok"):
+            continue
+        reason = str(step.get("reason") or "").strip()
+        field = (
+            step.get("field")
+            or step.get("name")
+            or ((step.get("target") or {}).get("field"))
+            or f"字段{index}"
+        )
+        verify = (step.get("immediate_verify") or {}).get("verifications") or []
+        if verify:
+            item = verify[0] or {}
+            field = item.get("name") or item.get("field") or field
+            expected = item.get("expected")
+            actual = item.get("actual")
+            if expected is not None or actual is not None:
+                reason = f"期望={expected!r}，实际={actual!r}"
+            reason = reason or str(item.get("reason") or "").strip()
+        if not reason:
+            reason = "未知原因"
+        problems.append(f"手续费字段[{field}]写入/校验失败：{reason}")
+    clear_account = (row_report or {}).get("fee_account_clear") or {}
+    if clear_account and not clear_account.get("ok"):
+        problems.append(
+            "手续费账户清空失败："
+            + str(clear_account.get("reason") or "未知原因").strip()
+        )
+    delete_extra = (row_report or {}).get("fee_extra_row_delete") or {}
+    if delete_extra and not delete_extra.get("ok"):
+        problems.append(
+            "手续费多余行清理失败："
+            + str(delete_extra.get("reason") or "未知原因").strip()
+        )
+    if not problems:
+        return str((row_report or {}).get("reason") or "手续费行处理失败").strip()
+    return "手续费行处理失败：" + "；".join(problems[:4])
+
+
+def mark_skipped_row_failure(row_report, cancel_report=None):
+    details = skippable_business_exception_details(row_report)
+    row_report["row_failure_skipped"] = True
+    row_report["business_exception_skipped"] = True
+    row_report["error_category"] = details.get("category") or "row_failure"
+    row_report["row_failure_cancel"] = cancel_report or {}
+    row_report["business_exception_cancel"] = cancel_report or {}
+    reason = format_skippable_row_failure_reason(row_report)
+    row_report["sheet2_exception_reason"] = (
+        f"{reason}；已取消当前单据并跳过，后续人工核对"
+    )
+    if details.get("actual") and not str(row_report.get("nc_customer_name") or "").strip():
+        row_report["nc_customer_name"] = str(details.get("actual") or "").strip()
+    return row_report
+
+
+def mark_skipped_business_exception(row_report, cancel_report=None):
+    details = skippable_business_exception_details(row_report)
+    row_report["business_exception_skipped"] = True
+    row_report["error_category"] = details.get("category") or "business_exception"
+    row_report["business_exception_cancel"] = cancel_report or {}
+    reason = format_skippable_business_exception_reason(row_report)
+    row_report["sheet2_exception_reason"] = (
+        f"{reason}；已取消当前单据并跳过，后续人工核对"
+    )
+    if details.get("actual") and not str(row_report.get("nc_customer_name") or "").strip():
+        row_report["nc_customer_name"] = str(details.get("actual") or "").strip()
+    return row_report
 
 
 def build_header_unified_targets(header_steps, extra_text_report, expectations=None):
@@ -559,6 +1024,10 @@ def customer_name_similarity(expected, actual):
     return counterparty_similarity(expected, actual)
 
 
+def customer_name_match_details(expected, actual, threshold=80):
+    return counterparty_match_details(expected, actual, threshold)
+
+
 def normalize_header_date_value(value):
     text = str(value or "").strip()
     if not text:
@@ -606,9 +1075,10 @@ def evaluate_header_target_read(target, actual_value, text="", name="", descript
             "reason": None if ok else f"{label} 未读回目标值",
         }
     if mode == "customer_name_similarity":
-        score = customer_name_similarity(expected, actual_value)
         threshold = int(expectation.get("threshold") or 80)
-        ok = score >= threshold
+        match = customer_name_match_details(expected, actual_value, threshold)
+        score = match.get("score")
+        ok = bool(match.get("ok"))
         return {
             "ok": ok,
             "mode": mode,
@@ -616,6 +1086,8 @@ def evaluate_header_target_read(target, actual_value, text="", name="", descript
             "actual": actual_value,
             "score": score,
             "threshold": threshold,
+            "match_method": match.get("method"),
+            "match_reason": match.get("reason"),
             "reason": None
             if ok
             else (
@@ -996,6 +1468,8 @@ class RowRun:
         diagnose_header_after_pause=False,
         diagnose_detail_repair=False,
         header_scope_cache=None,
+        jab=None,
+        jab_lock=None,
     ):
         self.config = config
         self.row = row
@@ -1015,8 +1489,9 @@ class RowRun:
             "save_enabled": bool(save_enabled),
         }
         self.business = business_from_plan_row(row)
-        self.jab = JABOperator(config)
-        self.jab_lock = threading.RLock()
+        self.jab = jab or JABOperator(config)
+        self.owns_jab = jab is None
+        self.jab_lock = jab_lock or threading.RLock()
         self.pipeline_verifier = None
         self.modal_events = []
         # 表头阶段填、后续阶段读的跨阶段派生状态
@@ -1046,7 +1521,9 @@ class RowRun:
             self.recorder.event(name, **fields)
 
     def recover_modal(self):
-        result = recover_cancelable_modal_now(
+        result = run_with_jab_lock(
+            self.jab_lock,
+            recover_cancelable_modal_now,
             self.jab,
             stage=self.current_stage or "",
         )
@@ -1430,10 +1907,11 @@ class RowRun:
                 or not clear_account.get("ok")
                 or not delete_extra.get("ok")
             ):
+                fee_error = detail_fee_line_failure_reason(self.row_report)
                 self.event(
-                    "fee-line-failed", excel_row=self.row.row, error="手续费行处理失败"
+                    "fee-line-failed", excel_row=self.row.row, error=fee_error
                 )
-                raise StageAbort("detail-fee-line", "手续费行处理失败")
+                raise StageAbort("detail-fee-line", fee_error)
         else:
             self.row_report["extra_row_delete"] = self.timings.measure(
                 "detail.delete-extra-after-main",
@@ -1705,9 +2183,17 @@ class RowRun:
             )
         finally:
             if self.pipeline_verifier is not None:
-                self.pipeline_verifier.close(timeout=0.2)
+                close_report = self.pipeline_verifier.close(timeout=0.2)
+                if close_report is None:
+                    close_report = {
+                        "ok": True,
+                        "legacy_no_report": True,
+                        "timeout": 0.2,
+                    }
+                self.row_report["detail_pipeline_verifier_close"] = close_report
             self.row_report["modal_recovery"] = {"events": self.modal_events}
-            self.jab.close()
+            if self.owns_jab:
+                self.jab.close()
 
 
 def run_one_row(
@@ -1719,6 +2205,8 @@ def run_one_row(
     diagnose_header_after_pause=False,
     diagnose_detail_repair=False,
     header_scope_cache=None,
+    jab=None,
+    jab_lock=None,
 ):
     return RowRun(
         config,
@@ -1729,6 +2217,8 @@ def run_one_row(
         diagnose_header_after_pause=diagnose_header_after_pause,
         diagnose_detail_repair=diagnose_detail_repair,
         header_scope_cache=header_scope_cache,
+        jab=jab,
+        jab_lock=jab_lock,
     ).execute()
 
 

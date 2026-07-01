@@ -26,6 +26,7 @@ from core.receipt_nc_extract import ReceiptNCResultExtractor, extract_receipt_nc
 from core.receipt_parsing import parse_amount
 from core.receipt_parsing import parse_amount as parse_amount_from_new_module
 from core.receipt_sheet import RESULT_SHEET_HEADERS
+from core.receipt_post_query_only import merge_sheet2_results, select_post_query_targets
 
 
 def receipt_config(path="unused.xlsx"):
@@ -545,6 +546,160 @@ def test_build_local_plan_writes_multiple_global_issues_to_sheet2(tmp_path):
         "异常"
     ] * 2
     assert all(ws.cell(row, columns["异常原因"]).value for row in range(2, 4))
+    for row in range(2, 4):
+        assert ws.cell(row, columns["异常原因"]).fill.fgColor.rgb == "00FF0000"
+        assert ws.cell(row, columns["异常原因"]).font.color.rgb == "00FFFFFF"
+        assert ws.cell(row, columns["异常原因"]).font.bold is True
+    saved.close()
+
+
+def test_batch_result_sheet_highlights_skipped_business_exception(tmp_path):
+    path = tmp_path / "payments.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "💸Payments来款通知"
+    ws.append(
+        [
+            "到款日期",
+            "🟪银行来款名",
+            "🟪原始金额",
+            "银行",
+            "币种",
+            "客户编码",
+            "手续费",
+        ]
+    )
+    ws.append([date(2026, 6, 2), "TINGCO SAS", 100, "Paypal", "USD", "YW001", 0])
+    wb.save(path)
+    wb.close()
+
+    rows, _issues, _summary = ReceiptEntryWorkbook(
+        receipt_config(path)
+    ).build_local_plan()
+    ReceiptEntryWorkbook(receipt_config(path)).write_batch_result_sheet(
+        [
+            ReceiptBatchResultRow(
+                plan_row=rows[0],
+                local_status="跳过",
+                exception_reason=(
+                    "客户名称不匹配：Excel银行来款名='TINGCO SAS'；"
+                    "NC读回客户='TING'；相似度=62<阈值80；已取消当前单据并跳过"
+                ),
+                nc_customer_name="TING",
+            )
+        ]
+    )
+
+    saved = load_workbook(path)
+    ws = saved["收款单自动化结果"]
+    columns = {ws.cell(1, col).value: col for col in range(1, ws.max_column + 1)}
+    assert ws.cell(3, columns["本地预检状态"]).value == "跳过"
+    assert ws.cell(3, columns["异常原因"]).fill.fgColor.rgb == "00FF0000"
+    assert ws.cell(3, columns["异常原因"]).font.color.rgb == "00FFFFFF"
+    assert ws.cell(3, columns["异常原因"]).font.bold is True
+    saved.close()
+
+
+def test_post_query_only_selects_only_sheet2_post_query_issues(tmp_path):
+    path = tmp_path / "payments.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "💸Payments来款通知"
+    ws.append(
+        [
+            "到款日期",
+            "🟪银行来款名",
+            "🟪原始金额",
+            "银行",
+            "币种",
+            "客户编码",
+            "手续费",
+        ]
+    )
+    ws.append([date(2026, 6, 2), "POST FAIL", 100, "Paypal", "USD", "YW001", 0])
+    ws.append([date(2026, 6, 3), "ENTRY FAIL", 200, "Paypal", "USD", "YW002", 0])
+    wb.save(path)
+    wb.close()
+
+    workbook = ReceiptEntryWorkbook(receipt_config(path))
+    rows, _issues, _summary = workbook.build_local_plan()
+    by_row = {row.row: row for row in rows}
+    workbook.write_batch_result_sheet(
+        [
+            ReceiptBatchResultRow(
+                plan_row=by_row[2],
+                local_status="通过",
+                exception_reason="查询失败-NC 查询结果为空",
+                nc_customer_name="NC POST FAIL",
+            ),
+            ReceiptBatchResultRow(
+                plan_row=by_row[3],
+                local_status="异常",
+                exception_reason="录入失败-header-fill:客户字段写入失败",
+                nc_customer_name="NC ENTRY FAIL",
+            ),
+        ]
+    )
+
+    sheet2_rows = workbook.read_result_sheet_rows()
+    targets = select_post_query_targets(sheet2_rows, rows)
+
+    assert [row.row for row in targets] == [2]
+
+
+def test_post_query_merge_clears_old_error_style_on_success(tmp_path):
+    path = tmp_path / "payments.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "💸Payments来款通知"
+    ws.append(
+        [
+            "到款日期",
+            "🟪银行来款名",
+            "🟪原始金额",
+            "银行",
+            "币种",
+            "客户编码",
+            "手续费",
+        ]
+    )
+    ws.append([date(2026, 6, 2), "POST FAIL", 100, "Paypal", "USD", "YW001", 0])
+    wb.save(path)
+    wb.close()
+
+    workbook = ReceiptEntryWorkbook(receipt_config(path))
+    rows, _issues, _summary = workbook.build_local_plan()
+    workbook.write_batch_result_sheet(
+        [
+            ReceiptBatchResultRow(
+                plan_row=rows[0],
+                local_status="通过",
+                exception_reason="查询失败-NC 查询结果为空",
+                nc_customer_name="NC POST FAIL",
+            ),
+        ]
+    )
+    existing_rows = workbook.read_result_sheet_rows()
+    merged = merge_sheet2_results(
+        existing_rows,
+        rows,
+        [
+            ReceiptBatchResultRow(
+                plan_row=rows[0],
+                local_status="通过",
+                nc_customer_name="NC POST FAIL",
+                nc_document_no="SK1001",
+            )
+        ],
+    )
+    workbook.write_batch_result_sheet(merged)
+
+    saved = load_workbook(path)
+    ws = saved["收款单自动化结果"]
+    columns = {ws.cell(1, col).value: col for col in range(1, ws.max_column + 1)}
+    assert ws.cell(3, columns["后验核对状态"]).value == "后验通过"
+    assert ws.cell(3, columns["异常原因"]).value in (None, "")
+    assert ws.cell(3, columns["异常原因"]).fill.fgColor.rgb != "00FF0000"
     saved.close()
 
 
@@ -559,6 +714,11 @@ def test_counterparty_normalization_ignores_prefix_and_punctuation():
     assert names_match(
         "TECNOMOTUM SOCIEDAD ANONIMA PROMOT+",
         "TECNOMOTUM SOCIEDAD ANONIMA PROMOTO",
+    )
+    assert names_match("TINGCO SAS", "TING")
+    assert names_match(
+        "UK FUELS LIMITED T/AS RADIUS BUSINE",
+        "UK FUELS LIMITED",
     )
     assert not names_match("1/AZUGA INC. AZUGA INC - OPERATING", "AZUGA INC")
 

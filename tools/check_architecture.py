@@ -121,17 +121,10 @@ def _check_processor_api(errors):
         "require_page_state",
         "resume_current_voucher_window",
         "switch_to_generated_list",
-        "wait_for_page_state",
     }
     helper_methods = {
-        "choose_main_signature_table",
         "collect_page_controls",
         "collect_window_controls",
-        "describe_signature_table",
-        "is_generated_signature",
-        "looks_loading",
-        "read_page_table_signatures",
-        "sample_table_col",
         "table_match_ratio",
     }
     unexpected = public_methods - expected - helper_methods

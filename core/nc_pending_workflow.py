@@ -186,6 +186,9 @@ class NCPendingWorkflow:
                 context="generate",
             )
             self.run_state.event("excel_preflight_passed", **preflight)
+            self.run_state.set_stage("excel_write_preflight", context="generate")
+            self.data_handler.assert_excel_writable("正式生成前写入凭证状态/凭证号预检")
+            self.run_state.event("excel_write_preflight_passed", context="generate")
             self.perf.event(
                 "generate_items_prepared",
                 total=len(items),

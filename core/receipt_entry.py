@@ -64,6 +64,7 @@ from core.receipt_sheet import (
     orphan_issue_sort_key as orphan_issue_sort_key,
     plan_sheet_row as plan_sheet_row,
     plan_sheet_sort_key as plan_sheet_sort_key,
+    read_result_sheet_rows,
     rewrite_batch_result_sheet,
     rewrite_plan_sheet,
 )
@@ -156,6 +157,17 @@ class ReceiptEntryWorkbook:
                 ) from exc
         finally:
             writable.close()
+
+    def read_result_sheet_rows(self):
+        wb = openpyxl.load_workbook(self.excel_path, read_only=False, data_only=True)
+        try:
+            return read_result_sheet_rows(
+                wb,
+                self.config.result_sheet_name,
+                self.config.header_row,
+            )
+        finally:
+            wb.close()
 
     def ensure_output_columns_and_subjects(self, today=None):
         wb = openpyxl.load_workbook(self.excel_path, read_only=False)

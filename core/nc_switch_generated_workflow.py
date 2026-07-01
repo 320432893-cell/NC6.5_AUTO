@@ -5,6 +5,8 @@ from pathlib import Path
 
 from core.errors import JABActionError, JABControlNotFound, WorkflowStateError
 from core.logger import log
+from core.nc_generated_result_locator import wait_generated_result_table
+from core.nc_state import NCPageState
 
 
 class NCSwitchGeneratedWorkflow:
@@ -165,10 +167,7 @@ class NCSwitchGeneratedWorkflow:
                     raise
             with self.perf.span("switch_generated_snapshot"):
                 self.run_state.set_stage("switch_verify_generated_snapshot")
-                state = self.wait_for_page_state(
-                    "generated",
-                    items=None,
-                    command="switch-generated",
+                state = self.wait_for_generated_result_table(
                     timeout=generated_wait_timeout,
                 )
             self.record_transition(
@@ -186,6 +185,69 @@ class NCSwitchGeneratedWorkflow:
             self.run_state.update_counts(generated_snapshot_rows=rows)
             self.run_state.set_stage("switch_generated_done")
             return state
+
+    def wait_for_generated_result_table(self, timeout=None):
+        wait_timeout = float(
+            timeout if timeout is not None else self.batch_cfg.get("state_wait_timeout", 2.0)
+        )
+        interval = float(self.batch_cfg.get("state_wait_interval", 0.2))
+        started = time.perf_counter()
+        result = wait_generated_result_table(
+            self.jab,
+            self.batch_cfg,
+            self.voucher_col,
+            self.generated_voucher_max,
+            timeout=wait_timeout,
+            interval=interval,
+        )
+        elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
+        self.record_event(
+            "generated_result_locator",
+            ok=bool(result.get("ok")),
+            reason=result.get("reason"),
+            elapsed_ms=elapsed_ms,
+            dynamic_index=result.get("dynamic_index"),
+            table_path=result.get("table_path"),
+            rows=result.get("row_count"),
+            cols=result.get("col_count"),
+            voucher_values=(result.get("voucher_values") or [])[:3],
+            attempts=len(result.get("attempts") or []),
+        )
+        if not result.get("ok"):
+            last_attempts = (result.get("attempts") or [])[-3:]
+            raise WorkflowStateError(
+                "NC 已生成结果表等待超时: "
+                f"reason={result.get('reason')} timeout={wait_timeout}s "
+                f"attempts={last_attempts}"
+            )
+        self.processor.generated_result_table_path = result["table_path"]
+        self.processor.generated_result_table_window_class = result.get(
+            "window_class", "SunAwtCanvas"
+        )
+        self.processor.generated_result_locator = result
+        self.record_transition(
+            "state_wait_passed",
+            to_state="generated",
+            command="switch-generated",
+            expected="generated",
+            reason=result.get("reason"),
+        )
+        log.info(
+            "NC 已生成结果表定位成功: "
+            f"index={result.get('dynamic_index')} rows={result.get('row_count')} "
+            f"path={result.get('table_path')}"
+        )
+        return NCPageState(
+            "generated",
+            "module_index_path_voucher_col",
+            table={
+                "row_count": result.get("row_count", 0),
+                "col_count": result.get("col_count", 0),
+                "voucher_values": result.get("voucher_values", []),
+                "path": result.get("table_path"),
+                "dynamic_index": result.get("dynamic_index"),
+            },
+        )
 
     def run_switch_generated_steps(
         self,

@@ -275,14 +275,15 @@ class JABControlMixin:
             ):
                 continue
 
+            root_value = root_context.value
             context, owned_contexts, owned_indexes = self.find_in_tree_with_path(
                 vm_id.value,
-                root_context.value,
+                root_value,
                 name,
                 normalized_roles,
                 require_showing,
                 depth=0,
-                owned_contexts=[],
+                owned_contexts=[root_value],
                 owned_indexes=[],
             )
             if context:
@@ -291,6 +292,7 @@ class JABControlMixin:
                     f"class={class_name!r} title={title!r} visible={visible}"
                 )
                 return context, vm_id.value, owned_contexts, owned_indexes
+            self.release_contexts(vm_id.value, [root_value])
 
         return None, None, [], []
 
@@ -333,14 +335,15 @@ class JABControlMixin:
             ):
                 continue
 
+            root_value = root_context.value
             context, owned_contexts = self.find_in_tree(
                 vm_id.value,
-                root_context.value,
+                root_value,
                 name,
                 normalized_roles,
                 require_showing,
                 depth=0,
-                owned_path=[],
+                owned_path=[root_value],
             )
             if context:
                 log.debug(
@@ -348,6 +351,7 @@ class JABControlMixin:
                     f"class={class_name!r} title={title!r} visible={visible}"
                 )
                 return context, vm_id.value, owned_contexts
+            self.release_contexts(vm_id.value, [root_value])
 
         return None, None, []
 

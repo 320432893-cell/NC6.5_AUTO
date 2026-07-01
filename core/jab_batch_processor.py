@@ -83,6 +83,9 @@ class JABBatchProcessor:
         self.generated_voucher_max = int(
             self.batch_cfg.get("generated_voucher_max", 9999)
         )
+        self.generated_result_table_path = None
+        self.generated_result_table_window_class = "SunAwtCanvas"
+        self.generated_result_locator = None
         self.config_path = config.get("_config_path", "config.json")
         self.state_detector = NCStateDetector(
             self.jab,
@@ -180,9 +183,6 @@ class JABBatchProcessor:
     def require_page_state(self, expected, items=None, command=""):
         return self.state_detector.require_page_state(expected, items, command)
 
-    def wait_for_page_state(self, expected, items=None, command="", timeout=None):
-        return self.state_detector.wait_for_page_state(expected, items, command, timeout)
-
     def detect_page_state(self, items=None):
         return self.state_detector.detect_page_state(items)
 
@@ -201,67 +201,8 @@ class JABBatchProcessor:
             window_class=window_class,
         )
 
-    def read_page_table_signatures(self):
-        return self.state_detector.probe.read_page_table_signatures(
-            self.voucher_col,
-            self.jab.amount_col,
-            self.jab.partner_col,
-        )
-
-    def describe_signature_table(self, table):
-        voucher_values = self.sample_table_col(table, self.voucher_col)
-        return {
-            "table_index": table["table_index"],
-            "window_title": table.get("window_title"),
-            "window_class": table.get("window_class"),
-            "row_count": table["row_count"],
-            "col_count": table["col_count"],
-            "voucher_values": voucher_values,
-            "rows": [
-                {
-                    "row_index": row["row_index"],
-                    "amount": self.jab.normalize_amount(
-                        row["cells"][self.jab.amount_col]
-                        if self.jab.amount_col < len(row["cells"])
-                        else ""
-                    ),
-                    "partner": self.jab.normalize_text(
-                        row["cells"][self.jab.partner_col]
-                        if self.jab.partner_col < len(row["cells"])
-                        else ""
-                    ),
-                }
-                for row in table.get("rows", [])
-            ],
-        }
-
-    def sample_table_col(self, table, col):
-        if col is None:
-            return []
-        values = []
-        for row in table.get("rows", []):
-            cells = row.get("cells", [])
-            if 0 <= col < len(cells):
-                text = str(cells[col]).strip()
-                if text:
-                    values.append(text)
-        return values
-
-    def choose_main_signature_table(self, tables):
-        from core.nc_state import choose_main_signature_table
-
-        return choose_main_signature_table(tables)
-
-    def is_generated_signature(self, table):
-        return self.state_detector.is_generated_signature(table)
-
     def table_match_ratio(self, rows, items):
         return self.state_detector.table_match_ratio(rows, items)
-
-    def looks_loading(self, controls, tables):
-        from core.nc_state import looks_loading
-
-        return looks_loading(controls, tables)
 
     def normalize_generated_voucher(self, raw_voucher):
         return normalize_generated_voucher(raw_voucher, self.generated_voucher_max)

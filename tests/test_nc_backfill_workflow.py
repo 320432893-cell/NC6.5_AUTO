@@ -15,6 +15,9 @@ class FakeProcessor:
         self.transitions = []
         self.switches = 0
         self.required = []
+        self.batch_cfg = {}
+        self.perf = FakePerf()
+        self.switch_generated_workflow = FakeSwitchGeneratedWorkflow()
 
     def detect_page_state(self, items=None):
         return self.states.pop(0)
@@ -37,13 +40,31 @@ class FakeProcessor:
     generated_voucher_max = 9999
 
 
-def test_backfill_preflight_allows_generated_page():
+class FakeSpan:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        return False
+
+
+class FakePerf:
+    def span(self, *args, **kwargs):
+        return FakeSpan()
+
+
+class FakeSwitchGeneratedWorkflow:
+    def wait_for_generated_result_table(self, timeout=None):
+        raise WorkflowStateError("not located")
+
+
+def test_backfill_preflight_rejects_legacy_generated_page_without_locator():
     processor = FakeProcessor([NCPageState("generated", "already generated")])
     workflow = NCBackfillWorkflow(processor)
 
-    state = workflow.ensure_generated_page_for_backfill([{"row": 2}])
+    with pytest.raises(WorkflowStateError, match="旧页面状态识别检测到已生成"):
+        workflow.ensure_generated_page_for_backfill([{"row": 2}])
 
-    assert state.name == "generated"
     assert processor.switches == 0
     assert processor.required == []
 

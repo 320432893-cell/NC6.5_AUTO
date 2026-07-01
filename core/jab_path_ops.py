@@ -323,6 +323,7 @@ def find_context_by_path_once(
     require_showing=False,
     require_valid_bounds=False,
 ):
+    jab.ensure_started()
     parts = jab.parse_context_path(path)
     windows = enum_windows(include_children=True)
     normalized_role = role.lower() if role else None
@@ -347,7 +348,7 @@ def find_context_by_path_once(
             continue
 
         context = root_context.value
-        owned_contexts = []
+        owned_contexts = [context]
         for index in parts[1:]:
             child = jab.dll.getAccessibleChildFromContext(vm_id.value, context, index)
             if not child:

@@ -99,45 +99,107 @@ def read_table_snapshot(
         return []
 
     try:
-        amount_col = resolve_amount_col(jab, amount_col)
-        partner_col = resolve_partner_col(jab, partner_col)
-        extra_cols = extra_cols or []
-        row_count = (
-            table_info.rowCount if limit is None else min(table_info.rowCount, limit)
+        return read_table_snapshot_from_context(
+            jab,
+            table_context,
+            vm_id,
+            table_info,
+            amount_col=amount_col,
+            partner_col=partner_col,
+            voucher_col=voucher_col,
+            extra_cols=extra_cols,
+            limit=limit,
         )
-        rows = []
-        for row in range(row_count):
-            check_abort()
-            amount_text = jab.get_table_cell_text(vm_id, table_context, row, amount_col)
-            partner_text = jab.get_table_cell_text(
-                vm_id, table_context, row, partner_col
-            )
-            item = {
-                "row_index": row,
-                "amount_text": amount_text,
-                "amount": jab.normalize_amount(amount_text),
-                "partner_text": partner_text,
-                "partner": jab.normalize_text(partner_text),
-            }
-            if voucher_col is not None:
-                item["voucher_text"] = jab.get_table_cell_text(
-                    vm_id, table_context, row, voucher_col
-                ).strip()
-            if extra_cols:
-                item["extra_text"] = {
-                    col: jab.get_table_cell_text(vm_id, table_context, row, col).strip()
-                    for col in extra_cols
-                }
-            rows.append(item)
-
-        log.info(
-            "JAB 读取表格快照: "
-            f"rows={len(rows)} amount_col={amount_col} partner_col={partner_col} "
-            f"voucher_col={voucher_col}"
-        )
-        return rows
     finally:
         jab.release_contexts(vm_id, owned_contexts)
+
+
+def read_table_snapshot_by_path(
+    jab,
+    table_path,
+    amount_col=None,
+    partner_col=None,
+    voucher_col=None,
+    extra_cols=None,
+    limit=None,
+    window_class="SunAwtCanvas",
+):
+    jab.ensure_started()
+    context, vm_id, owned_contexts, window_info = jab.find_context_by_path_once(
+        table_path,
+        class_name=window_class,
+        role="table",
+        require_showing=False,
+        require_valid_bounds=False,
+    )
+    if not context:
+        log.warning(f"JAB 未按 path 找到表格: path={table_path}")
+        return []
+
+    try:
+        table_info = jab.get_table_info(vm_id, context)
+        if not table_info:
+            log.warning(f"JAB 表格 path 无法读取 table_info: path={table_path}")
+            return []
+        return read_table_snapshot_from_context(
+            jab,
+            context,
+            vm_id,
+            table_info,
+            amount_col=amount_col,
+            partner_col=partner_col,
+            voucher_col=voucher_col,
+            extra_cols=extra_cols,
+            limit=limit,
+        )
+    finally:
+        jab.release_contexts(vm_id, owned_contexts)
+
+
+def read_table_snapshot_from_context(
+    jab,
+    table_context,
+    vm_id,
+    table_info,
+    amount_col=None,
+    partner_col=None,
+    voucher_col=None,
+    extra_cols=None,
+    limit=None,
+):
+    amount_col = resolve_amount_col(jab, amount_col)
+    partner_col = resolve_partner_col(jab, partner_col)
+    extra_cols = extra_cols or []
+    row_count = table_info.rowCount if limit is None else min(table_info.rowCount, limit)
+    rows = []
+    for row in range(row_count):
+        check_abort()
+        amount_text = jab.get_table_cell_text(vm_id, table_context, row, amount_col)
+        partner_text = jab.get_table_cell_text(vm_id, table_context, row, partner_col)
+        item = {
+            "row_index": row,
+            "amount_text": amount_text,
+            "amount": jab.normalize_amount(amount_text),
+            "partner_text": partner_text,
+            "partner": jab.normalize_text(partner_text),
+        }
+        if voucher_col is not None:
+            item["voucher_text"] = jab.get_table_cell_text(
+                vm_id, table_context, row, voucher_col
+            ).strip()
+        if extra_cols:
+            item["extra_text"] = {
+                col: jab.get_table_cell_text(vm_id, table_context, row, col).strip()
+                for col in extra_cols
+            }
+        rows.append(item)
+
+    log.info(
+        "JAB 按指定表读取快照: "
+        f"rows={len(rows)} amount_col={amount_col} partner_col={partner_col} "
+        f"voucher_col={voucher_col}"
+    )
+    return rows
 
 
 def read_all_table_cells(
@@ -574,22 +636,24 @@ def find_tables_once(jab, scope_hwnd=None):
         ):
             continue
 
-        tables.extend(
-            find_tables_in_tree(
-                jab,
-                vm_id.value,
-                root_context.value,
-                depth=0,
-                owned_path=[],
-                window_info={
-                    "hwnd": int(hwnd),
-                    "title": title,
-                    "class_name": class_name,
-                    "pid": pid,
-                    "visible": visible,
-                },
-            )
+        found = find_tables_in_tree(
+            jab,
+            vm_id.value,
+            root_context.value,
+            depth=0,
+            owned_path=[],
+            window_info={
+                "hwnd": int(hwnd),
+                "title": title,
+                "class_name": class_name,
+                "pid": pid,
+                "visible": visible,
+            },
         )
+        if found:
+            tables.extend(found)
+        else:
+            jab.release_contexts(vm_id.value, [root_context.value])
 
     return tables
 
