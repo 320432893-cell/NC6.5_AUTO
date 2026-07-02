@@ -809,7 +809,7 @@ class NCVoucherWorkflow:
         timeout = float(
             self.batch_cfg.get(
                 "voucher_window_close_timeout",
-                self.batch_cfg.get("state_wait_timeout", 2.0),
+                self.batch_cfg.get("state_wait_timeout", 15.0),
             )
         )
         interval = float(self.batch_cfg.get("state_wait_interval", 0.2))

@@ -36,7 +36,7 @@ class NCStateDetector:
         self.voucher_window_class = batch_cfg.get(
             "voucher_window_class", "SunAwtDialog"
         )
-        self.state_wait_timeout = float(batch_cfg.get("state_wait_timeout", 2.0))
+        self.state_wait_timeout = float(batch_cfg.get("state_wait_timeout", 15.0))
         self.state_wait_interval = float(batch_cfg.get("state_wait_interval", 0.2))
         self.probe = NCPageProbe(jab, batch_cfg)
 

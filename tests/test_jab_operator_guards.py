@@ -112,6 +112,10 @@ def test_operator_lifecycle_does_not_auto_cleanup_awt(monkeypatch):
 
     monkeypatch.setattr("core.jab_operator.os.name", "nt")
     monkeypatch.setattr(
+        "core.jab_operator.ensure_jab_setup_once",
+        lambda: {"ok": True, "skipped": True, "jabswitch": "fake-jabswitch.exe"},
+    )
+    monkeypatch.setattr(
         "core.jab_operator.load_access_bridge",
         lambda _path: (FakeDll(), "fake.dll"),
     )

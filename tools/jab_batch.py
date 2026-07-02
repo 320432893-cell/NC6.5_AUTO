@@ -135,6 +135,18 @@ def build_parser():
         help="配置外币汇率时，制单金额与 Excel金额*汇率 的允许金额差，默认 5",
     )
     parser.add_argument(
+        "--pending-generate-batch-size",
+        type=int,
+        default=None,
+        help="待生成页每次选中并前台生成的最大行数；默认走配置，建议弱机器 100-120",
+    )
+    parser.add_argument(
+        "--state-wait-timeout",
+        type=float,
+        default=None,
+        help="等待 NC 页面/已生成结果表稳定的秒数；默认走配置或引擎保守默认",
+    )
+    parser.add_argument(
         "--key-col",
         type=int,
         default=None,
@@ -206,6 +218,16 @@ def main():  # noqa: C901 (intentional single-function dispatch)
         cfg.setdefault("jab_batch", {})["foreign_currency_amount_tolerance"] = (
             args.foreign_currency_amount_tolerance
         )
+    if args.pending_generate_batch_size is not None:
+        if args.pending_generate_batch_size <= 0:
+            raise SystemExit("--pending-generate-batch-size 必须是正整数")
+        cfg.setdefault("jab_batch", {})["pending_generate_batch_size"] = (
+            args.pending_generate_batch_size
+        )
+    if args.state_wait_timeout is not None:
+        if args.state_wait_timeout <= 0:
+            raise SystemExit("--state-wait-timeout 必须大于 0")
+        cfg.setdefault("jab_batch", {})["state_wait_timeout"] = args.state_wait_timeout
     for arg_name, config_key in (
         ("key_col", "key_col"),
         ("amount_out_col", "amount_out_col"),
@@ -294,6 +316,10 @@ def main():  # noqa: C901 (intentional single-function dispatch)
         return 0
 
     try:
+        if args.command not in ("read-queue", "split-keys"):
+            processor.run_state.set_stage("nc_environment_precheck", command=args.command)
+            processor.require_jab_environment_ready(command=args.command)
+
         if args.command == "read-queue":
             processor.run_state.set_stage(
                 "queue_load_excel",
@@ -377,8 +403,12 @@ def main():  # noqa: C901 (intentional single-function dispatch)
                 matches = result["matches"]
                 issues = result["issues"]
                 parse_errors = result["parse_errors"]
-                failed_count = len(issues) + len(parse_errors)
-                total = len(matches) + failed_count
+                skip_match_issues = processor.duplicate_match_policy == "skip"
+                skipped_count = len(issues) if skip_match_issues else 0
+                failed_count = len(parse_errors) + (
+                    0 if skip_match_issues else len(issues)
+                )
+                total = len(matches) + len(issues) + len(parse_errors)
                 items = []
                 for pe in parse_errors:
                     items.append(
@@ -392,7 +422,7 @@ def main():  # noqa: C901 (intentional single-function dispatch)
                     items.append(
                         {
                             "ref": f"Excel行{iss.item.row}",
-                            "outcome": "failed",
+                            "outcome": "skipped" if skip_match_issues else "failed",
                             "reason": iss.reason,
                         }
                     )
@@ -412,7 +442,7 @@ def main():  # noqa: C901 (intentional single-function dispatch)
                         "total": total,
                         "succeeded": len(matches),
                         "failed": failed_count,
-                        "skipped": 0,
+                        "skipped": skipped_count,
                     },
                     items=items,
                 )
@@ -451,17 +481,21 @@ def main():  # noqa: C901 (intentional single-function dispatch)
                 end_row=args.end_row,
             )
             saved = int(result.get("saved", 0))
+            skipped = int(result.get("skipped", 0))
             updates = result.get("updates") or {}
-            print(f"生成保存并回填完成: 保存 {saved} 张, 回填 {len(updates)} 行")
+            print(
+                f"生成保存并回填完成: 保存 {saved} 张, "
+                f"回填 {len(updates)} 行, 跳过 {skipped} 行"
+            )
             if args.json_output:
                 _emit_envelope(
                     ok=True,
                     exit_code=0,
                     summary={
-                        "total": saved,
+                        "total": saved + skipped,
                         "succeeded": len(updates),
                         "failed": 0,
-                        "skipped": 0,
+                        "skipped": skipped,
                         "saved": saved,
                         "backfilled": len(updates),
                     },
@@ -474,22 +508,24 @@ def main():  # noqa: C901 (intentional single-function dispatch)
             return
 
         if args.command == "generate":
-            saved = processor.generate_and_save(
+            result = processor.generate_and_collect_saved(
                 limit=args.limit,
                 max_batches=args.max_batches,
                 start_row=args.start_row,
                 end_row=args.end_row,
             )
-            print(f"生成保存完成: {saved} 张")
+            saved = int(result.get("saved", 0))
+            skipped = int(result.get("skipped", 0))
+            print(f"生成保存完成: {saved} 张, 跳过 {skipped} 行")
             if args.json_output:
                 _emit_envelope(
                     ok=True,
                     exit_code=0,
                     summary={
-                        "total": saved,
+                        "total": saved + skipped,
                         "succeeded": saved,
                         "failed": 0,
-                        "skipped": 0,
+                        "skipped": skipped,
                     },
                     items=[],
                     can_resume=True,
@@ -641,6 +677,7 @@ def main():  # noqa: C901 (intentional single-function dispatch)
                     "resume-voucher" if args.command == "generate" else None
                 ),
             )
+            return
         raise
     finally:
         if not state_finished:

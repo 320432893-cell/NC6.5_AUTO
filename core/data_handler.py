@@ -4,6 +4,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import openpyxl
+from openpyxl.styles import Font, PatternFill
 
 from core.errors import ExcelLockedError, ExcelPreflightError
 from core.logger import log
@@ -13,6 +14,8 @@ from core.models import ExcelVoucherItem
 CONCAT_KEY_RE = re.compile(
     r"^\s*([+-]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)(?![\d.,])\s*(.+?)\s*$"
 )
+RESULT_ISSUE_FILL = PatternFill("solid", fgColor="C00000")
+RESULT_ISSUE_FONT = Font(color="FFFFFF", bold=True)
 
 
 class DataHandler:
@@ -50,6 +53,8 @@ class DataHandler:
             ):
                 continue
 
+            if self._is_skip_status(result):
+                continue
             if skip_any_status and self._has_cell_value(result):
                 continue
             if skip_filled and self._looks_like_voucher(result):
@@ -443,10 +448,20 @@ class DataHandler:
         ws = wb[self.sheet_my]
 
         for row, value in row_values.items():
-            ws.cell(row=row, column=self.jab_result_col, value=value)
+            cell = ws.cell(row=row, column=self.jab_result_col, value=value)
+            self._style_result_cell(cell, value)
             log.info(f"行{row} 写入结果: col={self.jab_result_col} value={value}")
 
         self._save_workbook(wb, "写入凭证状态/凭证号")
+
+    def _style_result_cell(self, cell, value):
+        if self._looks_like_voucher(value):
+            cell.fill = PatternFill(fill_type=None)
+            cell.font = Font()
+            return
+        if self._should_mark_result_issue(value):
+            cell.fill = RESULT_ISSUE_FILL
+            cell.font = RESULT_ISSUE_FONT
 
     def _save_workbook(self, wb, operation):
         try:
@@ -474,3 +489,17 @@ class DataHandler:
         if isinstance(value, float) and value.is_integer():
             text = str(int(value))
         return text.isdigit() and int(text) > 0
+
+    def _is_skip_status(self, value):
+        if not self._has_cell_value(value):
+            return False
+        return str(value).strip().startswith("跳过")
+
+    def _should_mark_result_issue(self, value):
+        if not self._has_cell_value(value):
+            return False
+        text = str(value).strip()
+        if text == str(self.cfg.get("jab_batch", {}).get("generated_status", "")):
+            return False
+        issue_markers = ("跳过", "异常", "未找到", "未取到", "失败")
+        return any(marker in text for marker in issue_markers)

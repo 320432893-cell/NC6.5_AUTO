@@ -188,7 +188,7 @@ class NCSwitchGeneratedWorkflow:
 
     def wait_for_generated_result_table(self, timeout=None):
         wait_timeout = float(
-            timeout if timeout is not None else self.batch_cfg.get("state_wait_timeout", 2.0)
+            timeout if timeout is not None else self.batch_cfg.get("state_wait_timeout", 15.0)
         )
         interval = float(self.batch_cfg.get("state_wait_interval", 0.2))
         started = time.perf_counter()
@@ -267,7 +267,7 @@ class NCSwitchGeneratedWorkflow:
                 step_for_action = self.step_without_wait(step) if is_confirm else step
                 if is_confirm:
                     generated_wait_timeout = float(
-                        self.batch_cfg.get("state_wait_timeout", 2.0)
+                        self.batch_cfg.get("state_wait_timeout", 15.0)
                     )
                 if isinstance(step, dict) and step.get("runner") == "subprocess":
                     subprocess_step = {
@@ -674,7 +674,7 @@ class NCSwitchGeneratedWorkflow:
         return "unknown"
 
     def wait_for_parent_ready_after_voucher_close(self):
-        timeout = float(self.batch_cfg.get("state_wait_timeout", 2.0))
+        timeout = float(self.batch_cfg.get("state_wait_timeout", 15.0))
         interval = float(self.batch_cfg.get("state_wait_interval", 0.2))
         deadline = time.time() + timeout
         last_state = "unknown"

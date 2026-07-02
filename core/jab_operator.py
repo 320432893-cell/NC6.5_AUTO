@@ -16,6 +16,7 @@ from core.jab_probe import (
     load_access_bridge,
     run_windows_access_bridge,
 )
+from core.jab_environment import ensure_jab_setup_once
 
 
 class JABOperator(JABControlMixin, JABNearLabelMixin, JABPathMixin, JABTableMixin):
@@ -52,6 +53,17 @@ class JABOperator(JABControlMixin, JABNearLabelMixin, JABPathMixin, JABTableMixi
 
         if os.name != "nt":
             raise RuntimeError("Java Access Bridge must run under Windows Python.")
+
+        setup = ensure_jab_setup_once()
+        if setup.get("ok"):
+            if setup.get("skipped"):
+                log.debug(f"JAB 环境已配置: {setup.get('jabswitch')}")
+            else:
+                log.info(
+                    "JAB 环境首次配置已确认；如当前 NC 已打开，需重启 NC 后生效"
+                )
+        else:
+            log.warning(f"JAB 环境配置未完成: {setup.get('reason')}")
 
         self.dll, self.loaded_path = load_access_bridge(self.dll_path)
         configure_jab(self.dll)

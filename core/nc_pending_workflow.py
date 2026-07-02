@@ -1,6 +1,11 @@
 import time
 
-from core.errors import ContractViolation, JABActionError, TableMatchError
+from core.errors import (
+    ContractViolation,
+    JABActionError,
+    TableMatchError,
+    WorkflowStateError,
+)
 from core.logger import log
 from core.models import (
     ExcelVoucherItem,
@@ -11,6 +16,7 @@ from core.models import (
 )
 from core.utils import check_abort
 from core.voucher_plan_cache import (
+    issues_from_plan_cache,
     load_voucher_plan_cache,
     matches_from_plan_cache,
     validate_voucher_plan_cache,
@@ -99,13 +105,14 @@ class NCPendingWorkflow:
         matches, issues = self.table_matcher.match_current_table(parsed_items)
         batches = self.table_matcher.build_increasing_batches(matches)
         plan_path = None
-        if matches and not issues and not parse_errors:
+        if matches or issues:
             plan_path = write_voucher_plan_cache(
                 config=self.cfg,
                 limit=limit,
                 start_row=start_row,
                 end_row=end_row,
                 matches=matches,
+                issues=issues,
             )
         self.run_state.update_counts(
             parse_errors=len(parse_errors),
@@ -230,7 +237,7 @@ class NCPendingWorkflow:
                     pending=pending,
                 )
                 matches = matches_from_plan_cache(cache, pending)
-                issues: list[MatchIssue] = []
+                issues: list[MatchIssue] = issues_from_plan_cache(cache, pending)
                 self.perf.event(
                     "pending_match_from_precheck_plan",
                     pending=len(pending),
@@ -241,35 +248,45 @@ class NCPendingWorkflow:
                 self.run_state.event(
                     "pending_match_from_precheck_plan",
                     rows=len(matches),
+                    issues=len(issues),
                     excel_rows=[match.item.row for match in matches],
                     nc_rows=[match.nc_row for match in matches],
                 )
 
+                self.ensure_full_pending_match(pending, matches, issues)
+                if issues and self.duplicate_match_policy == "skip":
+                    issue_updates = self.format_issue_updates(issues, prefix="跳过：")
+                    self.run_state.set_stage(
+                        "generate_write_skipped_rows",
+                        rows=len(issue_updates),
+                    )
+                    with self.perf.span("generate_write_skipped_rows", rows=len(issue_updates)):
+                        self.data_handler.save_jab_results(issue_updates)
+                    self.record_event(
+                        "pending_issues_skipped",
+                        rows=len(issue_updates),
+                        excel_rows=sorted(issue_updates),
+                        reasons=issue_updates,
+                    )
+
+                self.run_state.update_counts(
+                    pending_matches=len(matches),
+                    pending_issues=len(issues),
+                    skipped=len(issue_updates),
+                )
                 if matches:
-                    self.ensure_full_pending_match(pending, matches, issues)
-                    self.run_state.update_counts(
-                        pending_matches=len(matches),
-                        pending_issues=len(issues),
-                    )
+                    matched_pending = [match.item for match in matches]
                     log.info(
-                        "开始执行 JAB 全量生成: "
+                        "开始执行 JAB 生成: "
                         f"size={len(matches)} excel_rows={[m.item.row for m in matches]} "
-                        f"nc_rows={[m.nc_row for m in matches]}"
+                        f"nc_rows={[m.nc_row for m in matches]} skipped={len(issue_updates)}"
                     )
-                    saved_matches, total_batches = self.process_full_selection(
+                    saved_matches, total_batches = self.process_pending_generate_batches(
+                        matched_pending,
                         matches,
                         max_save_batches=max_batches,
                     )
                     total_saved = len(saved_matches)
-
-            if issue_updates:
-                detail = "；".join(
-                    f"Excel行{row} {reason}" for row, reason in issue_updates.items()
-                )
-                raise TableMatchError(
-                    "正式生成前待生成表匹配存在异常，已暂停，未写 Excel、未点击 NC。"
-                    f" 请先预检查并修正。异常: {detail}"
-                )
 
             self.perf.event(
                 "generate_done",
@@ -286,6 +303,8 @@ class NCPendingWorkflow:
             return {
                 "saved": total_saved,
                 "batches": total_batches,
+                "skipped": len(issue_updates),
+                "issue_updates": issue_updates,
                 "saved_matches": saved_matches,
                 "excel_rows": [match.item.row for match in saved_matches],
             }
@@ -325,6 +344,106 @@ class NCPendingWorkflow:
             f" 待保存{len(pending)}行，匹配到{len(voucher_matches)}行，"
             f"未匹配Excel行{missing_rows}"
         )
+
+    def process_pending_generate_batches(
+        self,
+        pending,
+        matches,
+        max_save_batches=None,
+    ):
+        cap = int(self.batch_cfg.get("pending_generate_batch_size", 120) or 0)
+        if cap <= 0 or len(matches) <= cap:
+            return self.process_full_selection(
+                matches,
+                max_save_batches=max_save_batches,
+            )
+        if max_save_batches:
+            raise ContractViolation(
+                "已启用待生成页分批生成，不能同时使用 max_batches；"
+                "请取消 max_batches 或调大待生成页单批上限。"
+            )
+
+        remaining = list(pending)
+        first_matches_by_excel_row = {match.item.row: match for match in matches}
+        saved_matches: list[VoucherSaveMatch] = []
+        total_save_batches = 0
+        pending_batch_index = 0
+
+        self.record_event(
+            "pending_generate_batches_start",
+            total=len(remaining),
+            pending_generate_batch_size=cap,
+            estimated_batches=(len(remaining) + cap - 1) // cap,
+            excel_rows=[item.row for item in remaining],
+        )
+
+        while remaining:
+            check_abort()
+            pending_batch_index += 1
+            self.run_state.set_stage(
+                "pending_batch_match",
+                pending_batch_index=pending_batch_index,
+                remaining=len(remaining),
+                pending_generate_batch_size=cap,
+                excel_rows=[item.row for item in remaining],
+            )
+
+            if pending_batch_index == 1:
+                current_matches = [
+                    first_matches_by_excel_row[item.row]
+                    for item in remaining
+                    if item.row in first_matches_by_excel_row
+                ]
+                current_issues: list[MatchIssue] = []
+            else:
+                self.require_page_state("pending", remaining, command="generate")
+                current_matches, current_issues = self.table_matcher.match_current_table(
+                    remaining
+                )
+            self.ensure_full_pending_match(remaining, current_matches, current_issues)
+
+            batch_matches = current_matches[:cap]
+            self.record_event(
+                "pending_generate_batch",
+                pending_batch_index=pending_batch_index,
+                rows=len(batch_matches),
+                remaining_before=len(remaining),
+                excel_rows=[match.item.row for match in batch_matches],
+                nc_rows=[match.nc_row for match in batch_matches],
+            )
+            new_saved, new_save_batches = self.process_full_selection(batch_matches)
+            saved_matches.extend(new_saved)
+            total_save_batches += new_save_batches
+
+            saved_excel_rows = {match.item.row for match in new_saved}
+            if not saved_excel_rows:
+                raise TableMatchError(
+                    "待生成页分批生成未保存任何凭证，已停止后续批次。"
+                )
+            remaining = [
+                item for item in remaining if item.row not in saved_excel_rows
+            ]
+            self.record_event(
+                "pending_generate_batch_done",
+                pending_batch_index=pending_batch_index,
+                saved=len(new_saved),
+                save_batches=new_save_batches,
+                remaining_after=len(remaining),
+                saved_excel_rows=sorted(saved_excel_rows),
+            )
+
+            if remaining:
+                state = (
+                    self.processor.switch_generated_workflow
+                    .wait_for_parent_ready_after_voucher_close()
+                )
+                if state != "parent_ready":
+                    raise WorkflowStateError(
+                        "分批生成后未回到制单父界面，已停止后续批次: "
+                        f"state={state}"
+                    )
+
+        return saved_matches, total_save_batches
 
     def process_full_selection(self, matches, max_save_batches=None):
         rows = [match.nc_row for match in matches]

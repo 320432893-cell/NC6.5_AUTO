@@ -50,11 +50,13 @@ def validate_config(config):
         prefix="jab_batch",
     )
     for key in (
+        "pending_generate_batch_size",
         "max_batch_size",
         "save_wait",
         "wait_between_save_batches",
         "save_success_timeout",
         "voucher_record_timeout",
+        "state_wait_timeout",
     ):
         _non_negative_number(batch_cfg, key, errors, prefix="jab_batch")
     _positive_int(batch_cfg, "generated_voucher_max", errors, prefix="jab_batch")

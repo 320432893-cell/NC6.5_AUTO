@@ -2,6 +2,8 @@ from datetime import date
 from decimal import Decimal
 
 from core.data_handler import DataHandler
+from core.errors import WorkflowStateError
+from core.jab_health_check import check_jab_ready
 from core.jab_operator import JABOperator
 from core.nc_backfill_workflow import NCBackfillWorkflow
 from core.nc_pending_workflow import NCPendingWorkflow
@@ -105,6 +107,25 @@ class JABBatchProcessor:
     def close(self):
         self.jab.close()
 
+    def require_jab_environment_ready(self, command=""):
+        """Fail before any NC action when the current Java window is not JAB-readable."""
+        health = check_jab_ready(self.jab)
+        self.record_event(
+            "jab_environment_precheck",
+            command=command,
+            ok=bool(health.get("ok")),
+            reason=health.get("reason"),
+            ready_windows=len(health.get("ready_windows") or []),
+            visible_sunawt=len(health.get("visible_sunawt") or []),
+        )
+        if health.get("ok"):
+            return health
+        reason = health.get("reason") or "当前 NC Java 窗口不能通过 Java Access Bridge 读取"
+        raise WorkflowStateError(
+            "NC 环境检查失败："
+            f"{reason}。请完全退出并重启 NC/UClient 后再试。"
+        )
+
     def finish_run_state(self, status, error=None):
         self.run_state.finish(status, error=error)
 
@@ -142,7 +163,14 @@ class JABBatchProcessor:
         )
         excel_rows = result.get("excel_rows") or []
         if not excel_rows:
-            return {"saved": 0, "batches": 0, "updates": {}}
+            return {
+                "saved": 0,
+                "batches": 0,
+                "skipped": int(result.get("skipped", 0)),
+                "issue_updates": result.get("issue_updates") or {},
+                "updates": {},
+                "excel_rows": [],
+            }
 
         updates = self.backfill_generated_vouchers(
             limit=None,
@@ -155,6 +183,8 @@ class JABBatchProcessor:
         return {
             "saved": int(result.get("saved", 0)),
             "batches": int(result.get("batches", 0)),
+            "skipped": int(result.get("skipped", 0)),
+            "issue_updates": result.get("issue_updates") or {},
             "updates": updates,
             "excel_rows": excel_rows,
         }

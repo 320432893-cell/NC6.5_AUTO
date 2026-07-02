@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from core.errors import ExcelLockedError  # noqa: E402
+from core.jab_health_check import check_jab_ready  # noqa: E402
 from core.jab_operator import JABOperator  # noqa: E402
 from core.receipt_entry import ReceiptEntryWorkbook  # noqa: E402
 from core.receipt_matching import counterparty_match_details, counterparty_similarity  # noqa: E402
@@ -303,6 +304,34 @@ def main(argv=None):
     shared_jab = JABOperator(config)
     shared_jab_lock = threading.RLock()
     try:
+        health = check_jab_ready(shared_jab)
+        report["jab_environment_precheck"] = health
+        recorder.event(
+            "jab-environment-precheck",
+            ok=bool(health.get("ok")),
+            reason=health.get("reason") or "",
+            ready_windows=len(health.get("ready_windows") or []),
+            visible_sunawt=len(health.get("visible_sunawt") or []),
+        )
+        if not health.get("ok"):
+            reason = (
+                "NC 环境检查失败："
+                f"{health.get('reason') or '当前 NC Java 窗口不能通过 Java Access Bridge 读取'}。"
+                "请完全退出并重启 NC/UClient 后再试。"
+            )
+            report.update(
+                {
+                    "ok": False,
+                    "reason": reason,
+                    "error_category": "environment",
+                    "total_seconds": round(time.perf_counter() - started, 3),
+                }
+            )
+            recorder.finish("failed", error=reason)
+            write_last_report(report)
+            print_report(report, args)
+            return 4
+
         for _step_idx, row in enumerate(selected_rows):
             recorder.set_stage(
                 "处理行",
